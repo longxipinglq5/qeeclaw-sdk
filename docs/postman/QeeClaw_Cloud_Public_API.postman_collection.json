@@ -1,0 +1,211 @@
+{
+  "info": {
+    "name": "QeeClaw Cloud Public API",
+    "_postman_id": "c8c362cb-9c1b-4a2a-b2fe-ec967a8b1a61",
+    "description": "Public cloud API collection for customer-facing integration. Recommended for Ruisi and other local-first products.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Workspace Context",
+      "item": [
+        {
+          "name": "Get Workspace Context",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/users/me/context"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Models",
+      "item": [
+        {
+          "name": "List Models",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models"
+          }
+        },
+        {
+          "name": "List Model Providers",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models/providers"
+          }
+        },
+        {
+          "name": "List Model Runtimes",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models/runtimes"
+          }
+        },
+        {
+          "name": "Get Model Route",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models/route"
+          }
+        },
+        {
+          "name": "Resolve Model",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/models/resolve?model_name={{modelName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "models",
+                "resolve"
+              ],
+              "query": [
+                {
+                  "key": "model_name",
+                  "value": "{{modelName}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Invoke Model",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"请总结今天的客户诉求\",\n  \"model\": \"{{modelName}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/models/invoke"
+          }
+        },
+        {
+          "name": "Get Model Usage",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/models/usage?days={{days}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "models",
+                "usage"
+              ],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "{{days}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Model Cost",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/models/cost?days={{days}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "models",
+                "cost"
+              ],
+              "query": [
+                {
+                  "key": "days",
+                  "value": "{{days}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Model Quota",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models/quota"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Billing",
+      "item": [
+        {
+          "name": "Get Wallet",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/billing/wallet"
+          }
+        },
+        {
+          "name": "List Billing Records",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/billing/records?page={{page}}&page_size={{pageSize}}&type={{recordType}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "billing",
+                "records"
+              ],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "{{page}}"
+                },
+                {
+                  "key": "page_size",
+                  "value": "{{pageSize}}"
+                },
+                {
+                  "key": "type",
+                  "value": "{{recordType}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Billing Summary",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/billing/summary"
+          }
+        }
+      ]
+    }
+  ]
+}

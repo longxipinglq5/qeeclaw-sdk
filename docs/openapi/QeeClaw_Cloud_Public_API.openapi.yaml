@@ -1,0 +1,607 @@
+openapi: 3.0.3
+info:
+  title: QeeClaw Cloud Public API
+  version: 2026-04-09
+  description: |
+    Public cloud API subset intended for customer-facing integration.
+
+    Recommended for local-first products such as Ruisi.
+
+    Exposed domains:
+    - Workspace Context
+    - Models
+    - Billing
+servers:
+  - url: https://paas.qeeshu.com
+    description: Production
+security:
+  - BearerAuth: []
+tags:
+  - name: Workspace Context
+  - name: Models
+  - name: Billing
+paths:
+  /api/users/me/context:
+    get:
+      tags: [Workspace Context]
+      summary: Get workspace context
+      operationId: getWorkspaceContext
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceContextEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models:
+    get:
+      tags: [Models]
+      summary: List models
+      operationId: listModels
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/providers:
+    get:
+      tags: [Models]
+      summary: List model providers
+      operationId: listModelProviders
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/runtimes:
+    get:
+      tags: [Models]
+      summary: List runtimes
+      operationId: listModelRuntimes
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/route:
+    get:
+      tags: [Models]
+      summary: Get route profile
+      operationId: getModelRouteProfile
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/resolve:
+    get:
+      tags: [Models]
+      summary: Resolve model
+      operationId: resolveModel
+      parameters:
+        - name: model_name
+          in: query
+          required: true
+          schema:
+            type: string
+          example: gpt-4.1-mini
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelResolutionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/invoke:
+    post:
+      tags: [Models]
+      summary: Invoke model
+      operationId: invokeModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelInvokeRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelInvokeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/usage:
+    get:
+      tags: [Models]
+      summary: Get model usage summary
+      operationId: getModelUsage
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelUsageSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/cost:
+    get:
+      tags: [Models]
+      summary: Get model cost summary
+      operationId: getModelCost
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            default: 30
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelCostSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/quota:
+    get:
+      tags: [Models]
+      summary: Get quota summary
+      operationId: getModelQuota
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelQuotaSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/billing/wallet:
+    get:
+      tags: [Billing]
+      summary: Get wallet summary
+      operationId: getWallet
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WalletSummary'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/billing/records:
+    get:
+      tags: [Billing]
+      summary: List billing records
+      operationId: listBillingRecords
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+        - name: type
+          in: query
+          schema:
+            type: string
+            example: consumption
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingRecordList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/billing/summary:
+    get:
+      tags: [Billing]
+      summary: Get billing totals
+      operationId: getBillingSummary
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BillingTotals'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 401
+        data:
+          nullable: true
+        message:
+          type: string
+          example: User token expired or invalid
+    WorkspaceContextEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          type: object
+          properties:
+            id:
+              type: integer
+            username:
+              type: string
+            role:
+              type: string
+            is_enterprise_verified:
+              type: boolean
+            default_team_id:
+              type: integer
+              nullable: true
+            default_team_name:
+              type: string
+              nullable: true
+            default_team_is_personal:
+              type: boolean
+              nullable: true
+            teams:
+              type: array
+              items:
+                type: object
+                properties:
+                  id:
+                    type: integer
+                  name:
+                    type: string
+                  is_personal:
+                    type: boolean
+                  owner_id:
+                    type: integer
+        message:
+          type: string
+          example: 查询成功
+    ModelInfo:
+      type: object
+      properties:
+        id:
+          type: integer
+        provider_name:
+          type: string
+        model_name:
+          type: string
+        provider_model_id:
+          type: string
+          nullable: true
+        label:
+          type: string
+        is_preferred:
+          type: boolean
+        availability_status:
+          type: string
+        unit_price:
+          type: number
+          nullable: true
+        output_unit_price:
+          type: number
+          nullable: true
+        currency:
+          type: string
+          nullable: true
+    ModelListEnvelope:
+      type: array
+      items:
+        $ref: '#/components/schemas/ModelInfo'
+    ProviderSummaryEnvelope:
+      type: array
+      items:
+        type: object
+        properties:
+          provider_name:
+            type: string
+          configured:
+            type: boolean
+          provider_status:
+            type: string
+            nullable: true
+          visible_count:
+            type: integer
+          hidden_count:
+            type: integer
+          disabled_count:
+            type: integer
+            nullable: true
+          models:
+            type: array
+            items:
+              type: string
+    RuntimeSummaryEnvelope:
+      type: array
+      items:
+        type: object
+        properties:
+          runtime_type:
+            type: string
+          runtime_label:
+            type: string
+          runtime_status:
+            type: string
+          runtime_stage:
+            type: string
+          is_default:
+            type: boolean
+          adapter_registered:
+            type: boolean
+          bridge_registered:
+            type: boolean
+          online_team_count:
+            type: integer
+          supports_im_relay:
+            type: boolean
+          supports_device_bridge:
+            type: boolean
+          supports_managed_download:
+            type: boolean
+          notes:
+            type: string
+    RouteProfileEnvelope:
+      type: object
+      properties:
+        preferred_model:
+          type: string
+          nullable: true
+        preferred_model_available:
+          type: boolean
+        resolved_model:
+          type: string
+          nullable: true
+        resolved_provider_name:
+          type: string
+          nullable: true
+        resolved_provider_model_id:
+          type: string
+          nullable: true
+        candidate_count:
+          type: integer
+        configured_provider_count:
+          type: integer
+        available_model_count:
+          type: integer
+        resolution_reason:
+          type: string
+        selected:
+          $ref: '#/components/schemas/ModelInfo'
+    ModelResolutionEnvelope:
+      type: object
+      properties:
+        requested_model:
+          type: string
+        resolved_model:
+          type: string
+        provider_name:
+          type: string
+        provider_model_id:
+          type: string
+        candidate_count:
+          type: integer
+        selected:
+          $ref: '#/components/schemas/ModelInfo'
+    ModelInvokeRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt:
+          type: string
+        model:
+          type: string
+          example: gpt-4.1-mini
+        model_id:
+          type: string
+          nullable: true
+    ModelInvokeResult:
+      type: object
+      properties:
+        text:
+          type: string
+        model:
+          type: string
+          nullable: true
+    ModelUsageSummary:
+      type: object
+      properties:
+        window_days:
+          type: integer
+        period_start:
+          type: string
+        period_end:
+          type: string
+        attribution_mode:
+          type: string
+        record_count:
+          type: integer
+        total_calls:
+          type: integer
+        total_input_chars:
+          type: integer
+        total_output_chars:
+          type: integer
+        total_duration_seconds:
+          type: number
+        last_used_at:
+          type: string
+          nullable: true
+    ModelCostSummary:
+      type: object
+      properties:
+        window_days:
+          type: integer
+        period_start:
+          type: string
+        period_end:
+          type: string
+        attribution_mode:
+          type: string
+        record_count:
+          type: integer
+        total_amount:
+          type: number
+          nullable: true
+        primary_currency:
+          type: string
+          nullable: true
+        last_billed_at:
+          type: string
+          nullable: true
+    ModelQuotaSummary:
+      type: object
+      properties:
+        wallet_balance:
+          type: number
+        currency:
+          type: string
+        daily_limit:
+          type: number
+          nullable: true
+        daily_spent:
+          type: number
+        daily_remaining:
+          type: number
+          nullable: true
+        daily_unlimited:
+          type: boolean
+        monthly_limit:
+          type: number
+          nullable: true
+        monthly_spent:
+          type: number
+        monthly_remaining:
+          type: number
+          nullable: true
+        monthly_unlimited:
+          type: boolean
+        updated_time:
+          type: string
+          nullable: true
+    WalletSummary:
+      type: object
+      properties:
+        balance:
+          type: number
+        currency:
+          type: string
+        total_spent:
+          type: number
+        total_recharge:
+          type: number
+        current_month_spent:
+          type: number
+        updated_time:
+          type: string
+    BillingRecord:
+      type: object
+      properties:
+        id:
+          type: integer
+        product_name:
+          type: string
+        record_type:
+          type: string
+        duration_seconds:
+          type: number
+        text_input_length:
+          type: integer
+        text_output_length:
+          type: integer
+        unit_price:
+          type: number
+        output_unit_price:
+          type: number
+        amount:
+          type: number
+        currency:
+          type: string
+        remark:
+          type: string
+          nullable: true
+        balance_snapshot:
+          type: number
+        created_time:
+          type: string
+    BillingRecordList:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/BillingRecord'
+    BillingTotals:
+      type: object
+      properties:
+        total_spent:
+          type: number
+        total_recharge:
+          type: number

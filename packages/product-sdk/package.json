@@ -1,0 +1,57 @@
+{
+  "name": "@qeeclaw/product-sdk",
+  "version": "0.1.0",
+  "description": "Product-level kits built on top of QeeClaw platform contracts",
+  "license": "Apache-2.0",
+  "author": "QeeClaw Team",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "examples"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/longxipinglq5/qeeclaw-sdk.git",
+    "directory": "packages/product-sdk"
+  },
+  "homepage": "https://github.com/longxipinglq5/qeeclaw-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/longxipinglq5/qeeclaw-sdk/issues"
+  },
+  "keywords": [
+    "qeeclaw",
+    "sdk",
+    "product-sdk",
+    "dashboard",
+    "sales-cockpit",
+    "conversation-center",
+    "knowledge-center",
+    "governance"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "demo:mock": "node ./examples/mock-dashboard.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.1",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "pnpm@10.23.0"
+}

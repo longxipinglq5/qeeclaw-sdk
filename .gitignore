@@ -1,0 +1,34 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+dist/
+*.tgz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Test / Coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Deploy secrets (only .example templates should be committed)
+deploy/env/*.env
+deploy/env/*.local
+
+# Logs
+logs/
+*.log

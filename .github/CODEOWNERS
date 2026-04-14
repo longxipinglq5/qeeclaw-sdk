@@ -1,0 +1,7 @@
+* @qeeclaw/sdk-maintainers
+
+/packages/core-sdk/ @qeeclaw/sdk-maintainers
+/packages/product-sdk/ @qeeclaw/sdk-maintainers
+/packages/runtime-sidecar/ @qeeclaw/sdk-maintainers
+/hardware/meeting-device-firmware/ @qeeclaw/device-maintainers
+/docs/ @qeeclaw/sdk-maintainers

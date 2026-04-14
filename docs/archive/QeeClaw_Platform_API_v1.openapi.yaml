@@ -1,0 +1,995 @@
+openapi: 3.0.3
+info:
+  title: QeeClaw Platform API v1 Customer Subset
+  version: 2026-04-08
+  description: |
+    Customer-facing OpenAPI subset for QeeClaw Platform.
+
+    This spec is intentionally scoped to the API Key compatible domains that
+    are recommended for third-party integration:
+
+    - Workspace Context
+    - Models
+    - Memory
+    - Policy
+    - Approvals
+
+    Recommended smoke test order:
+    1. GET /api/users/me/context
+    2. GET /api/platform/models
+    3. Fill teamId from default_team_id and continue business requests
+servers:
+  - url: https://paas.qeeshu.com
+    description: Production
+security:
+  - BearerAuth: []
+tags:
+  - name: Workspace Context
+  - name: Models
+  - name: Memory
+  - name: Policy
+  - name: Approvals
+paths:
+  /api/users/me/context:
+    get:
+      tags:
+        - Workspace Context
+      summary: Get workspace context
+      description: Resolve the current user's available workspaces and default workspace by API Key.
+      operationId: getWorkspaceContext
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceContextEnvelope'
+              examples:
+                default:
+                  value:
+                    code: 0
+                    data:
+                      id: 201
+                      username: demo_user
+                      role: USER
+                      is_enterprise_verified: true
+                      default_team_id: 19
+                      default_team_name: 企数科技
+                      default_team_is_personal: false
+                      teams:
+                        - id: 19
+                          name: 企数科技
+                          is_personal: false
+                          owner_id: 201
+                    message: 查询成功
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models:
+    get:
+      tags:
+        - Models
+      summary: List models
+      operationId: listModels
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/providers:
+    get:
+      tags:
+        - Models
+      summary: List model provider summary
+      operationId: listModelProviders
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/runtimes:
+    get:
+      tags:
+        - Models
+      summary: List runtime summary
+      operationId: listModelRuntimes
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/route:
+    get:
+      tags:
+        - Models
+      summary: Get model route profile
+      operationId: getModelRouteProfile
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RouteProfileEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/resolve:
+    get:
+      tags:
+        - Models
+      summary: Resolve a model name to provider target
+      operationId: resolveModel
+      parameters:
+        - name: model_name
+          in: query
+          required: true
+          schema:
+            type: string
+          example: gpt-4.1-mini
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelResolutionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/models/invoke:
+    post:
+      tags:
+        - Models
+      summary: Invoke a model
+      operationId: invokeModel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModelInvokeRequest'
+            examples:
+              default:
+                value:
+                  prompt: 请总结今天的客户诉求
+                  model: gpt-4.1-mini
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ModelInvokeEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/memory/store:
+    post:
+      tags:
+        - Memory
+      summary: Store memory
+      description: team_id is optional if the platform can resolve a default workspace for the API Key.
+      operationId: storeMemory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryStoreRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryStoreEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/platform/memory/search:
+    post:
+      tags:
+        - Memory
+      summary: Search memory
+      operationId: searchMemory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemorySearchRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemorySearchEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/platform/memory/stats:
+    get:
+      tags:
+        - Memory
+      summary: Get memory stats
+      operationId: getMemoryStats
+      parameters:
+        - $ref: '#/components/parameters/TeamId'
+        - $ref: '#/components/parameters/RuntimeType'
+        - $ref: '#/components/parameters/AgentId'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryStatsEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /api/platform/policy/tool-access/check:
+    post:
+      tags:
+        - Policy
+      summary: Check tool access policy
+      operationId: checkToolAccess
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolAccessCheckRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyDecisionEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/approvals/request:
+    post:
+      tags:
+        - Approvals
+      summary: Create approval request
+      operationId: createApprovalRequest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalRequestCreate'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalRecordEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/platform/approvals:
+    get:
+      tags:
+        - Approvals
+      summary: List approvals
+      operationId: listApprovals
+      parameters:
+        - name: scope
+          in: query
+          schema:
+            type: string
+            enum:
+              - mine
+              - all
+            default: mine
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum:
+              - pending
+              - approved
+              - rejected
+              - expired
+        - name: approval_type
+          in: query
+          schema:
+            type: string
+            enum:
+              - tool_access
+              - data_access
+              - exec_access
+              - custom
+        - name: risk_level
+          in: query
+          schema:
+            type: string
+            enum:
+              - low
+              - medium
+              - high
+              - critical
+        - name: keyword
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+            minimum: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalListEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: API Key
+  parameters:
+    TeamId:
+      name: team_id
+      in: query
+      required: false
+      schema:
+        type: integer
+      description: Optional when the platform can resolve a default workspace.
+    RuntimeType:
+      name: runtime_type
+      in: query
+      required: false
+      schema:
+        type: string
+        default: openclaw
+        enum:
+          - openclaw
+          - deeflow2
+    AgentId:
+      name: agent_id
+      in: query
+      required: false
+      schema:
+        type: string
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required:
+        - code
+        - data
+        - message
+      properties:
+        code:
+          type: integer
+          example: 401
+        data:
+          nullable: true
+        message:
+          type: string
+          example: Token expired or invalid
+    TeamSummary:
+      type: object
+      required:
+        - id
+        - name
+        - is_personal
+        - owner_id
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        is_personal:
+          type: boolean
+        owner_id:
+          type: integer
+    WorkspaceContext:
+      type: object
+      required:
+        - id
+        - username
+        - role
+        - teams
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        role:
+          type: string
+        is_enterprise_verified:
+          type: boolean
+        default_team_id:
+          type: integer
+          nullable: true
+        default_team_name:
+          type: string
+          nullable: true
+        default_team_is_personal:
+          type: boolean
+          nullable: true
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/TeamSummary'
+    WorkspaceContextEnvelope:
+      type: object
+      required:
+        - code
+        - data
+        - message
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          $ref: '#/components/schemas/WorkspaceContext'
+        message:
+          type: string
+          example: 查询成功
+    ModelInfo:
+      type: object
+      required:
+        - id
+        - provider_name
+        - model_name
+        - label
+        - is_preferred
+        - availability_status
+      properties:
+        id:
+          type: integer
+        provider_name:
+          type: string
+        model_name:
+          type: string
+        provider_model_id:
+          type: string
+          nullable: true
+        label:
+          type: string
+        is_preferred:
+          type: boolean
+        availability_status:
+          type: string
+        unit_price:
+          type: number
+          nullable: true
+        output_unit_price:
+          type: number
+          nullable: true
+        currency:
+          type: string
+          nullable: true
+    ModelListEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModelInfo'
+        message:
+          type: string
+          example: success
+    ProviderSummary:
+      type: object
+      properties:
+        provider_name:
+          type: string
+        configured:
+          type: boolean
+        provider_status:
+          type: string
+        visible_count:
+          type: integer
+        hidden_count:
+          type: integer
+        disabled_count:
+          type: integer
+          nullable: true
+        models:
+          type: array
+          items:
+            type: string
+    ProviderSummaryEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProviderSummary'
+        message:
+          type: string
+          example: success
+    RuntimeSummary:
+      type: object
+      properties:
+        runtime_type:
+          type: string
+        runtime_label:
+          type: string
+        runtime_status:
+          type: string
+        runtime_stage:
+          type: string
+        is_default:
+          type: boolean
+        adapter_registered:
+          type: boolean
+        bridge_registered:
+          type: boolean
+        online_team_count:
+          type: integer
+        online_team_ids:
+          type: array
+          items:
+            type: integer
+        supports_im_relay:
+          type: boolean
+        supports_device_bridge:
+          type: boolean
+        supports_managed_download:
+          type: boolean
+        notes:
+          type: string
+    RuntimeSummaryEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimeSummary'
+        message:
+          type: string
+          example: success
+    RouteProfile:
+      type: object
+      properties:
+        preferred_model:
+          type: string
+          nullable: true
+        preferred_model_available:
+          type: boolean
+        resolved_model:
+          type: string
+          nullable: true
+        resolved_provider_name:
+          type: string
+          nullable: true
+        resolved_provider_model_id:
+          type: string
+          nullable: true
+        candidate_count:
+          type: integer
+        configured_provider_count:
+          type: integer
+        available_model_count:
+          type: integer
+        resolution_reason:
+          type: string
+        selected:
+          $ref: '#/components/schemas/ModelInfo'
+          nullable: true
+    RouteProfileEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          $ref: '#/components/schemas/RouteProfile'
+        message:
+          type: string
+          example: success
+    ModelResolution:
+      type: object
+      properties:
+        requested_model:
+          type: string
+        resolved_model:
+          type: string
+        provider_name:
+          type: string
+        provider_model_id:
+          type: string
+        candidate_count:
+          type: integer
+        selected:
+          $ref: '#/components/schemas/ModelInfo'
+    ModelResolutionEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          $ref: '#/components/schemas/ModelResolution'
+        message:
+          type: string
+          example: success
+    ModelInvokeRequest:
+      type: object
+      required:
+        - prompt
+      properties:
+        prompt:
+          type: string
+        model_id:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+    ModelInvokeResult:
+      type: object
+      properties:
+        text:
+          type: string
+        model:
+          type: string
+        provider_name:
+          type: string
+        provider_model_id:
+          type: string
+    ModelInvokeEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          $ref: '#/components/schemas/ModelInvokeResult'
+        message:
+          type: string
+          example: success
+    MemoryScope:
+      type: object
+      properties:
+        team_id:
+          type: integer
+          nullable: true
+        runtime_type:
+          type: string
+          nullable: true
+          default: openclaw
+        device_id:
+          oneOf:
+            - type: integer
+            - type: string
+          nullable: true
+        agent_id:
+          type: string
+          nullable: true
+    MemoryStoreRequest:
+      allOf:
+        - $ref: '#/components/schemas/MemoryScope'
+        - type: object
+          required:
+            - content
+          properties:
+            content:
+              type: string
+            category:
+              type: string
+              enum:
+                - preference
+                - fact
+                - decision
+                - entity
+                - other
+              default: other
+            importance:
+              type: number
+              format: float
+              default: 0.7
+            source_session:
+              type: string
+              nullable: true
+            skip_duplicate_check:
+              type: boolean
+              default: false
+    MemorySearchRequest:
+      allOf:
+        - $ref: '#/components/schemas/MemoryScope'
+        - type: object
+          required:
+            - query
+          properties:
+            query:
+              type: string
+            limit:
+              type: integer
+              default: 6
+            threshold:
+              type: number
+              format: float
+              default: 0.6
+    MemoryEntry:
+      type: object
+      additionalProperties: true
+      description: Raw memory entry shape is runtime-dependent; SDK exposes it as a generic object.
+    MemoryStoreEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          type: object
+          additionalProperties: true
+        message:
+          type: string
+          example: success
+    MemorySearchEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemoryEntry'
+        message:
+          type: string
+          example: success
+    MemoryStatsEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          type: object
+          additionalProperties: true
+        message:
+          type: string
+          example: success
+    ToolAccessCheckRequest:
+      type: object
+      required:
+        - tool_name
+      properties:
+        tool_name:
+          type: string
+        risk_level:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          default: medium
+        requires_approval:
+          type: boolean
+          default: false
+        agent_id:
+          type: string
+          nullable: true
+        device_id:
+          type: string
+          nullable: true
+        team_id:
+          type: integer
+          nullable: true
+        metadata:
+          type: object
+          additionalProperties: true
+    PolicyDecision:
+      type: object
+      properties:
+        allowed:
+          type: boolean
+        reason:
+          type: string
+        requires_approval:
+          type: boolean
+        checked_at:
+          type: string
+          format: date-time
+          nullable: true
+        checked_for:
+          type: object
+          additionalProperties: true
+    PolicyDecisionEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          $ref: '#/components/schemas/PolicyDecision'
+        message:
+          type: string
+          example: success
+    ApprovalRequestCreate:
+      type: object
+      required:
+        - title
+        - reason
+      properties:
+        approval_type:
+          type: string
+          enum:
+            - tool_access
+            - data_access
+            - exec_access
+            - custom
+          default: custom
+        title:
+          type: string
+        reason:
+          type: string
+        risk_level:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+          default: medium
+        payload:
+          type: object
+          additionalProperties: true
+        expires_in_seconds:
+          type: integer
+          minimum: 300
+          maximum: 604800
+          nullable: true
+    ApprovalUserRef:
+      type: object
+      properties:
+        user_id:
+          type: integer
+        username:
+          type: string
+    ApprovalRecord:
+      type: object
+      properties:
+        approval_id:
+          type: string
+        status:
+          type: string
+          enum:
+            - pending
+            - approved
+            - rejected
+            - expired
+        approval_type:
+          type: string
+          enum:
+            - tool_access
+            - data_access
+            - exec_access
+            - custom
+        title:
+          type: string
+        reason:
+          type: string
+        risk_level:
+          type: string
+          enum:
+            - low
+            - medium
+            - high
+            - critical
+        payload:
+          type: object
+          additionalProperties: true
+        requested_by:
+          $ref: '#/components/schemas/ApprovalUserRef'
+        resolved_by:
+          allOf:
+            - $ref: '#/components/schemas/ApprovalUserRef'
+          nullable: true
+        resolution_comment:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        resolved_at:
+          type: string
+          format: date-time
+          nullable: true
+    ApprovalRecordEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          $ref: '#/components/schemas/ApprovalRecord'
+        message:
+          type: string
+          example: success
+    ApprovalListResult:
+      type: object
+      properties:
+        total:
+          type: integer
+        page:
+          type: integer
+        page_size:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalRecord'
+    ApprovalListEnvelope:
+      type: object
+      properties:
+        code:
+          type: integer
+          example: 0
+        data:
+          $ref: '#/components/schemas/ApprovalListResult'
+        message:
+          type: string
+          example: success

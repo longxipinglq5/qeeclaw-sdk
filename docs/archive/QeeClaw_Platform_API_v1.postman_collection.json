@@ -1,0 +1,763 @@
+{
+  "info": {
+    "name": "QeeClaw Platform API v1",
+    "_postman_id": "b9153218-4ef5-4cc8-90d2-7c445e5b7f49",
+    "description": "QeeClaw AI PaaS Platform API v1 customer-facing Postman collection. Recommended smoke test order: 1) GET /api/users/me/context with API Key, 2) GET /api/platform/models, 3) fill teamId from default_team_id and continue business-domain requests.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{apiKey}}",
+        "type": "string"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Workspace Context",
+      "item": [
+        {
+          "name": "Get Workspace Context",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/users/me/context"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Models",
+      "item": [
+        {
+          "name": "List Models",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models"
+          }
+        },
+        {
+          "name": "List Model Providers",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models/providers"
+          }
+        },
+        {
+          "name": "List Model Runtimes",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models/runtimes"
+          }
+        },
+        {
+          "name": "Get Model Route",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/models/route"
+          }
+        },
+        {
+          "name": "Resolve Model",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/models/resolve?model_name={{modelName}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "models",
+                "resolve"
+              ],
+              "query": [
+                {
+                  "key": "model_name",
+                  "value": "{{modelName}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Invoke Model",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"prompt\": \"请总结今天的客户诉求\",\n  \"model\": \"{{modelName}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/models/invoke"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Memory",
+      "item": [
+        {
+          "name": "Store Memory",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"team_id\": {{teamId}},\n  \"runtime_type\": \"{{runtimeType}}\",\n  \"agent_id\": \"{{agentId}}\",\n  \"content\": \"客户更关注私有化部署与数据隔离\",\n  \"category\": \"fact\",\n  \"importance\": 0.95\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/memory/store"
+          }
+        },
+        {
+          "name": "Search Memory",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"team_id\": {{teamId}},\n  \"runtime_type\": \"{{runtimeType}}\",\n  \"agent_id\": \"{{agentId}}\",\n  \"query\": \"私有化\",\n  \"limit\": 5,\n  \"threshold\": 0.6\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/memory/search"
+          }
+        },
+        {
+          "name": "Get Memory Stats",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/memory/stats?team_id={{teamId}}&runtime_type={{runtimeType}}&agent_id={{agentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "memory",
+                "stats"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                },
+                {
+                  "key": "runtime_type",
+                  "value": "{{runtimeType}}"
+                },
+                {
+                  "key": "agent_id",
+                  "value": "{{agentId}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Knowledge",
+      "item": [
+        {
+          "name": "List Knowledge",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/knowledge/list?team_id={{teamId}}&page=1&pageSize=20&runtime_type={{runtimeType}}&agent_id={{agentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "knowledge",
+                "list"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "pageSize",
+                  "value": "20"
+                },
+                {
+                  "key": "runtime_type",
+                  "value": "{{runtimeType}}"
+                },
+                {
+                  "key": "agent_id",
+                  "value": "{{agentId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Search Knowledge",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/knowledge/search?team_id={{teamId}}&runtime_type={{runtimeType}}&agent_id={{agentId}}&query=安装指南&limit=5",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "knowledge",
+                "search"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                },
+                {
+                  "key": "runtime_type",
+                  "value": "{{runtimeType}}"
+                },
+                {
+                  "key": "agent_id",
+                  "value": "{{agentId}}"
+                },
+                {
+                  "key": "query",
+                  "value": "安装指南"
+                },
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Knowledge Stats",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/knowledge/stats?team_id={{teamId}}&runtime_type={{runtimeType}}&agent_id={{agentId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "knowledge",
+                "stats"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                },
+                {
+                  "key": "runtime_type",
+                  "value": "{{runtimeType}}"
+                },
+                {
+                  "key": "agent_id",
+                  "value": "{{agentId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Upload Knowledge (Multipart)",
+          "request": {
+            "method": "POST",
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "runtime_type",
+                  "value": "{{runtimeType}}",
+                  "type": "text"
+                },
+                {
+                  "key": "agent_id",
+                  "value": "{{agentId}}",
+                  "type": "text"
+                },
+                {
+                  "key": "file",
+                  "type": "file",
+                  "src": ""
+                }
+              ]
+            },
+            "url": "{{baseUrl}}/api/platform/knowledge/upload"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Channels",
+      "item": [
+        {
+          "name": "Get Channel Overview",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/channels?team_id={{teamId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "channels"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get WeChat Work Config",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/channels/wechat-work/config?team_id={{teamId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "channels",
+                "wechat-work",
+                "config"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Start WeChat OpenClaw QR",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"team_id\": {{teamId}},\n  \"force_refresh\": true,\n  \"timeout_ms\": 120000\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/channels/wechat-personal-openclaw/qr/start"
+          }
+        },
+        {
+          "name": "List Channel Bindings",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/channels/bindings?team_id={{teamId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "channels",
+                "bindings"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Devices",
+      "item": [
+        {
+          "name": "List Devices",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/devices"
+          }
+        },
+        {
+          "name": "Get Device Account State",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/devices/account-state?installation_id={{installationId}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "devices",
+                "account-state"
+              ],
+              "query": [
+                {
+                  "key": "installation_id",
+                  "value": "{{installationId}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Bootstrap Device",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"installation_id\": \"{{installationId}}\",\n  \"device_name\": \"Customer MacBook\",\n  \"hostname\": \"customer-mac\",\n  \"os_info\": \"macOS\"\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/devices/bootstrap"
+          }
+        },
+        {
+          "name": "Get Online Device Bridge Status",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/platform/devices/online"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Conversations",
+      "item": [
+        {
+          "name": "Get Conversation Home",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/conversations?team_id={{teamId}}&group_limit=10&history_limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "conversations"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                },
+                {
+                  "key": "group_limit",
+                  "value": "10"
+                },
+                {
+                  "key": "history_limit",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Conversation Groups",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/conversations/groups?team_id={{teamId}}&limit=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "conversations",
+                "groups"
+              ],
+              "query": [
+                {
+                  "key": "team_id",
+                  "value": "{{teamId}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Send Conversation Message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"team_id\": {{teamId}},\n  \"content\": \"帮我总结昨天的客户问题\",\n  \"channel_id\": \"manual\",\n  \"direction\": \"user_to_agent\"\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/conversations/messages"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Governance",
+      "item": [
+        {
+          "name": "Check Exec Access",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"team_id\": {{teamId}},\n  \"command\": \"rm -rf /data/archive\",\n  \"risk_level\": \"critical\",\n  \"requires_approval\": true\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/policy/exec-access/check"
+          }
+        },
+        {
+          "name": "Request Approval",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approval_type\": \"exec_access\",\n  \"title\": \"申请高风险命令执行\",\n  \"reason\": \"需要管理员审批\",\n  \"risk_level\": \"critical\",\n  \"payload\": {\n    \"command\": \"rm -rf /data/archive\"\n  }\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/approvals/request"
+          }
+        },
+        {
+          "name": "List Approvals",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/approvals?scope=mine&page=1&page_size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "approvals"
+              ],
+              "query": [
+                {
+                  "key": "scope",
+                  "value": "mine"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Resolve Approval",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approved\": true,\n  \"comment\": \"审批通过\"\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/approvals/{{approvalId}}/resolve"
+          }
+        },
+        {
+          "name": "List Audit Events",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/audit/events?scope=mine&page=1&page_size=20",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "audit",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "scope",
+                  "value": "mine"
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "20"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Record Audit Event",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"action_type\": \"SDK_DEMO\",\n  \"title\": \"QeeClaw customer integration smoke test\",\n  \"module\": \"POSTMAN\",\n  \"path\": \"/api/platform/models\",\n  \"params\": \"team_id={{teamId}}\"\n}"
+            },
+            "url": "{{baseUrl}}/api/platform/audit/events"
+          }
+        },
+        {
+          "name": "Get Audit Summary",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/platform/audit/summary?scope=mine",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "platform",
+                "audit",
+                "summary"
+              ],
+              "query": [
+                {
+                  "key": "scope",
+                  "value": "mine"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://paas.qeeshu.com"
+    },
+    {
+      "key": "apiKey",
+      "value": ""
+    },
+    {
+      "key": "defaultTeamId",
+      "value": ""
+    },
+    {
+      "key": "teamId",
+      "value": ""
+    },
+    {
+      "key": "runtimeType",
+      "value": "openclaw"
+    },
+    {
+      "key": "agentId",
+      "value": ""
+    },
+    {
+      "key": "deviceId",
+      "value": ""
+    },
+    {
+      "key": "installationId",
+      "value": "install-demo-001"
+    },
+    {
+      "key": "modelName",
+      "value": "gpt-4.1-mini"
+    },
+    {
+      "key": "approvalId",
+      "value": "apr-demo-001"
+    }
+  ]
+}

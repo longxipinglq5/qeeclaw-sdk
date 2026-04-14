@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QeeClaw Sales Cockpit Starter</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="control-panel">
+        <div class="brand-block">
+          <div class="brand-mark">QC</div>
+          <div>
+            <p class="eyebrow">QEECLAW PRODUCT SDK STARTER</p>
+            <h1>销售驾驶仓最小样板</h1>
+          </div>
+        </div>
+
+        <p class="intro-text">
+          这个页面更偏“客户前端起步工程”。
+          它会把销售驾驶仓、渠道、会话、知识、治理与培训能力真正拼成一个可读的业务首页。
+        </p>
+
+        <form id="config-form" class="config-grid">
+          <label>
+            <span>Base URL</span>
+            <input id="base-url" name="baseUrl" type="url" placeholder="https://paas.qeeshu.com" required />
+          </label>
+
+          <label class="token-field">
+            <span>Token</span>
+            <textarea id="token" name="token" rows="4" placeholder="填写 token，支持直接粘贴 Bearer xxx" required></textarea>
+          </label>
+
+          <label>
+            <span>Team ID</span>
+            <input id="team-id" name="teamId" type="number" min="1" placeholder="可留空，自动探测" />
+          </label>
+
+          <label>
+            <span>Runtime Type</span>
+            <input id="runtime-type" name="runtimeType" type="text" placeholder="openclaw" />
+          </label>
+
+          <label>
+            <span>Agent ID</span>
+            <input id="agent-id" name="agentId" type="text" placeholder="sales-copilot" />
+          </label>
+
+          <label>
+            <span>Scope</span>
+            <select id="scope" name="scope">
+              <option value="mine">mine</option>
+              <option value="all">all</option>
+            </select>
+          </label>
+        </form>
+
+        <div class="control-actions">
+          <button id="prefill-online" class="secondary-button" type="button">填入线上示例</button>
+          <button id="load-dashboard" class="primary-button" type="button">加载驾驶仓</button>
+          <button id="export-snapshot" class="ghost-button" type="button" disabled>导出 JSON 快照</button>
+        </div>
+
+        <div id="status-banner" class="status-banner idle">等待连接。</div>
+
+        <div class="note-card">
+          <strong>使用提示</strong>
+          <p>`baseUrl` 只填根域名，不带 `/api/...`。</p>
+          <p>`Token` 可直接粘贴原始 token，也可以粘贴 `Bearer xxx`。</p>
+          <p>如果本地访问线上环境报跨域错误，需要在平台网关补充 CORS。</p>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <section class="hero-panel">
+          <div class="hero-copy">
+            <p class="eyebrow">CUSTOMER FRONTEND REFERENCE</p>
+            <h2>把 SDK 装成一个能直接讨论业务的驾驶仓首页</h2>
+            <p>
+              适合客户前端团队先跑出一个“能看、能拆、能继续开发”的参考页，
+              然后再按自己的设计系统、路由体系和接口网关做二次接入。
+            </p>
+          </div>
+          <div id="context-strip" class="context-strip">
+            <article class="context-card">
+              <span>当前状态</span>
+              <strong>尚未加载</strong>
+              <p>点击“加载驾驶仓”后，这里会显示账号、团队、runtime 与默认模型。</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="summary-grid" class="summary-grid">
+          <article class="summary-card pending">
+            <span>等待加载</span>
+            <strong>--</strong>
+            <p>这里会展示销售驾驶仓首页的关键业务指标。</p>
+          </article>
+        </section>
+
+        <section id="board-grid" class="board-grid">
+          <article class="board-panel span-12 empty-board">
+            <h3>最小业务页尚未生成</h3>
+            <p>加载成功后，这里会按真实 SDK 返回结构渲染渠道、会话、销售、知识、治理与培训模块。</p>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

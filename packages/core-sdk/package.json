@@ -1,0 +1,60 @@
+{
+  "name": "@qeeclaw/core-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript-first core SDK for QeeClaw platform APIs",
+  "license": "Apache-2.0",
+  "author": "QeeClaw Team",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md",
+    "docs",
+    "examples"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/longxipinglq5/qeeclaw-sdk.git",
+    "directory": "packages/core-sdk"
+  },
+  "homepage": "https://github.com/longxipinglq5/qeeclaw-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/longxipinglq5/qeeclaw-sdk/issues"
+  },
+  "keywords": [
+    "qeeclaw",
+    "sdk",
+    "ai",
+    "platform",
+    "typescript",
+    "conversations",
+    "knowledge",
+    "approval",
+    "policy"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "mock:server": "node ./examples/mock-platform-server.mjs",
+    "demo:mock": "node ./examples/mock-client.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.1",
+    "typescript": "^5.9.3"
+  },
+  "packageManager": "pnpm@10.23.0"
+}

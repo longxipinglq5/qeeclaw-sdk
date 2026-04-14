@@ -1,0 +1,23 @@
+services:
+  qeeclaw-gateway:
+    image: ${QEECLAW_GATEWAY_IMAGE:-openclaw:latest}
+    container_name: qeeclaw-gateway
+    restart: always
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_TOKEN}
+      OPENCLAW_LOG_LEVEL: ${OPENCLAW_LOG_LEVEL:-info}
+    ports:
+      - "127.0.0.1:${QEECLAW_GATEWAY_PORT:-18789}:18789"
+    volumes:
+      - ${QEECLAW_GATEWAY_CONFIG_DIR:-./config}:/home/node/.openclaw
+      - ${QEECLAW_GATEWAY_WORKSPACE_DIR:-./workspace}:/home/node/.openclaw/workspace
+    command:
+      - node
+      - dist/index.js
+      - gateway
+      - --bind
+      - lan
+      - --port
+      - "18789"
+      - --allow-unconfigured
