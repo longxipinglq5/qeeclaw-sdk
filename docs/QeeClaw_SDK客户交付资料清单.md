@@ -1,6 +1,6 @@
 # QeeClaw SDK 客户交付资料清单
 
-最后更新：2026-04-12
+最后更新：2026-04-16
 
 ---
 
@@ -127,6 +127,8 @@ bash scripts/build-server.sh --standalone --target darwin-arm64
 | **Postman Collection** | 导入即可联调，按域分组 |
 | **Postman Environment** | 预置 `base_url` 和 `api_key` 变量，客户填值即用 |
 
+> **本地模式补充**：对于使用本地 Hermes Bridge Server（`http://127.0.0.1:21747`）的客户，全部 17 个 core-sdk 模块的 145+ 个端点均可用，不限于上述 3 个域。本地模式的完整 API 参考请见 `QeeClaw_Bridge_Server_API参考手册.md`。
+
 客户公开 API 清单：
 
 | 域 | 端点 |
@@ -151,25 +153,27 @@ bash scripts/build-server.sh --standalone --target darwin-arm64
 
 平台标准 API 访问层。17 个模块：
 
-| 模块 | 说明 |
-| --- | --- |
-| `billing` | 钱包 / 账单 / 摘要 |
-| `models` | 模型列表 / 路由 / 推理调用 / 配额 |
-| `iam` | 用户身份 |
-| `apikey` | API Key 管理 |
-| `tenant` | 工作空间 / 上下文 |
-| `agent` | 智能体定义 |
-| `knowledge` | 知识库 |
-| `memory` | 记忆工作台 |
-| `conversations` | 会话管理 |
-| `channels` | 渠道管理 |
-| `devices` | 设备管理 |
-| `workflow` | 工作流 |
-| `file` | 文件上传 / 下载 |
-| `voice` | 语音能力 |
-| `audit` | 审计日志 |
-| `policy` | 策略管理 |
-| `approval` | 审批流 |
+| 模块 | 说明 | Bridge 本地覆盖 |
+| --- | --- | --- |
+| `billing` | 钱包 / 账单 / 摘要 | ✅ 已覆盖（3 端点） |
+| `models` | 模型列表 / 路由 / 推理调用 / 配额 | ✅ 已覆盖（9 端点） |
+| `iam` | 用户身份 | ✅ 已覆盖（5 端点） |
+| `apikey` | API Key 管理 | ✅ 已覆盖（10 端点） |
+| `tenant` | 工作空间 / 上下文 | ✅ 已覆盖（4 端点） |
+| `agent` | 智能体定义 | ✅ 已覆盖（11 端点） |
+| `knowledge` | 知识库 | ✅ 已覆盖（8 端点） |
+| `memory` | 记忆工作台 | ✅ 已覆盖（5 端点） |
+| `conversations` | 会话管理 | ✅ 已覆盖（6 端点） |
+| `channels` | 渠道管理 | ✅ 已覆盖（14 端点） |
+| `devices` | 设备管理 | ✅ 已覆盖（8 端点） |
+| `workflow` | 工作流 | ✅ 已覆盖（5 端点） |
+| `file` | 文件上传 / 下载 | ✅ 已覆盖（3 端点） |
+| `voice` | 语音能力 | ⬜ Stub（3 端点，返回 501） |
+| `audit` | 审计日志 | ✅ 已覆盖（3 端点） |
+| `policy` | 策略管理 | ✅ 已覆盖（3 端点） |
+| `approval` | 审批流 | ✅ 已覆盖（4 端点） |
+
+> **Bridge Server 本地覆盖率：17/17 模块，145+ 端点，167 个测试全部通过。** 本地 Hermes Bridge Server 已实现 core-sdk 全部模块的 HTTP 端点，客户无需依赖云端即可使用完整 SDK 能力。
 
 快速初始化：
 

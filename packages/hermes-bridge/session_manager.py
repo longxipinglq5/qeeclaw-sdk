@@ -118,6 +118,10 @@ class AgentProfile:
         max_tokens: Optional[int] = None,
         tools_enabled: bool = True,
         metadata: Optional[Dict[str, Any]] = None,
+        max_iterations: int = 30,
+        enabled_toolsets: Optional[List[str]] = None,
+        disabled_toolsets: Optional[List[str]] = None,
+        hermes_home: Optional[str] = None,
     ):
         self.name = name
         self.display_name = display_name or name
@@ -127,9 +131,13 @@ class AgentProfile:
         self.max_tokens = max_tokens
         self.tools_enabled = tools_enabled
         self.metadata = metadata or {}
+        self.max_iterations = max_iterations
+        self.enabled_toolsets = enabled_toolsets
+        self.disabled_toolsets = disabled_toolsets
+        self.hermes_home = hermes_home  # 独立 HERMES_HOME 路径（None = 使用全局默认）
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "name": self.name,
             "display_name": self.display_name,
             "system_prompt": self.system_prompt,
@@ -138,7 +146,15 @@ class AgentProfile:
             "max_tokens": self.max_tokens,
             "tools_enabled": self.tools_enabled,
             "metadata": self.metadata,
+            "max_iterations": self.max_iterations,
         }
+        if self.enabled_toolsets is not None:
+            d["enabled_toolsets"] = self.enabled_toolsets
+        if self.disabled_toolsets is not None:
+            d["disabled_toolsets"] = self.disabled_toolsets
+        if self.hermes_home is not None:
+            d["hermes_home"] = self.hermes_home
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AgentProfile":
@@ -151,6 +167,10 @@ class AgentProfile:
             max_tokens=data.get("max_tokens"),
             tools_enabled=data.get("tools_enabled", True),
             metadata=data.get("metadata", {}),
+            max_iterations=data.get("max_iterations", 30),
+            enabled_toolsets=data.get("enabled_toolsets"),
+            disabled_toolsets=data.get("disabled_toolsets"),
+            hermes_home=data.get("hermes_home"),
         )
 
 

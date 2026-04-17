@@ -16,12 +16,15 @@ SDK 侧的 HermesAdapter 通过 HTTP 调用此服务，此服务再调用 hermes
 import asyncio
 import json
 import os
+import platform as platform_mod
 import subprocess
 import sys
 import time
 import traceback
 import urllib.parse
+import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 from threading import Thread
 from typing import Any, Dict, List, Optional
 
@@ -218,6 +221,819 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
+# ---------------------------------------------------------------------------
+# SDK 兼容层：/api/agent/* 路径映射 + 平台响应格式
+# ---------------------------------------------------------------------------
+
+_agent_id_map: Dict[str, int] = {}
+_agent_id_counter = 0
+
+
+def _get_agent_id(profile_name: str) -> int:
+    """为 AgentProfile 分配稳定的数字 ID（进程生命周期内稳定）。"""
+    global _agent_id_counter
+    if profile_name not in _agent_id_map:
+        _agent_id_counter += 1
+        _agent_id_map[profile_name] = _agent_id_counter
+    return _agent_id_map[profile_name]
+
+
+def _profile_to_sdk_agent(profile) -> dict:
+    """将 AgentProfile 转换为 SDK MyAgent 格式。"""
+    meta = profile.metadata or {}
+    return {
+        "id": _get_agent_id(profile.name),
+        "name": profile.display_name,
+        "code": profile.name,
+        "description": meta.get("description") or (
+            profile.system_prompt[:200] if profile.system_prompt else None
+        ),
+        "avatar": meta.get("avatar"),
+        "voice_id": meta.get("voice_id"),
+        "runtime_type": meta.get("runtime_type", "openclaw"),
+        "runtime_label": meta.get("runtime_label"),
+        "model": profile.model or None,
+    }
+
+
+def _find_profile_by_id(sm, agent_id: int):
+    """根据数字 ID 查找 AgentProfile。"""
+    for profile in sm._profiles.values():
+        if _get_agent_id(profile.name) == agent_id:
+            return profile
+    return None
+
+
+def _platform_json_response(handler, status: int, data, message: str = "success"):
+    """发送平台格式响应：{"code": 0, "data": ..., "message": "success"}。"""
+    code_val = 0 if status < 400 else status
+    _json_response(handler, status, {
+        "code": code_val,
+        "data": data,
+        "message": message,
+    })
+
+
+# ---------------------------------------------------------------------------
+# AgentPool：管理 AIAgent 配置，按请求创建实例
+# ---------------------------------------------------------------------------
+
+_agent_pool: Optional["AgentPool"] = None
+
+
+def get_agent_pool() -> "AgentPool":
+    global _agent_pool
+    if _agent_pool is None:
+        _agent_pool = AgentPool()
+    return _agent_pool
+
+
+class AgentPool:
+    """管理多个 agent_profile 到 AIAgent 配置的映射。
+
+    采用 gateway 模式：每次请求创建新 AIAgent 实例，
+    通过 session_id + conversation_history 保持状态。
+    当 hermes-agent 不可用时自动降级为裸 OpenAI 调用。
+
+    每个 agent_profile 拥有独立的 HERMES_HOME 目录，实现
+    日志、config、skills 等 hermes-agent 内部状态的隔离。
+    """
+
+    def __init__(self):
+        self._ai_agent_cls = None
+        self._available = False
+        self._init_error: Optional[str] = None
+        # 保存启动时的全局 HERMES_HOME
+        self._base_hermes_home: str = os.environ.get(
+            "HERMES_HOME", os.path.join(os.path.expanduser("~"), ".qeeclaw_hermes")
+        )
+        # AIAgent 构造期间的 HERMES_HOME 切换锁
+        self._creation_lock = threading.Lock()
+        self._try_load()
+
+    def _try_load(self):
+        """尝试加载 hermes-agent 的 AIAgent 类。"""
+        _ensure_hermes_on_path()
+        err = _get_hermes_error()
+        if err:
+            self._init_error = err
+            return
+        try:
+            from run_agent import AIAgent
+            self._ai_agent_cls = AIAgent
+            self._available = True
+            print("[agent-pool] AIAgent loaded successfully — full agent mode enabled")
+        except ImportError as e:
+            self._init_error = f"Failed to import AIAgent: {e}"
+            print(f"[agent-pool] WARNING: {self._init_error} — fallback mode")
+
+    @property
+    def profiles_home(self) -> str:
+        """profiles 目录路径。"""
+        return os.path.join(self._base_hermes_home, "profiles")
+
+    def _ensure_profile_home(self, profile_name: str) -> str:
+        """返回指定 profile 的 HERMES_HOME 路径，自动创建目录。
+
+        - "default" → 全局 HERMES_HOME（不变）
+        - 其他 → {base}/profiles/{name}/
+        """
+        if profile_name == "default":
+            return self._base_hermes_home
+        profile_dir = os.path.join(self._base_hermes_home, "profiles", profile_name)
+        os.makedirs(profile_dir, exist_ok=True)
+        return profile_dir
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    def invoke(
+        self,
+        prompt: str,
+        profile,
+        session,
+        system_prompt: Optional[str] = None,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        max_history_turns: int = 20,
+        stream_callback=None,
+    ) -> dict:
+        """创建 AIAgent 实例并调用 run_conversation()。
+
+        Args:
+            prompt: 用户消息
+            profile: AgentProfile 实例
+            session: Session 实例（提供 session_id 和历史消息）
+            system_prompt: 系统提示词（含 RAG 上下文）
+            model: 模型名（覆盖 profile 默认值）
+            provider: provider 名
+            max_tokens: 最大 token 数
+            temperature: 温度
+            max_history_turns: 最大历史轮数
+            stream_callback: 流式回调 fn(delta_text)
+
+        Returns:
+            dict: 包含 text, model, provider, usage 等字段
+        """
+        if not self._available:
+            return self._invoke_fallback(
+                prompt=prompt,
+                model=model,
+                provider=provider,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                history=session.get_messages(max_turns=max_history_turns) if session else None,
+                import_error=self._init_error,
+            )
+
+        # 从 profile 获取默认参数
+        effective_model = model or (profile.model if profile else "") or os.environ.get("HERMES_MODEL", "")
+        effective_provider = provider or ""
+        effective_max_tokens = max_tokens or (profile.max_tokens if profile else None)
+        effective_max_iterations = (profile.max_iterations if profile else 30) or 30
+
+        # 构建 enabled/disabled toolsets
+        enabled_ts = None
+        disabled_ts = None
+        if profile:
+            if not profile.tools_enabled:
+                # 工具被禁用 — 传空列表使 AIAgent 不加载任何工具
+                enabled_ts = []
+            elif profile.enabled_toolsets:
+                enabled_ts = list(profile.enabled_toolsets)
+            if profile.disabled_toolsets:
+                disabled_ts = list(profile.disabled_toolsets)
+
+        # 构造 AIAgent
+        agent_kwargs: Dict[str, Any] = {
+            "model": effective_model,
+            "quiet_mode": True,
+            "skip_context_files": True,
+            "skip_memory": True,  # Bridge 自管理 memory，不使用 hermes 内部 memory
+            "platform": "bridge",
+            "session_id": session.session_id if session else None,
+            "max_iterations": effective_max_iterations,
+        }
+        if effective_provider:
+            agent_kwargs["provider"] = effective_provider
+        if effective_max_tokens is not None:
+            agent_kwargs["max_tokens"] = effective_max_tokens
+        if enabled_ts is not None:
+            agent_kwargs["enabled_toolsets"] = enabled_ts
+        if disabled_ts is not None:
+            agent_kwargs["disabled_toolsets"] = disabled_ts
+        if stream_callback is not None:
+            # stream_delta_callback is used by gateway for token-level events
+            agent_kwargs["stream_delta_callback"] = stream_callback
+
+        # 确定 per-profile HERMES_HOME
+        profile_name = profile.name if profile else "default"
+        profile_home = (
+            profile.hermes_home if (profile and profile.hermes_home)
+            else self._ensure_profile_home(profile_name)
+        )
+
+        try:
+            # 在构造 AIAgent 期间切换 HERMES_HOME（线程安全）
+            with self._creation_lock:
+                prev_home = os.environ.get("HERMES_HOME", "")
+                os.environ["HERMES_HOME"] = profile_home
+                try:
+                    agent = self._ai_agent_cls(**agent_kwargs)
+                finally:
+                    os.environ["HERMES_HOME"] = prev_home or self._base_hermes_home
+
+            # 获取对话历史
+            history = session.get_messages(max_turns=max_history_turns) if session else []
+
+            result = agent.run_conversation(
+                user_message=prompt,
+                system_message=system_prompt or None,
+                conversation_history=history if history else None,
+                # stream_callback 控制 API 调用是否使用流式，
+                # 并在每个文本 delta 时回调
+                stream_callback=stream_callback,
+            )
+
+            final_text = result.get("final_response") or ""
+
+            return {
+                "text": final_text,
+                "model": result.get("model", effective_model),
+                "provider": result.get("provider", effective_provider),
+                "usage": {
+                    "input_tokens": result.get("input_tokens", 0),
+                    "output_tokens": result.get("output_tokens", 0),
+                    "total_tokens": result.get("total_tokens", 0),
+                    "prompt_tokens": result.get("prompt_tokens", 0),
+                    "completion_tokens": result.get("completion_tokens", 0),
+                    "estimated_cost_usd": result.get("estimated_cost_usd"),
+                },
+                "api_calls": result.get("api_calls", 0),
+                "completed": result.get("completed", True),
+                "_agent_mode": True,
+            }
+        except Exception as e:
+            traceback.print_exc()
+            # 降级到 fallback
+            print(f"[agent-pool] AIAgent invoke failed: {e} — falling back to raw LLM")
+            return self._invoke_fallback(
+                prompt=prompt,
+                model=model,
+                provider=provider,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                history=session.get_messages(max_turns=max_history_turns) if session else None,
+                import_error=str(e),
+            )
+
+    def _invoke_fallback(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        system_prompt: Optional[str] = None,
+        history: Optional[List[Dict]] = None,
+        import_error: Optional[str] = None,
+    ) -> dict:
+        """降级调用：直接使用 openai SDK 进行模型调用。"""
+        try:
+            import openai
+        except ImportError:
+            raise RuntimeError(
+                "openai package is not installed. "
+                "Please run: pip install openai"
+            )
+
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+        base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+
+        kwargs: Dict[str, Any] = {
+            "model": model or default_model,
+            "messages": messages,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        response = client.chat.completions.create(**kwargs)
+
+        choice = response.choices[0] if response.choices else None
+        text = choice.message.content if choice and choice.message else ""
+
+        usage_data = None
+        if response.usage:
+            usage_data = {
+                "prompt_tokens": response.usage.prompt_tokens,
+                "completion_tokens": response.usage.completion_tokens,
+                "total_tokens": response.usage.total_tokens,
+            }
+
+        return {
+            "text": text or "",
+            "model": response.model,
+            "provider": provider or "fallback",
+            "usage": usage_data,
+            "_fallback": True,
+            "_import_error": import_error,
+        }
+
+    def invoke_stream_fallback(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        provider: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        temperature: Optional[float] = None,
+        system_prompt: Optional[str] = None,
+        history: Optional[List[Dict]] = None,
+    ):
+        """降级流式调用：返回一个 chunk 生成器。"""
+        try:
+            import openai
+        except ImportError:
+            raise RuntimeError("openai package is not installed.")
+
+        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+        base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+        default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
+
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        if history:
+            messages.extend(history)
+        messages.append({"role": "user", "content": prompt})
+
+        kwargs: Dict[str, Any] = {
+            "model": model or default_model,
+            "messages": messages,
+            "stream": True,
+        }
+        if max_tokens is not None:
+            kwargs["max_tokens"] = max_tokens
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        return client.chat.completions.create(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# IAM 辅助函数（本地单用户）
+# ---------------------------------------------------------------------------
+
+_USER_PROFILE_FILE = os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.qeeclaw_hermes")), "user_profile.json")
+
+_DEFAULT_USER_PROFILE: Dict[str, Any] = {
+    "id": 1,
+    "username": "local-admin",
+    "full_name": "本地管理员",
+    "email": None,
+    "phone": None,
+    "role": "ADMIN",
+    "is_active": True,
+    "last_login_time": None,
+    "created_time": "2026-01-01T00:00:00Z",
+    "wallet_balance": 0,
+    "is_enterprise_verified": False,
+    "teams": [{"id": 1, "name": "local", "is_personal": True, "owner_id": 1}],
+}
+
+
+def _load_user_profile() -> Dict[str, Any]:
+    """加载本地用户配置，不存在则返回默认值。"""
+    if os.path.isfile(_USER_PROFILE_FILE):
+        try:
+            with open(_USER_PROFILE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return dict(_DEFAULT_USER_PROFILE)
+
+
+def _save_user_profile(profile: Dict[str, Any]):
+    """保存用户配置到磁盘。"""
+    try:
+        os.makedirs(os.path.dirname(_USER_PROFILE_FILE), exist_ok=True)
+        with open(_USER_PROFILE_FILE, "w", encoding="utf-8") as f:
+            json.dump(profile, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save user profile: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Models 辅助函数
+# ---------------------------------------------------------------------------
+
+_model_id_counter = 0
+_model_id_map: Dict[str, int] = {}
+
+
+def _get_model_id(model_name: str) -> int:
+    """为模型名分配稳定的数字 ID。"""
+    global _model_id_counter
+    if model_name not in _model_id_map:
+        _model_id_counter += 1
+        _model_id_map[model_name] = _model_id_counter
+    return _model_id_map[model_name]
+
+
+def _infer_provider_from_url(base_url: str) -> str:
+    """从 OPENAI_BASE_URL 推断 provider 名。"""
+    if not base_url:
+        return "openai"
+    base_url = base_url.lower()
+    if "openrouter" in base_url:
+        return "openrouter"
+    if "deepseek" in base_url:
+        return "deepseek"
+    if "dashscope" in base_url or "aliyun" in base_url:
+        return "dashscope"
+    if "localhost" in base_url or "127.0.0.1" in base_url:
+        return "local"
+    if "openai" in base_url:
+        return "openai"
+    return "custom"
+
+
+def _discover_models() -> List[Dict[str, Any]]:
+    """从环境变量和 AgentProfile 枚举可用模型。"""
+    models: Dict[str, Dict[str, Any]] = {}
+    base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+    provider = _infer_provider_from_url(base_url)
+    default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+
+    # 主模型
+    models[default_model] = {
+        "id": _get_model_id(default_model),
+        "provider_name": provider,
+        "model_name": default_model,
+        "provider_model_id": default_model,
+        "label": default_model,
+        "is_preferred": True,
+        "availability_status": "available",
+        "unit_price": 0,
+        "output_unit_price": 0,
+        "currency": "CNY",
+        "billing_mode": "token",
+        "text_unit_chars": 1000,
+        "text_min_amount": 0,
+    }
+
+    # 从 AgentProfile 收集额外模型
+    try:
+        from session_manager import get_session_manager
+        sm = get_session_manager()
+        for p in sm._profiles.values():
+            m = p.model
+            if m and m not in models:
+                models[m] = {
+                    "id": _get_model_id(m),
+                    "provider_name": provider,
+                    "model_name": m,
+                    "provider_model_id": m,
+                    "label": m,
+                    "is_preferred": False,
+                    "availability_status": "available",
+                    "unit_price": 0,
+                    "output_unit_price": 0,
+                    "currency": "CNY",
+                    "billing_mode": "token",
+                    "text_unit_chars": 1000,
+                    "text_min_amount": 0,
+                }
+    except Exception:
+        pass
+
+    return list(models.values())
+
+
+def _get_preferred_model() -> str:
+    """获取当前 preferred model：优先用户偏好 > 环境变量默认。"""
+    profile = _load_user_profile()
+    pref = (profile.get("preference") or {}).get("preferred_model")
+    if pref:
+        return pref
+    return os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+
+
+# ---------------------------------------------------------------------------
+# Workflow 辅助函数
+# ---------------------------------------------------------------------------
+
+_HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.qeeclaw_hermes"))
+_WORKFLOWS_FILE = os.path.join(_HERMES_HOME, "workflows.json")
+
+
+def _load_workflows() -> List[Dict[str, Any]]:
+    if os.path.isfile(_WORKFLOWS_FILE):
+        try:
+            with open(_WORKFLOWS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_workflows(workflows: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_WORKFLOWS_FILE), exist_ok=True)
+        with open(_WORKFLOWS_FILE, "w", encoding="utf-8") as f:
+            json.dump(workflows, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save workflows: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Device 辅助函数
+# ---------------------------------------------------------------------------
+
+_DEVICE_INFO_FILE = os.path.join(_HERMES_HOME, "device_info.json")
+
+
+def _load_device_info() -> Dict[str, Any]:
+    if os.path.isfile(_DEVICE_INFO_FILE):
+        try:
+            with open(_DEVICE_INFO_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    import platform as _platform
+    return {
+        "id": 1,
+        "device_name": _platform.node() or "local-device",
+        "hostname": _platform.node(),
+        "os_info": f"{_platform.system()} {_platform.release()}",
+        "status": "online",
+        "last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "created_time": "2026-01-01T00:00:00Z",
+        "team_id": 1,
+        "registration_mode": "local",
+        "installation_id": f"local-{uuid.uuid4().hex[:8]}",
+    }
+
+
+def _save_device_info(info: Dict[str, Any]):
+    try:
+        os.makedirs(os.path.dirname(_DEVICE_INFO_FILE), exist_ok=True)
+        with open(_DEVICE_INFO_FILE, "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save device info: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Approval 辅助函数
+# ---------------------------------------------------------------------------
+
+_APPROVALS_FILE = os.path.join(_HERMES_HOME, "approvals.json")
+
+
+def _load_approvals() -> List[Dict[str, Any]]:
+    if os.path.isfile(_APPROVALS_FILE):
+        try:
+            with open(_APPROVALS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_approvals(items: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_APPROVALS_FILE), exist_ok=True)
+        with open(_APPROVALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save approvals: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Audit 辅助函数
+# ---------------------------------------------------------------------------
+
+_AUDIT_EVENTS_FILE = os.path.join(_HERMES_HOME, "audit_events.json")
+
+
+def _load_audit_events() -> List[Dict[str, Any]]:
+    if os.path.isfile(_AUDIT_EVENTS_FILE):
+        try:
+            with open(_AUDIT_EVENTS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_audit_events(events: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_AUDIT_EVENTS_FILE), exist_ok=True)
+        with open(_AUDIT_EVENTS_FILE, "w", encoding="utf-8") as f:
+            json.dump(events, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save audit events: {e}")
+
+
+# ---------------------------------------------------------------------------
+# ApiKey 辅助函数
+# ---------------------------------------------------------------------------
+
+_API_KEYS_FILE = os.path.join(_HERMES_HOME, "api_keys.json")
+
+
+def _load_api_keys() -> Dict[str, Any]:
+    if os.path.isfile(_API_KEYS_FILE):
+        try:
+            with open(_API_KEYS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"app_keys": [], "llm_keys": []}
+
+
+def _save_api_keys(data: Dict[str, Any]):
+    try:
+        os.makedirs(os.path.dirname(_API_KEYS_FILE), exist_ok=True)
+        with open(_API_KEYS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save api keys: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Config 辅助函数
+# ---------------------------------------------------------------------------
+
+_KNOWLEDGE_CONFIG_FILE = os.path.join(_HERMES_HOME, "knowledge_config.json")
+
+
+def _load_knowledge_config() -> Dict[str, Any]:
+    if os.path.isfile(_KNOWLEDGE_CONFIG_FILE):
+        try:
+            with open(_KNOWLEDGE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"watch_dir": "", "auto_index": False}
+
+
+def _save_knowledge_config(config: Dict[str, Any]):
+    try:
+        os.makedirs(os.path.dirname(_KNOWLEDGE_CONFIG_FILE), exist_ok=True)
+        with open(_KNOWLEDGE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save knowledge config: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Skills / Cron 辅助函数（Bridge 原生实现）
+# ---------------------------------------------------------------------------
+
+def _parse_yaml_frontmatter(text: str) -> dict:
+    """从 SKILL.md 解析 YAML frontmatter，返回 metadata dict。"""
+    if not text.startswith("---"):
+        return {}
+    import re
+    match = re.search(r'\n---\s*\n', text[3:])
+    if not match:
+        return {}
+    yaml_str = text[3:match.start() + 3]
+    try:
+        if _HAS_YAML:
+            return yaml.safe_load(yaml_str) or {}
+        # 简易解析 fallback（无 PyYAML 时）
+        result = {}
+        for line in yaml_str.splitlines():
+            line = line.strip()
+            if ":" in line and not line.startswith("#"):
+                key, _, val = line.partition(":")
+                result[key.strip()] = val.strip().strip('"').strip("'")
+        return result
+    except Exception:
+        return {}
+
+
+def _list_skills_from_dir(skills_dir: str) -> list:
+    """扫描 skills_dir 下所有 SKILL.md，提取 name + description。"""
+    if not os.path.isdir(skills_dir):
+        return []
+    results = []
+    for root, dirs, files in os.walk(skills_dir):
+        if "SKILL.md" in files:
+            skill_md = os.path.join(root, "SKILL.md")
+            try:
+                with open(skill_md, "r", encoding="utf-8") as f:
+                    content = f.read()
+                meta = _parse_yaml_frontmatter(content)
+                dir_name = os.path.basename(root)
+                # 判断 category：如果 parent 不是 skills_dir 自身，则 parent 名即 category
+                parent = os.path.dirname(root)
+                category = None
+                if parent != skills_dir:
+                    category = os.path.basename(parent)
+                results.append({
+                    "name": meta.get("name", dir_name),
+                    "description": meta.get("description", ""),
+                    "category": category,
+                    "path": root,
+                })
+            except Exception:
+                pass
+    results.sort(key=lambda s: (s.get("category") or "", s["name"]))
+    return results
+
+
+def _find_skill_dir(skills_dir: str, name: str):
+    """在 skills_dir 中搜索匹配 name 的技能目录，返回路径或 None。"""
+    if not os.path.isdir(skills_dir):
+        return None
+    # 直接匹配
+    direct = os.path.join(skills_dir, name)
+    if os.path.isdir(direct) and os.path.isfile(os.path.join(direct, "SKILL.md")):
+        return direct
+    # 递归搜索
+    for root, dirs, files in os.walk(skills_dir):
+        if os.path.basename(root) == name and "SKILL.md" in files:
+            return root
+    return None
+
+
+def _read_skill_from_dir(skills_dir: str, name: str):
+    """读取指定技能的完整 SKILL.md 内容，返回 dict 或 None。"""
+    skill_dir = _find_skill_dir(skills_dir, name)
+    if not skill_dir:
+        return None
+    skill_md = os.path.join(skill_dir, "SKILL.md")
+    try:
+        with open(skill_md, "r", encoding="utf-8") as f:
+            content = f.read()
+        meta = _parse_yaml_frontmatter(content)
+        # 列出辅助文件
+        linked_files = []
+        for subdir in ("references", "templates", "scripts", "assets"):
+            subpath = os.path.join(skill_dir, subdir)
+            if os.path.isdir(subpath):
+                for fn in os.listdir(subpath):
+                    linked_files.append(f"{subdir}/{fn}")
+        return {
+            "name": meta.get("name", os.path.basename(skill_dir)),
+            "description": meta.get("description", ""),
+            "content": content,
+            "path": skill_dir,
+            "linked_files": linked_files,
+            "metadata": meta,
+        }
+    except Exception:
+        return None
+
+
+def _load_cron_jobs_for_profile(profile_name: str) -> list:
+    """从指定 profile 的 cron/jobs.json 加载任务列表。"""
+    pool = get_agent_pool()
+    profile_home = pool._ensure_profile_home(profile_name)
+    jobs_file = os.path.join(profile_home, "cron", "jobs.json")
+    if not os.path.isfile(jobs_file):
+        return []
+    try:
+        with open(jobs_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _save_cron_jobs_for_profile(profile_name: str, jobs: list):
+    """保存任务列表到指定 profile 的 cron/jobs.json。"""
+    pool = get_agent_pool()
+    profile_home = pool._ensure_profile_home(profile_name)
+    cron_dir = os.path.join(profile_home, "cron")
+    os.makedirs(cron_dir, exist_ok=True)
+    jobs_file = os.path.join(cron_dir, "jobs.json")
+    with open(jobs_file, "w", encoding="utf-8") as f:
+        json.dump(jobs, f, ensure_ascii=False, indent=2)
+
+
 class BridgeRequestHandler(BaseHTTPRequestHandler):
     """桥接服务的 HTTP 请求处理器。"""
 
@@ -286,6 +1102,139 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_agents_list()
         elif _path.startswith("/agents/") and _path.count("/") == 2:
             self._handle_agent_get()
+        # --- SDK 兼容路径 (/api/agent/*) ---
+        elif _path == "/api/agent/my-agents":
+            self._handle_api_agent_list()
+        elif _path == "/api/agent/tools":
+            self._handle_api_agent_tools()
+        elif _path == "/api/platform/memory/stats":
+            self._handle_memory_stats()
+        # --- Phase 2: Memory / Skills / Tools / Cron ---
+        elif _path == "/memory/stats":
+            self._handle_memory_stats_v2()
+        elif _path == "/tools" or _path == "/tools/":
+            self._handle_tools_list()
+        elif _path == "/skills" or _path == "/skills/":
+            self._handle_skills_list()
+        elif _path.startswith("/skills/") and _path.count("/") == 2:
+            self._handle_skill_get()
+        elif _path == "/cron" or _path == "/cron/":
+            self._handle_cron_list()
+        # --- Agent Templates ---
+        elif _path == "/agent_config/default":
+            self._handle_agent_config_default()
+        elif _path.startswith("/agent_config/") and _path.count("/") == 2:
+            self._handle_agent_config_get()
+        # --- IAM ---
+        elif _path == "/api/users/me":
+            self._handle_iam_get_profile()
+        elif _path == "/api/users/products":
+            self._handle_iam_list_products()
+        elif _path == "/api/users" or _path == "/api/users/":
+            self._handle_iam_list_users()
+        # --- Models ---
+        elif _path == "/api/platform/models/providers":
+            self._handle_models_providers()
+        elif _path == "/api/platform/models/runtimes":
+            self._handle_models_runtimes()
+        elif _path == "/api/platform/models/resolve":
+            self._handle_models_resolve()
+        elif _path == "/api/platform/models/route":
+            self._handle_models_route_get()
+        elif _path == "/api/platform/models/usage":
+            self._handle_models_usage()
+        elif _path == "/api/platform/models/cost":
+            self._handle_models_cost()
+        elif _path == "/api/platform/models/quota":
+            self._handle_models_quota()
+        elif _path == "/api/platform/models" or _path == "/api/platform/models/":
+            self._handle_models_list()
+        # --- Conversations ---
+        elif _path == "/api/platform/conversations/stats":
+            self._handle_conversations_stats()
+        elif _path == "/api/platform/conversations/groups" or _path == "/api/platform/conversations/groups/":
+            self._handle_conversations_groups()
+        elif _path.startswith("/api/platform/conversations/groups/") and _path.endswith("/messages"):
+            self._handle_conversations_group_messages()
+        elif _path == "/api/platform/conversations/history":
+            self._handle_conversations_history()
+        elif _path == "/api/platform/conversations" or _path == "/api/platform/conversations/":
+            self._handle_conversations_home()
+        # --- Billing ---
+        elif _path == "/api/billing/wallet":
+            self._handle_billing_wallet()
+        elif _path == "/api/billing/records":
+            self._handle_billing_records()
+        elif _path == "/api/billing/summary":
+            self._handle_billing_summary()
+        # --- Channels ---
+        elif _path.startswith("/api/platform/channels/wechat-work/config"):
+            self._handle_channel_wechat_work_config()
+        elif _path.startswith("/api/platform/channels/feishu/config"):
+            self._handle_channel_feishu_config()
+        elif _path.startswith("/api/platform/channels/wechat-personal-plugin/config"):
+            self._handle_channel_wechat_personal_plugin_config()
+        elif _path == "/api/platform/channels/wechat-personal-openclaw/qr/status":
+            self._handle_channel_openclaw_qr_status()
+        elif _path.startswith("/api/platform/channels/wechat-personal-openclaw/config"):
+            self._handle_channel_wechat_personal_openclaw_config()
+        elif _path == "/api/platform/channels/bindings":
+            self._handle_channel_bindings_list()
+        elif _path == "/api/platform/channels" or _path == "/api/platform/channels/":
+            self._handle_channels_overview()
+        # --- Tenant ---
+        elif _path == "/api/users/me/context":
+            self._handle_tenant_context()
+        elif _path == "/api/company/verification":
+            self._handle_company_verification_get()
+        # --- Devices ---
+        elif _path == "/api/platform/devices/account-state":
+            self._handle_devices_account_state()
+        elif _path == "/api/platform/devices/online":
+            self._handle_devices_online()
+        elif _path == "/api/platform/devices" or _path == "/api/platform/devices/":
+            self._handle_devices_list()
+        # --- Knowledge new paths ---
+        elif _path == "/api/platform/knowledge/config":
+            self._handle_platform_knowledge_config()
+        elif _path == "/api/platform/knowledge/search":
+            self._handle_platform_knowledge_search()
+        elif _path == "/api/platform/knowledge/download":
+            self._handle_platform_knowledge_download()
+        elif _path == "/api/platform/knowledge/stats":
+            self._handle_platform_knowledge_stats()
+        elif _path == "/api/platform/knowledge/list":
+            self._handle_platform_knowledge_list()
+        # --- Approval ---
+        elif _path.startswith("/api/platform/approvals/") and _path.count("/") == 4:
+            self._handle_approval_get()
+        elif _path == "/api/platform/approvals" or _path == "/api/platform/approvals/":
+            self._handle_approvals_list()
+        # --- Audit ---
+        elif _path == "/api/platform/audit/summary":
+            self._handle_audit_summary()
+        elif _path == "/api/platform/audit/events":
+            self._handle_audit_events_list()
+        # --- App Keys ---
+        elif _path == "/api/users/app-keys":
+            self._handle_app_keys_list()
+        # --- LLM Keys ---
+        elif _path == "/api/llm/keys":
+            self._handle_llm_keys_list()
+        # --- Workflows ---
+        elif _path.startswith("/api/workflows/executions/") and _path.endswith("/logs"):
+            self._handle_workflow_execution_logs()
+        elif _path.startswith("/api/workflows/") and _path.count("/") == 3:
+            self._handle_workflow_get()
+        elif _path == "/api/workflows" or _path == "/api/workflows/":
+            self._handle_workflows_list()
+        # --- Documents ---
+        elif _path.startswith("/api/products/") and _path.endswith("/documents"):
+            self._handle_product_documents()
+        elif _path.startswith("/api/documents/") and _path.count("/") == 3:
+            self._handle_document_get()
+        elif _path == "/api/documents" or _path == "/api/documents/":
+            self._handle_documents_list()
         else:
             _json_response(self, 404, {"error": "Not found"})
 
@@ -333,6 +1282,164 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_agent_create()
         elif self.path.startswith("/agents/") and self.path.endswith("/delete"):
             self._handle_agent_delete()
+        # --- SDK 兼容路径 (/api/agent/*) ---
+        elif self.path == "/api/agent/create":
+            self._handle_api_agent_create()
+        elif self.path == "/api/platform/memory/store":
+            self._handle_memory_store()
+        elif self.path == "/api/platform/memory/search":
+            self._handle_memory_search()
+        # --- Phase 2: Memory / Skills / Cron ---
+        elif self.path == "/memory/store":
+            self._handle_memory_store_v2()
+        elif self.path == "/memory/search":
+            self._handle_memory_search_v2()
+        elif self.path == "/memory/clear":
+            self._handle_memory_clear_v2()
+        elif self.path == "/skills/install":
+            self._handle_skill_install()
+        elif self.path == "/skills/uninstall":
+            self._handle_skill_uninstall()
+        elif self.path == "/cron":
+            self._handle_cron_create()
+        # --- Conversations ---
+        elif self.path == "/api/platform/conversations/messages":
+            self._handle_conversations_send()
+        # --- Channels ---
+        elif self.path == "/api/platform/channels/wechat-work/config":
+            self._handle_channel_wechat_work_config_update()
+        elif self.path == "/api/platform/channels/feishu/config":
+            self._handle_channel_feishu_config_update()
+        elif self.path == "/api/platform/channels/wechat-personal-plugin/config":
+            self._handle_channel_wechat_personal_plugin_config_update()
+        elif self.path == "/api/platform/channels/bindings/create":
+            self._handle_channel_binding_create()
+        elif self.path == "/api/platform/channels/bindings/disable":
+            self._handle_channel_binding_disable()
+        elif self.path == "/api/platform/channels/bindings/regenerate-code":
+            self._handle_channel_binding_regenerate_code()
+        elif self.path == "/api/platform/channels/wechat-personal-openclaw/qr/start":
+            self._handle_channel_openclaw_qr_start()
+        # --- Knowledge new paths ---
+        elif self.path == "/api/platform/knowledge/config/update":
+            self._handle_platform_knowledge_config_update()
+        elif self.path == "/api/platform/knowledge/upload":
+            self._handle_platform_knowledge_upload()
+        elif self.path == "/api/platform/knowledge/delete":
+            self._handle_platform_knowledge_delete()
+        # --- Approval ---
+        elif self.path.startswith("/api/platform/approvals/") and self.path.endswith("/resolve"):
+            self._handle_approval_resolve()
+        elif self.path == "/api/platform/approvals/request":
+            self._handle_approval_request()
+        # --- Audit ---
+        elif self.path == "/api/platform/audit/events":
+            self._handle_audit_record()
+        # --- Company ---
+        elif self.path == "/api/company/verification/approve":
+            self._handle_company_verification_approve()
+        elif self.path == "/api/company/verification":
+            self._handle_company_verification_submit()
+        # --- Devices ---
+        elif self.path == "/api/platform/devices/bootstrap":
+            self._handle_devices_bootstrap()
+        elif self.path == "/api/platform/devices/pair-code":
+            self._handle_devices_pair_code()
+        elif self.path == "/api/platform/devices/claim":
+            self._handle_devices_claim()
+        # --- Workflow ---
+        elif self.path.startswith("/api/workflows/") and self.path.endswith("/run"):
+            self._handle_workflow_run()
+        elif self.path == "/api/workflows":
+            self._handle_workflow_save()
+        # --- ApiKey ---
+        elif self.path == "/api/users/app-keys/default/token":
+            self._handle_app_key_issue_token()
+        elif self.path == "/api/users/app-keys":
+            self._handle_app_key_create()
+        elif self.path == "/api/llm/keys":
+            self._handle_llm_key_create()
+        # --- Policy ---
+        elif self.path == "/api/platform/policy/tool-access/check":
+            self._handle_policy_check()
+        elif self.path == "/api/platform/policy/data-access/check":
+            self._handle_policy_check()
+        elif self.path == "/api/platform/policy/exec-access/check":
+            self._handle_policy_check()
+        # --- Voice ---
+        elif self.path == "/api/asr":
+            self._handle_voice_not_implemented()
+        elif self.path == "/api/tts":
+            self._handle_voice_not_implemented()
+        elif self.path == "/api/audio/speech":
+            self._handle_voice_not_implemented()
+        else:
+            _json_response(self, 404, {"error": "Not found"})
+
+    def do_PUT(self):
+        if not self._check_auth():
+            return
+        _path = urllib.parse.urlparse(self.path).path
+        # PUT /api/agent/{id}
+        if _path.startswith("/api/agent/") and _path.count("/") == 3:
+            self._handle_api_agent_update()
+        # --- Phase 2: Tools ---
+        elif _path == "/tools":
+            self._handle_tools_update()
+        # --- IAM ---
+        elif _path == "/api/users/me/preference":
+            self._handle_iam_update_preference()
+        elif _path == "/api/users/me":
+            self._handle_iam_update_profile()
+        # --- Models ---
+        elif _path == "/api/platform/models/route":
+            self._handle_models_route_set()
+        # --- App Keys ---
+        elif _path.startswith("/api/users/app-keys/") and _path.endswith("/name"):
+            self._handle_app_key_rename()
+        # --- Devices ---
+        elif _path.startswith("/api/platform/devices/") and _path.count("/") == 4:
+            self._handle_device_update()
+        # --- LLM Keys ---
+        elif _path.startswith("/api/llm/keys/") and _path.count("/") == 4:
+            self._handle_llm_key_update()
+        else:
+            _json_response(self, 404, {"error": "Not found"})
+
+    def do_DELETE(self):
+        if not self._check_auth():
+            return
+        _path = urllib.parse.urlparse(self.path).path
+        # DELETE /api/agent/{id}
+        if _path.startswith("/api/agent/") and _path.count("/") == 3:
+            self._handle_api_agent_delete()
+        # DELETE /api/platform/memory/agent/{agentId}
+        elif _path.startswith("/api/platform/memory/agent/"):
+            self._handle_memory_clear_agent()
+        # DELETE /api/platform/memory/{entryId}
+        elif _path.startswith("/api/platform/memory/"):
+            self._handle_memory_delete()
+        # --- Phase 2: Cron ---
+        elif _path.startswith("/cron/") and _path.count("/") == 2:
+            self._handle_cron_delete()
+        # --- App Keys ---
+        elif _path.startswith("/api/users/app-keys/"):
+            self._handle_app_key_delete()
+        # --- LLM Keys ---
+        elif _path.startswith("/api/llm/keys/"):
+            self._handle_llm_key_delete()
+        # --- Devices ---
+        elif _path.startswith("/api/platform/devices/") and _path.count("/") == 4:
+            self._handle_device_delete()
+        else:
+            _json_response(self, 404, {"error": "Not found"})
+
+    def do_PATCH(self):
+        if not self._check_auth():
+            return
+        _path = urllib.parse.urlparse(self.path).path
+        if _path.startswith("/api/users/app-keys/"):
+            self._handle_app_key_set_active()
         else:
             _json_response(self, 404, {"error": "Not found"})
 
@@ -365,6 +1472,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+            # AgentPool 信息
+            pool = get_agent_pool()
+            pool_info = {
+                "available": pool.available,
+                "base_hermes_home": pool._base_hermes_home,
+                "profiles_home": pool.profiles_home,
+            }
+
             _json_response(self, 200, {
                 "status": "ok",
                 "version": BRIDGE_VERSION,
@@ -372,6 +1487,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "hermes_dir": os.path.abspath(HERMES_AGENT_DIR),
                 "python_version": sys.version,
                 "knowledge_base": kb_info,
+                "agent_pool": pool_info,
             })
         except ImportError as e:
             _json_response(self, 503, {
@@ -382,7 +1498,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             })
 
     def _handle_invoke(self):
-        """非流式模型调用端点。支持 session_id 实现多轮对话。"""
+        """非流式模型调用端点。支持 session_id 实现多轮对话。
+
+        使用 AgentPool 调用 AIAgent.run_conversation()，
+        获得完整的 Tool Calling / Memory / Delegate 能力。
+        当 AIAgent 不可用时自动降级为裸 LLM 调用。
+        """
         try:
             body = _read_json_body(self)
             prompt = body.get("prompt", "")
@@ -401,11 +1522,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
             if not prompt:
                 _json_response(self, 400, {"error": "prompt is required"})
-                return
-
-            err = _get_hermes_error()
-            if err:
-                _json_response(self, 503, {"error": err})
                 return
 
             # RAG: 自动检索知识库并注入上下文
@@ -445,21 +1561,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     effective_system_prompt = profile.system_prompt
                 if temperature is None and profile.temperature is not None:
                     temperature = profile.temperature
-                if max_tokens is None and profile.max_tokens is not None:
-                    max_tokens = profile.max_tokens
-                if not model and profile.model:
-                    model = profile.model
 
-            # 调用 hermes-agent 的模型（带历史上下文）
-            history = session.get_messages(max_turns=max_history_turns)
-            result = self._invoke_hermes(
+            # 通过 AgentPool 调用（AIAgent 或 fallback）
+            pool = get_agent_pool()
+            result = pool.invoke(
                 prompt=prompt,
+                profile=profile,
+                session=session,
+                system_prompt=effective_system_prompt or None,
                 model=model,
                 provider=provider,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                system_prompt=effective_system_prompt or None,
-                history=history,
+                max_history_turns=max_history_turns,
             )
 
             # 记录本轮对话到 session
@@ -692,6 +1806,306 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             _json_response(self, 500, {"error": str(e)})
 
+    # ----- SDK 兼容接口 (/api/agent/*) -----
+
+    def _handle_api_agent_list(self):
+        """GET /api/agent/my-agents — SDK 兼容：列出智体（平台响应格式）。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            agents = [_profile_to_sdk_agent(p) for p in sm._profiles.values()]
+            _platform_json_response(self, 200, agents)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_api_agent_tools(self):
+        """GET /api/agent/tools — SDK 兼容：列出系统工具。
+
+        从 hermes-agent 的 toolsets 中获取真实工具列表。
+        支持 ?agent_id= 查询参数按 profile 过滤工具集。
+        """
+        try:
+            _ensure_hermes_on_path()
+            tools: List[Dict[str, Any]] = []
+
+            # 解析 query string 中的 agent_id（可选）
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            agent_id_str = (params.get("agent_id") or [None])[0]
+
+            # 尝试获取 profile 以支持 per-agent toolset 过滤
+            enabled_ts = None
+            disabled_ts = None
+            if agent_id_str:
+                try:
+                    from session_manager import get_session_manager
+                    sm = get_session_manager()
+                    profile = _find_profile_by_id(sm, int(agent_id_str))
+                    if profile:
+                        if not profile.tools_enabled:
+                            _platform_json_response(self, 200, [])
+                            return
+                        enabled_ts = profile.enabled_toolsets
+                        disabled_ts = profile.disabled_toolsets
+                except (ValueError, TypeError):
+                    pass
+
+            try:
+                from model_tools import get_tool_definitions
+                raw_tools = get_tool_definitions(
+                    enabled_toolsets=enabled_ts,
+                    disabled_toolsets=disabled_ts,
+                    quiet_mode=True,
+                )
+                for t in raw_tools:
+                    fn = t.get("function", {})
+                    tools.append({
+                        "name": fn.get("name", ""),
+                        "description": fn.get("description", ""),
+                        "parameters": fn.get("parameters", {}),
+                    })
+            except ImportError:
+                pass  # hermes-agent 不可用，返回空列表
+
+            _platform_json_response(self, 200, tools)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_api_agent_create(self):
+        """POST /api/agent/create — SDK 兼容：创建智体（平台响应格式）。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            body = _read_json_body(self)
+
+            name = body.get("name", "")
+            description = body.get("description", "")
+            model = body.get("model", "")
+            runtime_type = body.get("runtime_type", "openclaw")
+
+            if not name:
+                _platform_json_response(self, 400, None, "name is required")
+                return
+
+            # 生成唯一 code（作为 profile name）
+            code = "".join(
+                c if c.isalnum() or c in "_-" else "_"
+                for c in name.lower()
+            ).strip("_")
+            if not code:
+                code = f"agent_{int(time.time())}"
+            # 避免 code 冲突
+            base_code = code
+            counter = 1
+            while sm.get_profile(code):
+                code = f"{base_code}_{counter}"
+                counter += 1
+
+            profile_data = {
+                "name": code,
+                "display_name": name,
+                "system_prompt": description,
+                "model": model,
+                "metadata": {
+                    "description": description,
+                    "runtime_type": runtime_type,
+                },
+            }
+            profile = sm.create_profile(profile_data)
+            agent_id = _get_agent_id(profile.name)
+
+            _platform_json_response(self, 200, {
+                "id": agent_id,
+                "code": profile.name,
+                "runtime_type": runtime_type,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_api_agent_update(self):
+        """PUT /api/agent/{id} — SDK 兼容：更新智体（平台响应格式）。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+
+            # 从路径提取 agent_id: /api/agent/{id}
+            _path = urllib.parse.urlparse(self.path).path
+            parts = _path.strip("/").split("/")
+            try:
+                agent_id = int(parts[-1])
+            except (IndexError, ValueError):
+                _platform_json_response(self, 400, None, "invalid agent id")
+                return
+
+            profile = _find_profile_by_id(sm, agent_id)
+            if not profile:
+                _platform_json_response(self, 404, None, f"agent {agent_id} not found")
+                return
+
+            body = _read_json_body(self)
+            name = body.get("name", profile.display_name)
+            description = body.get("description", "")
+            model = body.get("model", profile.model)
+            runtime_type = body.get("runtime_type",
+                                    profile.metadata.get("runtime_type", "openclaw"))
+
+            # 更新 profile 字段
+            profile.display_name = name
+            if description:
+                profile.system_prompt = description
+                profile.metadata["description"] = description
+            if model:
+                profile.model = model
+            profile.metadata["runtime_type"] = runtime_type
+            sm._save_custom_profiles()
+
+            _platform_json_response(self, 200, _profile_to_sdk_agent(profile))
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_api_agent_delete(self):
+        """DELETE /api/agent/{id} — SDK 兼容：删除智体（平台响应格式）。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+
+            _path = urllib.parse.urlparse(self.path).path
+            parts = _path.strip("/").split("/")
+            try:
+                agent_id = int(parts[-1])
+            except (IndexError, ValueError):
+                _platform_json_response(self, 400, None, "invalid agent id")
+                return
+
+            profile = _find_profile_by_id(sm, agent_id)
+            if not profile:
+                _platform_json_response(self, 404, None, f"agent {agent_id} not found")
+                return
+
+            # 内建 profile 不允许删除
+            from session_manager import _BUILTIN_PROFILES
+            if profile.name in _BUILTIN_PROFILES:
+                _platform_json_response(self, 400, None,
+                                        f"cannot delete built-in agent '{profile.display_name}'")
+                return
+
+            sm.delete_profile(profile.name)
+            _platform_json_response(self, 200, {"id": agent_id, "deleted": True})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Memory 接口 (/api/platform/memory/*) -----
+
+    def _handle_memory_store(self):
+        """POST /api/platform/memory/store — 存入记忆。"""
+        try:
+            from memory_store import store_memory
+            body = _read_json_body(self)
+            entry = store_memory(
+                content=body.get("content", ""),
+                category=body.get("category", "other"),
+                importance=body.get("importance", 0.5),
+                team_id=body.get("team_id"),
+                runtime_type=body.get("runtime_type", "openclaw"),
+                device_id=body.get("device_id"),
+                agent_id=body.get("agent_id"),
+                source_session=body.get("source_session"),
+                skip_duplicate_check=body.get("skip_duplicate_check", False),
+            )
+            _platform_json_response(self, 200, entry)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_memory_search(self):
+        """POST /api/platform/memory/search — 搜索记忆。"""
+        try:
+            from memory_store import search_memory
+            body = _read_json_body(self)
+            scope = {}
+            for key in ("team_id", "runtime_type", "device_id", "agent_id"):
+                val = body.get(key)
+                if val is not None:
+                    scope[key] = val
+            results = search_memory(
+                query=body.get("query", ""),
+                limit=body.get("limit", 5),
+                threshold=body.get("threshold", 0.0),
+                scope=scope,
+            )
+            _platform_json_response(self, 200, results)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_memory_delete(self):
+        """DELETE /api/platform/memory/{entryId} — 删除单条记忆。"""
+        try:
+            from memory_store import delete_memory
+            _path = urllib.parse.urlparse(self.path).path
+            entry_id = _path.replace("/api/platform/memory/", "").strip("/")
+            entry_id = urllib.parse.unquote(entry_id)
+
+            # scope 从 query string 获取
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            scope = {}
+            for key in ("team_id", "agent_id", "runtime_type"):
+                vals = params.get(key)
+                if vals:
+                    scope[key] = vals[0]
+
+            deleted = delete_memory(entry_id, scope=scope)
+            _platform_json_response(self, 200, {"deleted": deleted})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_memory_clear_agent(self):
+        """DELETE /api/platform/memory/agent/{agentId} — 清除 agent 全部记忆。"""
+        try:
+            from memory_store import clear_agent_memory
+            _path = urllib.parse.urlparse(self.path).path
+            agent_id = _path.replace("/api/platform/memory/agent/", "").strip("/")
+            agent_id = urllib.parse.unquote(agent_id)
+
+            # scope 从 query string 获取
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            scope = {}
+            for key in ("team_id", "runtime_type"):
+                vals = params.get(key)
+                if vals:
+                    scope[key] = vals[0]
+
+            cleared_count = clear_agent_memory(agent_id, scope=scope)
+            _platform_json_response(self, 200, {"cleared_count": cleared_count})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_memory_stats(self):
+        """GET /api/platform/memory/stats — 记忆统计。"""
+        try:
+            from memory_store import get_memory_stats
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            scope = {}
+            for key in ("team_id", "agent_id", "runtime_type"):
+                vals = params.get(key)
+                if vals:
+                    scope[key] = vals[0]
+            stats = get_memory_stats(scope=scope)
+            _platform_json_response(self, 200, stats)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
     # ----- WeChat Native Gateway (Path A) Endpoints -----
 
     def _handle_wechat_check(self):
@@ -837,7 +2251,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle_invoke_stream(self):
         """流式模型调用端点 (SSE)。支持 session_id 实现多轮对话。
 
-        使用 OpenAI SDK 的 stream=True 实现真正的逐 token 流式推理。
+        优先使用 AIAgent 的 stream_callback 实现流式输出；
+        当 AIAgent 不可用时降级为 OpenAI SDK stream=True。
         """
         try:
             body = _read_json_body(self)
@@ -845,11 +2260,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
             if not prompt:
                 _json_response(self, 400, {"error": "prompt is required"})
-                return
-
-            err = _get_hermes_error()
-            if err:
-                _json_response(self, 503, {"error": err})
                 return
 
             # 多轮对话 + 多智体参数
@@ -866,8 +2276,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
-            # 构建流式调用
-            _ensure_hermes_on_path()
             model_name = body.get("model")
             provider_name = body.get("provider")
             system_prompt = body.get("system_prompt")
@@ -893,10 +2301,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     system_prompt = profile.system_prompt
                 if temperature is None and profile.temperature is not None:
                     temperature = profile.temperature
-                if max_tokens is None and profile.max_tokens is not None:
-                    max_tokens = profile.max_tokens
-                if not model_name and profile.model:
-                    model_name = profile.model
 
             # RAG: 自动检索知识库并注入上下文
             if use_knowledge:
@@ -923,78 +2327,59 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self.wfile.write(f"data: {meta_event}\n\n".encode("utf-8"))
             self.wfile.flush()
 
-            # 解析 provider 配置
-            api_key = ""
-            base_url = None
-            _default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
-            resolved_model = model_name or _default_model
+            pool = get_agent_pool()
+            collected_text: List[str] = []
+            wfile = self.wfile
 
-            try:
-                from hermes_cli.runtime_provider import resolve_runtime_provider
-                p_name = provider_name or "openrouter"
-                runtime = resolve_runtime_provider(requested=p_name)
-                api_key = runtime.get("api_key", "")
-                base_url = runtime.get("base_url")
-                resolved_model = runtime.get("model", resolved_model)
-            except ImportError:
-                pass
-
-            # 环境变量优先：OPENAI_API_KEY / OPENAI_BASE_URL 始终覆盖 runtime 配置
-            env_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
-            env_base = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-            if env_key:
-                api_key = env_key
-            if env_base:
-                base_url = env_base
-            # 兜底默认
-            if not base_url:
-                base_url = "https://openrouter.ai/api/v1"
-
-            import openai
-            client = openai.OpenAI(api_key=api_key, base_url=base_url)
-
-            # 构建带历史上下文的 messages
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            # 注入历史消息
-            history = session.get_messages(max_turns=max_history_turns)
-            messages.extend(history)
-            # 当前用户消息
-            messages.append({"role": "user", "content": prompt})
-
-            kwargs: Dict[str, Any] = {
-                "model": resolved_model,
-                "messages": messages,
-                "stream": True,
-            }
-            if max_tokens is not None:
-                kwargs["max_tokens"] = max_tokens
-            if temperature is not None:
-                kwargs["temperature"] = temperature
-
-            # 真正的流式输出
-            collected_text = []
-            stream = client.chat.completions.create(**kwargs)
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                if delta and delta.content:
-                    collected_text.append(delta.content)
+            def _sse_stream_callback(delta: str):
+                """将 AIAgent 的文本 delta 写入 SSE。"""
+                if delta:
+                    collected_text.append(delta)
                     sse_data = json.dumps({
                         "type": "text",
-                        "content": delta.content,
+                        "content": delta,
                     }, ensure_ascii=False)
-                    self.wfile.write(f"data: {sse_data}\n\n".encode("utf-8"))
-                    self.wfile.flush()
+                    wfile.write(f"data: {sse_data}\n\n".encode("utf-8"))
+                    wfile.flush()
 
-                # 检查是否完成
-                if chunk.choices[0].finish_reason:
-                    break
+            if pool.available:
+                # --- AIAgent 流式模式 ---
+                result = pool.invoke(
+                    prompt=prompt,
+                    profile=profile,
+                    session=session,
+                    system_prompt=system_prompt or None,
+                    model=model_name,
+                    provider=provider_name,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    max_history_turns=max_history_turns,
+                    stream_callback=_sse_stream_callback,
+                )
+                full_response = result.get("text", "")
+            else:
+                # --- Fallback 流式模式（裸 OpenAI streaming）---
+                history = session.get_messages(max_turns=max_history_turns)
+                stream = pool.invoke_stream_fallback(
+                    prompt=prompt,
+                    model=model_name,
+                    provider=provider_name,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system_prompt=system_prompt,
+                    history=history,
+                )
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if delta and delta.content:
+                        _sse_stream_callback(delta.content)
+                    if chunk.choices[0].finish_reason:
+                        break
+                full_response = "".join(collected_text)
 
             # 记录本轮对话到 session
-            full_response = "".join(collected_text)
             if full_response:
                 sm.append_turn(actual_session_id, prompt, full_response)
 
@@ -1414,7 +2799,2251 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             _json_response(self, 500, {"error": str(e)})
 
-    # ----- Hermes 调用核心 -----
+    # =====================================================================
+    # Phase 2: Memory / Skills / Tools / Cron 新增接口
+    # =====================================================================
+
+    # ----- Memory /memory/* (v2 路由，干净路径别名) -----
+
+    def _handle_memory_store_v2(self):
+        """POST /memory/store — 存入记忆。"""
+        try:
+            from memory_store import store_memory
+            body = _read_json_body(self)
+            entry = store_memory(
+                content=body.get("content", ""),
+                category=body.get("category", "other"),
+                importance=body.get("importance", 0.5),
+                agent_id=body.get("agent_profile") or body.get("agent_id"),
+                runtime_type=body.get("runtime_type", "openclaw"),
+                source_session=body.get("source_session"),
+            )
+            _json_response(self, 200, {"success": True, "entry": entry})
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_memory_search_v2(self):
+        """POST /memory/search — 搜索记忆。"""
+        try:
+            from memory_store import search_memory
+            body = _read_json_body(self)
+            scope = {}
+            agent_profile = body.get("agent_profile")
+            if agent_profile:
+                scope["agent_id"] = agent_profile
+            for key in ("team_id", "runtime_type", "device_id"):
+                val = body.get(key)
+                if val is not None:
+                    scope[key] = val
+            results = search_memory(
+                query=body.get("query", ""),
+                limit=body.get("limit", body.get("top_k", 5)),
+                threshold=body.get("threshold", 0.0),
+                scope=scope,
+            )
+            _json_response(self, 200, {"success": True, "results": results})
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_memory_stats_v2(self):
+        """GET /memory/stats — 记忆统计。"""
+        try:
+            from memory_store import get_memory_stats
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            scope = {}
+            agent_profile = params.get("agent_profile")
+            if agent_profile:
+                scope["agent_id"] = agent_profile[0]
+            stats = get_memory_stats(scope=scope)
+            _json_response(self, 200, {"success": True, **stats})
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_memory_clear_v2(self):
+        """POST /memory/clear — 清除指定 agent_profile 的全部记忆。"""
+        try:
+            from memory_store import clear_agent_memory
+            body = _read_json_body(self)
+            agent_profile = body.get("agent_profile")
+            if not agent_profile:
+                _json_response(self, 400, {"error": "agent_profile is required"})
+                return
+            cleared = clear_agent_memory(agent_profile)
+            _json_response(self, 200, {"success": True, "cleared_count": cleared})
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    # ----- Tools /tools/* -----
+
+    def _handle_tools_list(self):
+        """GET /tools — 列出所有工具集，标注当前 profile 的启用状态。"""
+        try:
+            _ensure_hermes_on_path()
+            from toolsets import get_all_toolsets, resolve_toolset
+            from session_manager import get_session_manager
+
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            profile_name = (params.get("agent_profile") or [None])[0]
+
+            sm = get_session_manager()
+            profile = sm.get_profile(profile_name) if profile_name else None
+
+            all_toolsets = get_all_toolsets()
+            result = []
+            for ts_name, ts_def in all_toolsets.items():
+                tools = resolve_toolset(ts_name)
+                entry = {
+                    "name": ts_name,
+                    "description": ts_def.get("description", ""),
+                    "tools": sorted(tools),
+                    "tool_count": len(tools),
+                }
+                # 标注 profile 级别启用状态
+                if profile:
+                    if profile.enabled_toolsets is not None:
+                        entry["enabled"] = ts_name in profile.enabled_toolsets
+                    elif profile.disabled_toolsets is not None:
+                        entry["enabled"] = ts_name not in profile.disabled_toolsets
+                    else:
+                        entry["enabled"] = True
+                result.append(entry)
+
+            result.sort(key=lambda x: x["name"])
+            _json_response(self, 200, {
+                "success": True,
+                "toolsets": result,
+                "count": len(result),
+                "agent_profile": profile_name,
+            })
+        except ImportError:
+            _json_response(self, 200, {
+                "success": True,
+                "toolsets": [],
+                "count": 0,
+                "message": "hermes-agent not available, toolsets unavailable",
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_tools_update(self):
+        """PUT /tools — 更新 profile 的 enabled/disabled toolsets 配置。"""
+        try:
+            from session_manager import get_session_manager
+            body = _read_json_body(self)
+            agent_profile = body.get("agent_profile")
+            if not agent_profile:
+                _json_response(self, 400, {"error": "agent_profile is required"})
+                return
+
+            sm = get_session_manager()
+            profile = sm.get_profile(agent_profile)
+            if not profile:
+                _json_response(self, 404, {"error": f"agent '{agent_profile}' not found"})
+                return
+
+            # 构建更新数据
+            profile_data = profile.to_dict()
+            if "enabled" in body:
+                profile_data["enabled_toolsets"] = body["enabled"]
+                profile_data.pop("disabled_toolsets", None)
+            elif "disabled" in body:
+                profile_data["disabled_toolsets"] = body["disabled"]
+                profile_data.pop("enabled_toolsets", None)
+            else:
+                _json_response(self, 400, {"error": "Either 'enabled' or 'disabled' toolset list is required"})
+                return
+
+            sm.create_profile(profile_data)
+            _json_response(self, 200, {
+                "success": True,
+                "message": f"Toolsets updated for agent '{agent_profile}'",
+                "enabled_toolsets": profile_data.get("enabled_toolsets"),
+                "disabled_toolsets": profile_data.get("disabled_toolsets"),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    # ----- Skills /skills/* (Bridge 原生文件操作) -----
+
+    def _handle_skills_list(self):
+        """GET /skills — 列出指定 profile 的技能。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            profile_name = (params.get("agent_profile") or ["default"])[0]
+
+            pool = get_agent_pool()
+            profile_home = pool._ensure_profile_home(profile_name)
+            skills_dir = os.path.join(profile_home, "skills")
+
+            skills = _list_skills_from_dir(skills_dir)
+            _json_response(self, 200, {
+                "success": True,
+                "skills": skills,
+                "count": len(skills),
+                "agent_profile": profile_name,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_skill_get(self):
+        """GET /skills/{name} — 查看技能内容。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            parts = _path.strip("/").split("/")
+            skill_name = parts[1] if len(parts) >= 2 else None
+            if not skill_name:
+                _json_response(self, 400, {"error": "skill name is required"})
+                return
+
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            profile_name = (params.get("agent_profile") or ["default"])[0]
+
+            pool = get_agent_pool()
+            profile_home = pool._ensure_profile_home(profile_name)
+            skills_dir = os.path.join(profile_home, "skills")
+
+            result = _read_skill_from_dir(skills_dir, skill_name)
+            if result is None:
+                _json_response(self, 404, {"error": f"skill '{skill_name}' not found"})
+                return
+            _json_response(self, 200, {"success": True, **result})
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_skill_install(self):
+        """POST /skills/install — 创建/安装技能。"""
+        try:
+            body = _read_json_body(self)
+            name = body.get("name") or body.get("skill_name")
+            content = body.get("content")
+            profile_name = body.get("agent_profile", "default")
+
+            if not name:
+                _json_response(self, 400, {"error": "name is required"})
+                return
+            if not content:
+                _json_response(self, 400, {"error": "content (SKILL.md text) is required"})
+                return
+
+            pool = get_agent_pool()
+            profile_home = pool._ensure_profile_home(profile_name)
+            skills_dir = os.path.join(profile_home, "skills")
+            category = body.get("category")
+
+            # 构建目标目录
+            if category:
+                skill_dir = os.path.join(skills_dir, category, name)
+            else:
+                skill_dir = os.path.join(skills_dir, name)
+
+            if os.path.isdir(skill_dir) and os.path.isfile(os.path.join(skill_dir, "SKILL.md")):
+                _json_response(self, 409, {"error": f"skill '{name}' already exists"})
+                return
+
+            os.makedirs(skill_dir, exist_ok=True)
+            skill_md_path = os.path.join(skill_dir, "SKILL.md")
+            with open(skill_md_path, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            _json_response(self, 200, {
+                "success": True,
+                "message": f"Skill '{name}' installed.",
+                "path": skill_dir,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_skill_uninstall(self):
+        """POST /skills/uninstall — 删除/卸载技能。"""
+        try:
+            import shutil
+            body = _read_json_body(self)
+            name = body.get("name") or body.get("skill_name")
+            profile_name = body.get("agent_profile", "default")
+
+            if not name:
+                _json_response(self, 400, {"error": "name is required"})
+                return
+
+            pool = get_agent_pool()
+            profile_home = pool._ensure_profile_home(profile_name)
+            skills_dir = os.path.join(profile_home, "skills")
+
+            # 在 skills_dir 中搜索匹配的技能
+            skill_dir = _find_skill_dir(skills_dir, name)
+            if not skill_dir:
+                _json_response(self, 404, {"error": f"skill '{name}' not found"})
+                return
+
+            shutil.rmtree(skill_dir)
+
+            # 清理空的 category 目录
+            parent = os.path.dirname(skill_dir)
+            if parent != skills_dir and os.path.isdir(parent) and not os.listdir(parent):
+                os.rmdir(parent)
+
+            _json_response(self, 200, {
+                "success": True,
+                "message": f"Skill '{name}' uninstalled.",
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    # ----- Cron /cron/* (Bridge 原生 JSON 存储) -----
+
+    def _handle_cron_list(self):
+        """GET /cron — 列出指定 profile 的定时任务。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            profile_name = (params.get("agent_profile") or ["default"])[0]
+
+            jobs = _load_cron_jobs_for_profile(profile_name)
+            _json_response(self, 200, {
+                "success": True,
+                "jobs": jobs,
+                "count": len(jobs),
+                "agent_profile": profile_name,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_cron_create(self):
+        """POST /cron — 创建定时任务。"""
+        try:
+            body = _read_json_body(self)
+            profile_name = body.get("agent_profile", "default")
+            prompt = body.get("prompt")
+            schedule = body.get("schedule")
+            name = body.get("name")
+
+            if not schedule:
+                _json_response(self, 400, {"error": "schedule is required"})
+                return
+            if not prompt:
+                _json_response(self, 400, {"error": "prompt is required"})
+                return
+
+            import uuid as _uuid
+            job = {
+                "id": f"cron_{_uuid.uuid4().hex[:12]}",
+                "name": name or prompt[:50],
+                "prompt": prompt,
+                "schedule": schedule,
+                "agent_profile": profile_name,
+                "enabled": True,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "next_run_at": None,
+            }
+
+            jobs = _load_cron_jobs_for_profile(profile_name)
+            jobs.append(job)
+            _save_cron_jobs_for_profile(profile_name, jobs)
+
+            _json_response(self, 200, {
+                "success": True,
+                "job": job,
+                "message": f"Cron job '{job['name']}' created.",
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_cron_delete(self):
+        """DELETE /cron/{job_id} — 删除定时任务。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            parts = _path.strip("/").split("/")
+            job_id = parts[1] if len(parts) >= 2 else None
+            if not job_id:
+                _json_response(self, 400, {"error": "job_id is required"})
+                return
+
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            profile_name = (params.get("agent_profile") or ["default"])[0]
+
+            jobs = _load_cron_jobs_for_profile(profile_name)
+            original_count = len(jobs)
+            jobs = [j for j in jobs if j.get("id") != job_id]
+
+            if len(jobs) == original_count:
+                _json_response(self, 404, {"error": f"job '{job_id}' not found"})
+                return
+
+            _save_cron_jobs_for_profile(profile_name, jobs)
+            _json_response(self, 200, {
+                "success": True,
+                "message": f"Cron job '{job_id}' removed.",
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    # ----- Agent Templates (/agent_config/*) -----
+
+    def _handle_agent_config_default(self):
+        """GET /agent_config/default — 列出默认智体模板。"""
+        try:
+            from session_manager import get_session_manager, _BUILTIN_PROFILES
+            sm = get_session_manager()
+            templates = []
+            idx = 0
+            for name, profile in _BUILTIN_PROFILES.items():
+                idx += 1
+                templates.append({
+                    "id": idx,
+                    "code": name,
+                    "name": profile.display_name,
+                    "description": profile.system_prompt[:200] if profile.system_prompt else None,
+                    "avatar": None,
+                    "allowed_tools": ["web_search", "memory"],
+                })
+            _json_response(self, 200, templates)
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_agent_config_get(self):
+        """GET /agent_config/{code} — 获取指定模板。"""
+        try:
+            from session_manager import get_session_manager, _BUILTIN_PROFILES
+            _path = urllib.parse.urlparse(self.path).path
+            code = urllib.parse.unquote(_path.split("/")[-1])
+
+            sm = get_session_manager()
+            profile = sm.get_profile(code)
+            if not profile:
+                _json_response(self, 404, {"error": f"template '{code}' not found"})
+                return
+            template = {
+                "id": _get_agent_id(profile.name),
+                "code": profile.name,
+                "name": profile.display_name,
+                "description": profile.system_prompt[:200] if profile.system_prompt else None,
+                "avatar": (profile.metadata or {}).get("avatar"),
+                "allowed_tools": ["web_search", "memory"],
+            }
+            _json_response(self, 200, template)
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    # ----- IAM / Users (/api/users/*) -----
+
+    def _handle_iam_get_profile(self):
+        """GET /api/users/me — 返回本地用户 profile。"""
+        try:
+            profile = _load_user_profile()
+            _platform_json_response(self, 200, profile)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_iam_update_profile(self):
+        """PUT /api/users/me — 更新用户 profile。"""
+        try:
+            body = _read_json_body(self)
+            profile = _load_user_profile()
+            if "full_name" in body:
+                profile["full_name"] = body["full_name"]
+            if "email" in body:
+                profile["email"] = body["email"]
+            if "phone" in body:
+                profile["phone"] = body["phone"]
+            _save_user_profile(profile)
+            _platform_json_response(self, 200, profile)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_iam_update_preference(self):
+        """PUT /api/users/me/preference — 更新偏好（preferred_model）。"""
+        try:
+            body = _read_json_body(self)
+            preferred_model = body.get("preferred_model", "")
+            profile = _load_user_profile()
+            if "preference" not in profile:
+                profile["preference"] = {}
+            profile["preference"]["preferred_model"] = preferred_model
+            _save_user_profile(profile)
+            _platform_json_response(self, 200, {
+                "preferred_model": preferred_model,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_iam_list_users(self):
+        """GET /api/users — 用户列表（边缘设备返回单用户）。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            page = int((params.get("page") or ["1"])[0])
+            page_size = int((params.get("page_size") or ["20"])[0])
+            profile = _load_user_profile()
+            _platform_json_response(self, 200, {
+                "total": 1,
+                "page": page,
+                "page_size": page_size,
+                "items": [profile],
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_iam_list_products(self):
+        """GET /api/users/products — 产品列表（边缘设备返回空）。"""
+        try:
+            _platform_json_response(self, 200, [])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Models (/api/platform/models/*) -----
+
+    def _handle_models_list(self):
+        """GET /api/platform/models — 列出可用模型。"""
+        try:
+            models = _discover_models()
+            _platform_json_response(self, 200, models)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_providers(self):
+        """GET /api/platform/models/providers — 模型供应商概览。"""
+        try:
+            models = _discover_models()
+            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+            provider = _infer_provider_from_url(base_url)
+            preferred = _get_preferred_model()
+            model_names = [m["model_name"] for m in models]
+            summary = {
+                "provider_name": provider,
+                "configured": True,
+                "provider_status": "active",
+                "visible_count": len(models),
+                "hidden_count": 0,
+                "disabled_count": 0,
+                "models": model_names,
+                "preferred_model_supported": preferred in model_names,
+                "is_default_route_provider": True,
+                "default_route_model": preferred,
+                "default_route_provider_model_id": preferred,
+            }
+            _platform_json_response(self, 200, [summary])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_runtimes(self):
+        """GET /api/platform/models/runtimes — 运行时列表。"""
+        try:
+            runtime = {
+                "runtime_type": "openclaw",
+                "runtime_label": "OpenClaw",
+                "runtime_status": "active",
+                "runtime_stage": "production",
+                "is_default": True,
+                "adapter_registered": True,
+                "bridge_registered": True,
+                "online_team_count": 1,
+                "supports_im_relay": True,
+                "supports_device_bridge": True,
+                "supports_managed_download": False,
+                "notes": "Local Hermes Bridge runtime",
+            }
+            _platform_json_response(self, 200, [runtime])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_resolve(self):
+        """GET /api/platform/models/resolve?model_name=X — 解析模型。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            model_name = (params.get("model_name") or [""])[0]
+            if not model_name:
+                _platform_json_response(self, 400, None, "model_name is required")
+                return
+
+            models = _discover_models()
+            selected = None
+            for m in models:
+                if m["model_name"] == model_name:
+                    selected = m
+                    break
+            if not selected:
+                selected = models[0] if models else None
+
+            if not selected:
+                _platform_json_response(self, 404, None, f"no models available to resolve '{model_name}'")
+                return
+
+            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+            provider = _infer_provider_from_url(base_url)
+            _platform_json_response(self, 200, {
+                "requested_model": model_name,
+                "resolved_model": selected["model_name"],
+                "provider_name": provider,
+                "provider_model_id": selected["provider_model_id"],
+                "candidate_count": len(models),
+                "selected": selected,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_route_get(self):
+        """GET /api/platform/models/route — 获取当前模型路由。"""
+        try:
+            models = _discover_models()
+            preferred = _get_preferred_model()
+            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+            provider = _infer_provider_from_url(base_url)
+
+            selected = None
+            for m in models:
+                if m["model_name"] == preferred:
+                    selected = m
+                    break
+            if not selected and models:
+                selected = models[0]
+
+            _platform_json_response(self, 200, {
+                "preferred_model": preferred,
+                "preferred_model_available": selected is not None,
+                "resolved_model": selected["model_name"] if selected else None,
+                "resolved_provider_name": provider,
+                "resolved_provider_model_id": selected["provider_model_id"] if selected else None,
+                "candidate_count": len(models),
+                "configured_provider_count": 1,
+                "available_model_count": len(models),
+                "resolution_reason": "preferred_model_match" if selected else "fallback",
+                "selected": selected,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_route_set(self):
+        """PUT /api/platform/models/route — 设置默认模型路由。"""
+        try:
+            body = _read_json_body(self)
+            preferred_model = body.get("preferred_model", "")
+            if not preferred_model:
+                _platform_json_response(self, 400, None, "preferred_model is required")
+                return
+
+            # 保存到用户偏好
+            profile = _load_user_profile()
+            if "preference" not in profile:
+                profile["preference"] = {}
+            profile["preference"]["preferred_model"] = preferred_model
+            _save_user_profile(profile)
+
+            # 返回更新后的路由 profile
+            models = _discover_models()
+            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+            provider = _infer_provider_from_url(base_url)
+            selected = None
+            for m in models:
+                if m["model_name"] == preferred_model:
+                    selected = m
+                    break
+            if not selected and models:
+                selected = models[0]
+
+            _platform_json_response(self, 200, {
+                "preferred_model": preferred_model,
+                "preferred_model_available": selected is not None,
+                "resolved_model": selected["model_name"] if selected else None,
+                "resolved_provider_name": provider,
+                "resolved_provider_model_id": selected["provider_model_id"] if selected else None,
+                "candidate_count": len(models),
+                "configured_provider_count": 1,
+                "available_model_count": len(models),
+                "resolution_reason": "preferred_model_match" if selected else "fallback",
+                "selected": selected,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_usage(self):
+        """GET /api/platform/models/usage — 用量统计（边缘设备 stub）。"""
+        try:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            _platform_json_response(self, 200, {
+                "window_days": 30,
+                "period_start": now,
+                "period_end": now,
+                "attribution_mode": "local",
+                "record_count": 0,
+                "total_calls": 0,
+                "total_input_chars": 0,
+                "total_output_chars": 0,
+                "total_duration_seconds": 0,
+                "last_used_at": None,
+                "breakdown": [],
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_cost(self):
+        """GET /api/platform/models/cost — 费用统计（边缘设备 stub）。"""
+        try:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            _platform_json_response(self, 200, {
+                "window_days": 30,
+                "period_start": now,
+                "period_end": now,
+                "attribution_mode": "local",
+                "record_count": 0,
+                "total_amount": 0,
+                "primary_currency": "CNY",
+                "currency_breakdown": [],
+                "last_billed_at": None,
+                "breakdown": [],
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_models_quota(self):
+        """GET /api/platform/models/quota — 配额查询（边缘设备无限额）。"""
+        try:
+            _platform_json_response(self, 200, {
+                "wallet_balance": 0,
+                "currency": "CNY",
+                "daily_limit": None,
+                "daily_spent": 0,
+                "daily_remaining": None,
+                "daily_unlimited": True,
+                "monthly_limit": None,
+                "monthly_spent": 0,
+                "monthly_remaining": None,
+                "monthly_unlimited": True,
+                "updated_time": None,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Conversations (/api/platform/conversations/*) -----
+
+    def _session_to_group(self, session) -> dict:
+        """将 Session 转为 ConversationGroup 格式。"""
+        from session_manager import get_session_manager
+        sm = get_session_manager()
+        profile = sm.get_profile(session.agent_profile)
+        room_name = profile.display_name if profile else session.agent_profile
+        return {
+            "room_id": session.session_id,
+            "room_name": room_name,
+            "last_active": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(session.updated_at)),
+            "msg_count": len(session.messages),
+            "member_count": 2,
+        }
+
+    def _message_to_history(self, msg: dict, idx: int, session) -> dict:
+        """将 session message 转为 ConversationHistoryMessage 格式。"""
+        role = msg.get("role", "user")
+        return {
+            "id": idx,
+            "sender_id": 1 if role == "user" else None,
+            "agent_id": _get_agent_id(session.agent_profile) if role == "assistant" else None,
+            "channel_id": None,
+            "direction": "user_to_agent" if role == "user" else "agent_to_user",
+            "content": msg.get("content", ""),
+            "created_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(session.updated_at)),
+        }
+
+    def _handle_conversations_home(self):
+        """GET /api/platform/conversations — 会话首页。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            group_limit = int((params.get("group_limit") or ["10"])[0])
+            history_limit = int((params.get("history_limit") or ["20"])[0])
+
+            sessions_data = sm.list_sessions()
+            groups = []
+            all_messages = []
+            for sd in sessions_data[:group_limit]:
+                session = sm.get_session(sd["session_id"])
+                if session:
+                    groups.append(self._session_to_group(session))
+                    for idx, msg in enumerate(session.messages):
+                        all_messages.append(self._message_to_history(msg, idx, session))
+
+            # 按时间倒序取最近 history_limit 条
+            all_messages.sort(key=lambda m: m.get("id", 0), reverse=True)
+            history = all_messages[:history_limit]
+
+            total_msgs = sum(sd.get("turn_count", 0) * 2 for sd in sessions_data)
+            stats = {
+                "group_count": len(sessions_data),
+                "msg_count": total_msgs,
+                "entity_count": 0,
+                "history_count": len(all_messages),
+            }
+            _platform_json_response(self, 200, {
+                "stats": stats,
+                "groups": groups,
+                "history": history,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_conversations_stats(self):
+        """GET /api/platform/conversations/stats — 对话统计。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            sessions_data = sm.list_sessions()
+            total_msgs = sum(sd.get("turn_count", 0) * 2 for sd in sessions_data)
+            _platform_json_response(self, 200, {
+                "group_count": len(sessions_data),
+                "msg_count": total_msgs,
+                "entity_count": 0,
+                "history_count": total_msgs,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_conversations_groups(self):
+        """GET /api/platform/conversations/groups — 会话分组列表。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            limit = int((params.get("limit") or ["50"])[0])
+
+            sessions_data = sm.list_sessions()
+            groups = []
+            for sd in sessions_data[:limit]:
+                session = sm.get_session(sd["session_id"])
+                if session:
+                    groups.append(self._session_to_group(session))
+            _platform_json_response(self, 200, groups)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_conversations_group_messages(self):
+        """GET /api/platform/conversations/groups/{roomId}/messages — 分组消息。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            _path = urllib.parse.urlparse(self.path).path
+            # 路径: /api/platform/conversations/groups/{roomId}/messages
+            parts = _path.strip("/").split("/")
+            # parts = ['api', 'platform', 'conversations', 'groups', '{roomId}', 'messages']
+            room_id = urllib.parse.unquote(parts[4]) if len(parts) > 4 else ""
+
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            limit = int((params.get("limit") or ["50"])[0])
+
+            session = sm.get_session(room_id)
+            if not session:
+                _platform_json_response(self, 200, [])
+                return
+
+            messages = session.get_messages()
+            result = []
+            for idx, msg in enumerate(messages[-limit:]):
+                role = msg.get("role", "user")
+                result.append({
+                    "id": idx,
+                    "sender_name": "用户" if role == "user" else session.agent_profile,
+                    "sender_role": role,
+                    "msg_type": "text",
+                    "content": msg.get("content", ""),
+                    "created_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(session.updated_at)),
+                    "entities": [],
+                })
+            _platform_json_response(self, 200, result)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_conversations_history(self):
+        """GET /api/platform/conversations/history — 跨会话消息历史。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            limit = int((params.get("limit") or ["50"])[0])
+
+            sessions_data = sm.list_sessions()
+            all_messages = []
+            msg_id = 0
+            for sd in sessions_data:
+                session = sm.get_session(sd["session_id"])
+                if not session:
+                    continue
+                for msg in session.messages:
+                    msg_id += 1
+                    all_messages.append(self._message_to_history(msg, msg_id, session))
+            # 最近的排前面
+            all_messages.reverse()
+            _platform_json_response(self, 200, all_messages[:limit])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_conversations_send(self):
+        """POST /api/platform/conversations/messages — 发送消息。"""
+        try:
+            from session_manager import get_session_manager
+            sm = get_session_manager()
+            body = _read_json_body(self)
+            content = body.get("content", "")
+            agent_id = body.get("agent_id")
+            direction = body.get("direction", "user_to_agent")
+
+            # 尝试找到对应的 session 或创建新的
+            # 如果有 agent_id，找对应 profile
+            profile_name = "default"
+            if agent_id:
+                profile = _find_profile_by_id(sm, int(agent_id))
+                if profile:
+                    profile_name = profile.name
+
+            # 获取或创建 session
+            sessions = sm.list_sessions(agent_profile=profile_name)
+            if sessions:
+                session = sm.get_session(sessions[0]["session_id"])
+            else:
+                session = sm.create_session(agent_profile=profile_name)
+
+            if not session:
+                session = sm.create_session(agent_profile=profile_name)
+
+            role = "user" if direction == "user_to_agent" else "assistant"
+            session.add_message(role, content)
+
+            msg_id = len(session.messages)
+            result = {
+                "id": msg_id,
+                "sender_id": 1 if role == "user" else None,
+                "agent_id": _get_agent_id(profile_name) if role == "assistant" else None,
+                "channel_id": None,
+                "direction": direction,
+                "content": content,
+                "created_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            _platform_json_response(self, 200, result)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Billing (/api/billing/*) — 边缘设备 stub -----
+
+    def _handle_billing_wallet(self):
+        """GET /api/billing/wallet — 钱包余额（stub）。"""
+        try:
+            _platform_json_response(self, 200, {
+                "balance": 0,
+                "currency": "CNY",
+                "total_spent": 0,
+                "total_recharge": 0,
+                "current_month_spent": 0,
+                "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_billing_records(self):
+        """GET /api/billing/records — 消费记录（stub 空列表）。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            page = int((params.get("page") or ["1"])[0])
+            page_size = int((params.get("page_size") or ["20"])[0])
+            _platform_json_response(self, 200, {
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "items": [],
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_billing_summary(self):
+        """GET /api/billing/summary — 消费汇总（stub）。"""
+        try:
+            _platform_json_response(self, 200, {
+                "total_spent": 0,
+                "total_recharge": 0,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Channels (/api/platform/channels/*) -----
+
+    def _make_channel_item(self, key, name, group, kernel, configured=False, enabled=False):
+        """构建单个渠道配置项。"""
+        return {
+            "channel_key": key,
+            "channel_name": name,
+            "channel_group": group,
+            "channel_kernel": kernel,
+            "configured": configured,
+            "enabled": enabled,
+            "binding_enabled": False,
+            "callback_url": "",
+            "risk_level": "low",
+            "updated_time": None,
+        }
+
+    def _handle_channels_overview(self):
+        """GET /api/platform/channels — 渠道总览。"""
+        try:
+            # 检查 OpenClaw/微信状态
+            openclaw_configured = False
+            openclaw_enabled = False
+            try:
+                # 尝试获取 gateway 状态
+                _ensure_hermes_on_path()
+                from gateway.gateway_manager import GatewayManager
+                gm = GatewayManager()
+                openclaw_configured = True
+                openclaw_enabled = gm.is_running() if hasattr(gm, "is_running") else False
+            except Exception:
+                pass
+
+            items = [
+                self._make_channel_item(
+                    "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
+                ),
+                self._make_channel_item(
+                    "feishu", "飞书", "enterprise_collab", "feishu",
+                ),
+                self._make_channel_item(
+                    "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
+                ),
+                self._make_channel_item(
+                    "wechat_personal_openclaw", "微信个人号(OpenClaw)", "personal_reach",
+                    "openclaw_wechat_plugin",
+                    configured=openclaw_configured,
+                    enabled=openclaw_enabled,
+                ),
+            ]
+            configured_count = sum(1 for i in items if i["configured"])
+            active_count = sum(1 for i in items if i["enabled"])
+            _platform_json_response(self, 200, {
+                "supported_count": len(items),
+                "configured_count": configured_count,
+                "active_count": active_count,
+                "items": items,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_wechat_work_config(self):
+        """GET /api/platform/channels/wechat-work/config — 企业微信配置（stub）。"""
+        try:
+            config = self._make_channel_item(
+                "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
+            )
+            config.update({
+                "corp_id": "",
+                "agent_id": "",
+                "secret": "",
+                "secret_configured": False,
+                "verify_token": "",
+                "aes_key": "",
+            })
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_wechat_work_config_update(self):
+        """POST /api/platform/channels/wechat-work/config — 更新企业微信配置（stub）。"""
+        try:
+            body = _read_json_body(self)
+            config = self._make_channel_item(
+                "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
+                configured=True,
+            )
+            config.update({
+                "corp_id": body.get("corp_id", ""),
+                "agent_id": body.get("agent_id", ""),
+                "secret": "",
+                "secret_configured": bool(body.get("secret")),
+                "verify_token": "",
+                "aes_key": "",
+            })
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_feishu_config(self):
+        """GET /api/platform/channels/feishu/config — 飞书配置（stub）。"""
+        try:
+            config = self._make_channel_item(
+                "feishu", "飞书", "enterprise_collab", "feishu",
+            )
+            config.update({
+                "app_id": "",
+                "app_secret": "",
+                "verification_token": "",
+                "encrypt_key": "",
+                "secret_configured": False,
+            })
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_feishu_config_update(self):
+        """POST /api/platform/channels/feishu/config — 更新飞书配置（stub）。"""
+        try:
+            body = _read_json_body(self)
+            config = self._make_channel_item(
+                "feishu", "飞书", "enterprise_collab", "feishu",
+                configured=True,
+            )
+            config.update({
+                "app_id": body.get("app_id", ""),
+                "app_secret": "",
+                "verification_token": "",
+                "encrypt_key": "",
+                "secret_configured": bool(body.get("app_secret")),
+            })
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_wechat_personal_plugin_config(self):
+        """GET /api/platform/channels/wechat-personal-plugin/config — 个人微信插件配置（stub）。"""
+        try:
+            config = self._make_channel_item(
+                "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
+            )
+            config.update({
+                "display_name": "微信个人号(插件)",
+                "kernel_source": "unconfigured",
+                "kernel_configured": False,
+                "kernel_isolated": False,
+                "kernel_corp_id": "",
+                "kernel_agent_id": "",
+                "kernel_secret": "",
+                "kernel_secret_configured": False,
+                "kernel_verify_token": "",
+                "kernel_aes_key": "",
+                "effective_kernel_corp_id": "",
+                "effective_kernel_agent_id": "",
+                "effective_kernel_verify_token": "",
+                "effective_kernel_aes_key": "",
+                "setup_status": "planned",
+                "assistant_name": "",
+                "welcome_message": "",
+                "capability_stage": "planned",
+            })
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_wechat_personal_plugin_config_update(self):
+        """POST /api/platform/channels/wechat-personal-plugin/config — 更新（stub）。"""
+        try:
+            body = _read_json_body(self)
+            config = self._make_channel_item(
+                "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
+                configured=True,
+            )
+            config.update({
+                "display_name": body.get("display_name", "微信个人号(插件)"),
+                "kernel_source": "independent",
+                "kernel_configured": False,
+                "kernel_isolated": False,
+                "kernel_corp_id": body.get("kernel_corp_id", ""),
+                "kernel_agent_id": body.get("kernel_agent_id", ""),
+                "kernel_secret": "",
+                "kernel_secret_configured": False,
+                "kernel_verify_token": "",
+                "kernel_aes_key": "",
+                "effective_kernel_corp_id": body.get("kernel_corp_id", ""),
+                "effective_kernel_agent_id": body.get("kernel_agent_id", ""),
+                "effective_kernel_verify_token": "",
+                "effective_kernel_aes_key": "",
+                "setup_status": "planned",
+                "assistant_name": body.get("assistant_name", ""),
+                "welcome_message": body.get("welcome_message", ""),
+                "capability_stage": "planned",
+            })
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_wechat_personal_openclaw_config(self):
+        """GET /api/platform/channels/wechat-personal-openclaw/config — OpenClaw 微信配置。"""
+        try:
+            gateway_online = False
+            try:
+                _ensure_hermes_on_path()
+                from gateway.gateway_manager import GatewayManager
+                gm = GatewayManager()
+                gateway_online = gm.is_running() if hasattr(gm, "is_running") else False
+            except Exception:
+                pass
+
+            config = self._make_channel_item(
+                "wechat_personal_openclaw", "微信个人号(OpenClaw)", "personal_reach",
+                "openclaw_wechat_plugin",
+                configured=True,
+                enabled=gateway_online,
+            )
+            config.update({
+                "display_name": "微信个人号(OpenClaw)",
+                "channel_mode": "official_openclaw_plugin",
+                "setup_status": "ready" if gateway_online else "waiting_gateway",
+                "manual_cli_required": False,
+                "preinstall_supported": True,
+                "qr_supported": True,
+                "gateway_online": gateway_online,
+                "official_plugin_available": None,
+                "install_hint": "请通过 /wechat/qr-login 发起扫码登录",
+                "capability_stage": "production",
+            })
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_bindings_list(self):
+        """GET /api/platform/channels/bindings — 绑定列表（stub 空）。"""
+        try:
+            _platform_json_response(self, 200, {
+                "items": [],
+                "total": 0,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_binding_create(self):
+        """POST /api/platform/channels/bindings/create — 创建绑定（stub）。"""
+        try:
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            binding = {
+                "id": int(time.time()),
+                "team_id": body.get("team_id", 1),
+                "channel_key": body.get("channel_key", "wechat_personal_plugin"),
+                "binding_type": body.get("binding_type", ""),
+                "binding_target_id": body.get("binding_target_id", ""),
+                "binding_target_name": body.get("binding_target_name"),
+                "binding_code": f"bind_{int(time.time())}",
+                "code_expires_at": None,
+                "status": "pending",
+                "created_by_user_id": 1,
+                "bound_by_user_id": None,
+                "binding_enabled_snapshot": True,
+                "notes": body.get("notes"),
+                "bound_at": None,
+                "created_time": now,
+                "updated_time": now,
+                "identity": None,
+            }
+            _platform_json_response(self, 200, binding)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # =====================================================================
+    # Phase 2: 剩余 SDK 模块全覆盖
+    # =====================================================================
+
+    # ----- Step 1: Channels 补全 -----
+
+    def _handle_channel_binding_disable(self):
+        """POST /api/platform/channels/bindings/disable — 禁用绑定。"""
+        try:
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            binding = {
+                "id": body.get("binding_id", 0),
+                "team_id": 1,
+                "channel_key": "wechat_personal_plugin",
+                "binding_type": "user",
+                "binding_target_id": "",
+                "binding_target_name": None,
+                "binding_code": "",
+                "code_expires_at": None,
+                "status": "disabled",
+                "created_by_user_id": 1,
+                "bound_by_user_id": None,
+                "binding_enabled_snapshot": False,
+                "notes": None,
+                "bound_at": None,
+                "created_time": now,
+                "updated_time": now,
+                "identity": None,
+            }
+            _platform_json_response(self, 200, binding)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_binding_regenerate_code(self):
+        """POST /api/platform/channels/bindings/regenerate-code — 重新生成绑定码。"""
+        try:
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            expires_hours = body.get("expires_in_hours", 72)
+            binding = {
+                "id": body.get("binding_id", 0),
+                "team_id": 1,
+                "channel_key": "wechat_personal_plugin",
+                "binding_type": "user",
+                "binding_target_id": "",
+                "binding_target_name": None,
+                "binding_code": f"bind_{uuid.uuid4().hex[:12]}",
+                "code_expires_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(time.time() + expires_hours * 3600),
+                ),
+                "status": "pending",
+                "created_by_user_id": 1,
+                "bound_by_user_id": None,
+                "binding_enabled_snapshot": True,
+                "notes": None,
+                "bound_at": None,
+                "created_time": now,
+                "updated_time": now,
+                "identity": None,
+            }
+            _platform_json_response(self, 200, binding)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_openclaw_qr_start(self):
+        """POST /api/platform/channels/wechat-personal-openclaw/qr/start — QR 扫码登录。"""
+        try:
+            _platform_json_response(self, 200, {
+                "status": "waiting_scan",
+                "message": "请使用微信扫描二维码",
+                "qr_data_url": "",
+                "qr_url": "",
+                "session_id": f"qr_{uuid.uuid4().hex[:12]}",
+                "account_id": "",
+                "expires_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(time.time() + 300),
+                ),
+                "connected": False,
+                "binding": None,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_openclaw_qr_status(self):
+        """GET /api/platform/channels/wechat-personal-openclaw/qr/status — QR 状态。"""
+        try:
+            _platform_json_response(self, 200, {
+                "status": "waiting_scan",
+                "message": "等待扫码",
+                "qr_data_url": "",
+                "qr_url": "",
+                "session_id": "",
+                "account_id": "",
+                "expires_at": None,
+                "connected": False,
+                "binding": None,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 2: Tenant -----
+
+    def _handle_tenant_context(self):
+        """GET /api/users/me/context — 租户工作空间上下文。"""
+        try:
+            profile = _load_user_profile()
+            teams = profile.get("teams", [{"id": 1, "name": "local", "is_personal": True, "owner_id": 1}])
+            first_team = teams[0] if teams else {}
+            data = {
+                "id": profile.get("id", 1),
+                "username": profile.get("username", "local-admin"),
+                "role": profile.get("role", "ADMIN"),
+                "is_enterprise_verified": profile.get("is_enterprise_verified", False),
+                "default_team_id": first_team.get("id", 1),
+                "default_team_name": first_team.get("name", "local"),
+                "default_team_is_personal": first_team.get("is_personal", True),
+                "teams": teams,
+            }
+            _platform_json_response(self, 200, data)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_company_verification_get(self):
+        """GET /api/company/verification — 企业认证状态。"""
+        try:
+            _platform_json_response(self, 200, {
+                "status": "none",
+                "company_name": None,
+                "tax_number": None,
+                "address": None,
+                "phone": None,
+                "bank_name": None,
+                "bank_account": None,
+                "license_url": None,
+                "rejection_reason": None,
+                "updated_time": None,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_company_verification_submit(self):
+        """POST /api/company/verification — 提交企业认证。"""
+        try:
+            _platform_json_response(self, 200, {
+                "status": "pending",
+                "company_name": None,
+                "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_company_verification_approve(self):
+        """POST /api/company/verification/approve — 审批企业认证。"""
+        try:
+            _platform_json_response(self, 200, {
+                "status": "approved",
+                "company_name": "已认证企业",
+                "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 3: File / Documents -----
+
+    def _handle_documents_list(self):
+        """GET /api/documents — 列出本地文档。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            skip = int((params.get("skip") or ["0"])[0])
+            limit = int((params.get("limit") or ["100"])[0])
+
+            docs_dir = os.path.join(_HERMES_HOME, "documents")
+            docs: List[Dict[str, Any]] = []
+            if os.path.isdir(docs_dir):
+                for idx, fname in enumerate(sorted(os.listdir(docs_dir))):
+                    fpath = os.path.join(docs_dir, fname)
+                    if os.path.isfile(fpath):
+                        stat = os.stat(fpath)
+                        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime))
+                        docs.append({
+                            "id": idx + 1,
+                            "document_title": fname,
+                            "document_detail": None,
+                            "sort_num": idx,
+                            "labels": None,
+                            "create_time": ts,
+                            "update_time": ts,
+                        })
+            result = docs[skip:skip + limit]
+            _platform_json_response(self, 200, result)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_document_get(self):
+        """GET /api/documents/{id} — 获取单个文档。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            doc_id = int(_path.split("/")[-1])
+
+            docs_dir = os.path.join(_HERMES_HOME, "documents")
+            if os.path.isdir(docs_dir):
+                files = sorted(os.listdir(docs_dir))
+                idx = doc_id - 1
+                if 0 <= idx < len(files):
+                    fname = files[idx]
+                    fpath = os.path.join(docs_dir, fname)
+                    stat = os.stat(fpath)
+                    ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(stat.st_mtime))
+                    detail = None
+                    try:
+                        if stat.st_size < 100000:
+                            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                                detail = f.read()[:2000]
+                    except Exception:
+                        pass
+                    _platform_json_response(self, 200, {
+                        "id": doc_id,
+                        "document_title": fname,
+                        "document_detail": detail,
+                        "sort_num": idx,
+                        "labels": None,
+                        "create_time": ts,
+                        "update_time": ts,
+                    })
+                    return
+            _platform_json_response(self, 404, None, "Document not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_product_documents(self):
+        """GET /api/products/{productId}/documents — 产品文档（边缘设备返回空）。"""
+        try:
+            _platform_json_response(self, 200, [])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 4: Workflow -----
+
+    def _handle_workflows_list(self):
+        """GET /api/workflows — 列出 workflow。"""
+        try:
+            workflows = _load_workflows()
+            _platform_json_response(self, 200, workflows)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_workflow_save(self):
+        """POST /api/workflows — 保存 workflow 定义。"""
+        try:
+            body = _read_json_body(self)
+            wf_id = body.get("id") or f"wf_{uuid.uuid4().hex[:12]}"
+            workflows = _load_workflows()
+            found = False
+            for i, wf in enumerate(workflows):
+                if wf.get("id") == wf_id:
+                    workflows[i] = body
+                    workflows[i]["id"] = wf_id
+                    found = True
+                    break
+            if not found:
+                body["id"] = wf_id
+                body.setdefault("enabled", True)
+                workflows.append(body)
+            _save_workflows(workflows)
+            _platform_json_response(self, 200, body)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_workflow_get(self):
+        """GET /api/workflows/{id} — 获取单个 workflow。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            wf_id = _path.split("/")[-1]
+            workflows = _load_workflows()
+            for wf in workflows:
+                if str(wf.get("id")) == wf_id:
+                    _platform_json_response(self, 200, wf)
+                    return
+            _platform_json_response(self, 404, None, "Workflow not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_workflow_run(self):
+        """POST /api/workflows/{id}/run — 运行 workflow（stub）。"""
+        try:
+            exec_id = f"exec_{uuid.uuid4().hex[:12]}"
+            _platform_json_response(self, 200, {"execution_id": exec_id})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_workflow_execution_logs(self):
+        """GET /api/workflows/executions/{id}/logs — 执行日志（stub 空）。"""
+        try:
+            _platform_json_response(self, 200, [])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 5: Devices -----
+
+    def _handle_devices_list(self):
+        """GET /api/platform/devices — 列出设备。"""
+        try:
+            info = _load_device_info()
+            info["last_seen"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            _platform_json_response(self, 200, [info])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_devices_account_state(self):
+        """GET /api/platform/devices/account-state — 设备账号状态。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            installation_id = (params.get("installation_id") or [""])[0]
+            info = _load_device_info()
+            _platform_json_response(self, 200, {
+                "installation_id": installation_id or info.get("installation_id", ""),
+                "state": "current_user",
+                "can_register_current_account": False,
+                "current_user_device_id": info.get("id", 1),
+                "current_user_has_devices": True,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_devices_online(self):
+        """GET /api/platform/devices/online — 设备在线状态。"""
+        try:
+            _platform_json_response(self, 200, {
+                "runtime_type": "openclaw",
+                "runtime_label": "OpenClaw",
+                "runtime_status": "running",
+                "runtime_stage": "phase_device_bridge_only",
+                "supports_device_bridge": True,
+                "supports_managed_download": False,
+                "online_team_ids": [1],
+                "notes": "当前设备中心仅管理 OpenClaw device bridge。",
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_devices_bootstrap(self):
+        """POST /api/platform/devices/bootstrap — 设备注册。"""
+        try:
+            body = _read_json_body(self)
+            info = _load_device_info()
+            if body.get("device_name"):
+                info["device_name"] = body["device_name"]
+            if body.get("hostname"):
+                info["hostname"] = body["hostname"]
+            if body.get("os_info"):
+                info["os_info"] = body["os_info"]
+            if body.get("installation_id"):
+                info["installation_id"] = body["installation_id"]
+            _save_device_info(info)
+            port = os.environ.get("BRIDGE_PORT", "21747")
+            _platform_json_response(self, 200, {
+                "api_key": "local-bridge-key",
+                "base_url": f"http://127.0.0.1:{port}",
+                "ws_url": f"ws://127.0.0.1:{port}",
+                "device_id": info.get("id", 1),
+                "device_name": info.get("device_name", ""),
+                "installation_id": info.get("installation_id", ""),
+                "registration_mode": "local",
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_devices_pair_code(self):
+        """POST /api/platform/devices/pair-code — 生成配对码（stub）。"""
+        try:
+            _platform_json_response(self, 200, {
+                "pair_code": f"PAIR-{uuid.uuid4().hex[:6].upper()}",
+                "expires_in_seconds": 600,
+                "expires_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(time.time() + 600),
+                ),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_devices_claim(self):
+        """POST /api/platform/devices/claim — 认领设备。"""
+        try:
+            self._handle_devices_bootstrap()
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_device_update(self):
+        """PUT /api/platform/devices/{id} — 更新设备名称。"""
+        try:
+            body = _read_json_body(self)
+            info = _load_device_info()
+            if body.get("device_name"):
+                info["device_name"] = body["device_name"]
+            _save_device_info(info)
+            _platform_json_response(self, 200, None)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_device_delete(self):
+        """DELETE /api/platform/devices/{id} — 删除设备（stub）。"""
+        try:
+            _platform_json_response(self, 200, None)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 6: Knowledge 新路径 -----
+
+    def _handle_platform_knowledge_list(self):
+        """GET /api/platform/knowledge/list — 代理到现有知识库列表。"""
+        try:
+            self._handle_kb_list()
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_search(self):
+        """GET /api/platform/knowledge/search — 从 query params 检索知识库。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            query = (params.get("query") or [""])[0]
+            filename = (params.get("filename") or [None])[0]
+            limit = int((params.get("limit") or ["5"])[0])
+
+            try:
+                from knowledge_store import search_knowledge
+                results = search_knowledge(query=query or "", top_k=limit)
+                if filename:
+                    results = [r for r in results if filename.lower() in (r.get("filename") or "").lower()]
+                _platform_json_response(self, 200, results)
+            except ImportError:
+                _platform_json_response(self, 200, [])
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_upload(self):
+        """POST /api/platform/knowledge/upload — 代理到现有上传。"""
+        try:
+            self._handle_kb_upload()
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_delete(self):
+        """POST /api/platform/knowledge/delete — 从 query params 删除。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            source_name = (params.get("source_name") or [""])[0]
+            if not source_name:
+                body = _read_json_body(self)
+                source_name = body.get("source_name", "")
+            if not source_name:
+                _platform_json_response(self, 400, None, "source_name is required")
+                return
+            try:
+                from knowledge_store import delete_document
+                ok = delete_document(source_name)
+                _platform_json_response(self, 200, {"deleted": ok})
+            except ImportError:
+                _platform_json_response(self, 200, {"deleted": False})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_download(self):
+        """GET /api/platform/knowledge/download — 下载文档（返回路径）。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            source_name = (params.get("source_name") or [""])[0]
+            mode = (params.get("mode") or ["path"])[0]
+            if not source_name:
+                _platform_json_response(self, 400, None, "source_name is required")
+                return
+            kb_dir = os.path.join(_HERMES_HOME, "knowledge")
+            file_path = os.path.join(kb_dir, source_name)
+            if os.path.isfile(file_path) and mode == "path":
+                _platform_json_response(self, 200, {"path": file_path, "source_name": source_name})
+            else:
+                _platform_json_response(self, 404, None, "File not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_stats(self):
+        """GET /api/platform/knowledge/stats — 代理到现有统计。"""
+        try:
+            self._handle_kb_stats()
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_config(self):
+        """GET /api/platform/knowledge/config — 知识库配置。"""
+        try:
+            config = _load_knowledge_config()
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_config_update(self):
+        """POST /api/platform/knowledge/config/update — 更新知识库配置。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            watch_dir = (params.get("watchDir") or (params.get("watch_dir") or [""]))[0]
+            config = _load_knowledge_config()
+            if watch_dir:
+                config["watch_dir"] = watch_dir
+            _save_knowledge_config(config)
+            _platform_json_response(self, 200, config)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 7: Approval -----
+
+    def _handle_approvals_list(self):
+        """GET /api/platform/approvals — 审批列表。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            page = int((params.get("page") or ["1"])[0])
+            page_size = int((params.get("page_size") or ["20"])[0])
+            status_filter = (params.get("status") or [None])[0]
+
+            items = _load_approvals()
+            if status_filter:
+                items = [a for a in items if a.get("status") == status_filter]
+            total = len(items)
+            start = (page - 1) * page_size
+            page_items = items[start:start + page_size]
+            _platform_json_response(self, 200, {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": page_items,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_approval_request(self):
+        """POST /api/platform/approvals/request — 创建审批请求。"""
+        try:
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            expires_seconds = body.get("expires_in_seconds", 86400)
+            approval = {
+                "approval_id": f"apr_{uuid.uuid4().hex[:12]}",
+                "status": "pending",
+                "approval_type": body.get("approval_type", "custom"),
+                "title": body.get("title", ""),
+                "reason": body.get("reason", ""),
+                "risk_level": body.get("risk_level", "medium"),
+                "payload": body.get("payload", {}),
+                "requested_by": {"user_id": 1, "username": "local-admin"},
+                "resolved_by": None,
+                "resolution_comment": None,
+                "created_at": now,
+                "expires_at": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(time.time() + expires_seconds),
+                ),
+                "resolved_at": None,
+            }
+            items = _load_approvals()
+            items.insert(0, approval)
+            _save_approvals(items)
+            _platform_json_response(self, 200, approval)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_approval_get(self):
+        """GET /api/platform/approvals/{id} — 审批详情。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            approval_id = _path.split("/")[-1]
+            items = _load_approvals()
+            for item in items:
+                if item.get("approval_id") == approval_id:
+                    _platform_json_response(self, 200, item)
+                    return
+            _platform_json_response(self, 404, None, "Approval not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_approval_resolve(self):
+        """POST /api/platform/approvals/{id}/resolve — 审批/拒绝。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            # path: /api/platform/approvals/{id}/resolve
+            parts = _path.strip("/").split("/")
+            approval_id = parts[3] if len(parts) >= 5 else ""
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            items = _load_approvals()
+            for item in items:
+                if item.get("approval_id") == approval_id:
+                    action = body.get("action", "")
+                    if action == "approved" or body.get("approved"):
+                        item["status"] = "approved"
+                    else:
+                        item["status"] = "rejected"
+                    item["resolved_at"] = now
+                    item["resolved_by"] = {"user_id": 1, "username": "local-admin"}
+                    item["resolution_comment"] = body.get("comment")
+                    _save_approvals(items)
+                    _platform_json_response(self, 200, item)
+                    return
+            _platform_json_response(self, 404, None, "Approval not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 8: Audit -----
+
+    def _handle_audit_events_list(self):
+        """GET /api/platform/audit/events — 审计事件列表。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            page = int((params.get("page") or ["1"])[0])
+            page_size = int((params.get("page_size") or ["50"])[0])
+
+            events = _load_audit_events()
+            total = len(events)
+            start = (page - 1) * page_size
+            page_items = events[start:start + page_size]
+            _platform_json_response(self, 200, {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": page_items,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_audit_summary(self):
+        """GET /api/platform/audit/summary — 审计汇总。"""
+        try:
+            events = _load_audit_events()
+            approvals = _load_approvals()
+            _platform_json_response(self, 200, {
+                "total": len(events) + len(approvals),
+                "operation_count": len(events),
+                "approval_count": len(approvals),
+                "pending_approval_count": sum(1 for a in approvals if a.get("status") == "pending"),
+                "approved_approval_count": sum(1 for a in approvals if a.get("status") == "approved"),
+                "rejected_approval_count": sum(1 for a in approvals if a.get("status") == "rejected"),
+                "expired_approval_count": sum(1 for a in approvals if a.get("status") == "expired"),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_audit_record(self):
+        """POST /api/platform/audit/events — 记录审计事件。"""
+        try:
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            event = {
+                "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+                "category": body.get("category", "operation"),
+                "event_type": body.get("event_type") or body.get("action_type", "unknown"),
+                "title": body.get("title", ""),
+                "summary": body.get("summary"),
+                "module": body.get("module", "SDK"),
+                "path": body.get("path"),
+                "status": body.get("status", "completed"),
+                "risk_level": body.get("risk_level", "low"),
+                "actor": {"user_id": 1, "username": "local-admin"},
+                "metadata": body.get("metadata", {}),
+                "created_at": now,
+            }
+            events = _load_audit_events()
+            events.insert(0, event)
+            events = events[:1000]
+            _save_audit_events(events)
+            _platform_json_response(self, 200, event)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 9: ApiKey -----
+
+    def _handle_app_keys_list(self):
+        """GET /api/users/app-keys — App Key 列表。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            page = int((params.get("page") or ["1"])[0])
+            page_size = int((params.get("page_size") or ["20"])[0])
+
+            data = _load_api_keys()
+            items = data.get("app_keys", [])
+            total = len(items)
+            start = (page - 1) * page_size
+            _platform_json_response(self, 200, {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": items[start:start + page_size],
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_app_key_create(self):
+        """POST /api/users/app-keys — 创建 App Key。"""
+        try:
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            key_id = int(time.time() * 1000) % 1000000
+            app_key = f"ak_{uuid.uuid4().hex[:16]}"
+            app_secret = f"sk_{uuid.uuid4().hex}"
+            key_name = body.get("name", "")
+            entry = {
+                "id": key_id,
+                "name": key_name,
+                "app_key": app_key,
+                "app_secret": app_secret,
+                "role": "USER",
+                "is_active": True,
+                "expire_time": None,
+                "create_time": now,
+            }
+            data = _load_api_keys()
+            data.setdefault("app_keys", []).append(entry)
+            _save_api_keys(data)
+            _platform_json_response(self, 200, entry)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_app_key_delete(self):
+        """DELETE /api/users/app-keys/{id} — 删除 App Key。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            key_id = int(_path.split("/")[-1])
+            data = _load_api_keys()
+            data["app_keys"] = [k for k in data.get("app_keys", []) if k.get("id") != key_id]
+            _save_api_keys(data)
+            _platform_json_response(self, 200, None)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_app_key_set_active(self):
+        """PATCH /api/users/app-keys/{id} — 设置 is_active。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            key_id = int(_path.split("/")[-1])
+            body = _read_json_body(self)
+            data = _load_api_keys()
+            for k in data.get("app_keys", []):
+                if k.get("id") == key_id:
+                    k["is_active"] = body.get("is_active", True)
+                    _save_api_keys(data)
+                    _platform_json_response(self, 200, k)
+                    return
+            _platform_json_response(self, 404, None, "Key not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_app_key_rename(self):
+        """PUT /api/users/app-keys/{id}/name — 重命名 App Key。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            # /api/users/app-keys/{id}/name → id = parts[-2]
+            parts = _path.strip("/").split("/")
+            key_id = int(parts[-2])
+            body = _read_json_body(self)
+            new_name = body.get("name") or body.get("key_name", "")
+            data = _load_api_keys()
+            for k in data.get("app_keys", []):
+                if k.get("id") == key_id:
+                    k["name"] = new_name
+                    k["key_name"] = new_name
+                    _save_api_keys(data)
+                    _platform_json_response(self, 200, k)
+                    return
+            _platform_json_response(self, 404, None, "Key not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_app_key_issue_token(self):
+        """POST /api/users/app-keys/default/token — 签发 token。"""
+        try:
+            data = _load_api_keys()
+            keys = data.get("app_keys", [])
+            if not keys:
+                # 自动创建一个默认 key
+                key_id = 1
+                app_key = f"ak_default_{uuid.uuid4().hex[:8]}"
+                keys.append({
+                    "id": key_id,
+                    "app_key": app_key,
+                    "key_name": "default",
+                    "role": "ADMIN",
+                    "is_active": True,
+                    "expire_time": None,
+                    "create_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                })
+                data["app_keys"] = keys
+                _save_api_keys(data)
+            first = keys[0]
+            token = f"tok_{uuid.uuid4().hex}"
+            _platform_json_response(self, 200, {
+                "token": token,
+                "expires_in": 86400,
+                "app_key": first.get("app_key", ""),
+                "app_key_id": first.get("id", 1),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_llm_keys_list(self):
+        """GET /api/llm/keys — LLM Key 列表。"""
+        try:
+            data = _load_api_keys()
+            _platform_json_response(self, 200, data.get("llm_keys", []))
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_llm_key_create(self):
+        """POST /api/llm/keys — 创建 LLM Key。"""
+        try:
+            body = _read_json_body(self)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            key_id = int(time.time() * 1000) % 1000000
+            record = {
+                "id": key_id,
+                "key": f"llm_{uuid.uuid4().hex[:24]}",
+                "provider": body.get("provider", ""),
+                "api_key": body.get("api_key", ""),
+                "name": body.get("name", ""),
+                "description": body.get("description"),
+                "limit_config": body.get("limit_config"),
+                "expire_time": body.get("expire_time"),
+                "is_active": True,
+                "created_time": now,
+            }
+            data = _load_api_keys()
+            data.setdefault("llm_keys", []).append(record)
+            _save_api_keys(data)
+            _platform_json_response(self, 200, record)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_llm_key_update(self):
+        """PUT /api/llm/keys/{id} — 更新 LLM Key。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            key_id = int(_path.split("/")[-1])
+            body = _read_json_body(self)
+            data = _load_api_keys()
+            for k in data.get("llm_keys", []):
+                if k.get("id") == key_id:
+                    if "name" in body:
+                        k["name"] = body["name"]
+                    if "description" in body:
+                        k["description"] = body["description"]
+                    if "expire_time" in body:
+                        k["expire_time"] = body["expire_time"]
+                    if "is_active" in body:
+                        k["is_active"] = body["is_active"]
+                    _save_api_keys(data)
+                    _platform_json_response(self, 200, k)
+                    return
+            _platform_json_response(self, 404, None, "LLM key not found")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_llm_key_delete(self):
+        """DELETE /api/llm/keys/{id} — 删除 LLM Key。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            key_id = int(_path.split("/")[-1])
+            data = _load_api_keys()
+            data["llm_keys"] = [k for k in data.get("llm_keys", []) if k.get("id") != key_id]
+            _save_api_keys(data)
+            _platform_json_response(self, 200, None)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 10: Policy -----
+
+    def _handle_policy_check(self):
+        """POST /api/platform/policy/*/check — 策略检查（边缘设备全部放行）。"""
+        try:
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            _platform_json_response(self, 200, {
+                "allowed": True,
+                "requires_approval": False,
+                "checked_at": now,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Step 11: Voice (stub) -----
+
+    def _handle_voice_not_implemented(self):
+        """POST /api/asr, /api/tts, /api/audio/speech — 语音服务未实现。"""
+        try:
+            _platform_json_response(self, 501, None, "Voice service not available on this edge device")
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Hermes 调用核心 (委托给 AgentPool) -----
 
     def _invoke_hermes(
         self,
@@ -1426,163 +5055,21 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict]] = None,
     ) -> dict:
+        """兼容旧调用签名 — 委托给 AgentPool._invoke_fallback()。
+
+        仅供不走 session/profile 的遗留调用路径使用（如微信 webhook）。
+        新代码应直接使用 get_agent_pool().invoke()。
         """
-        调用 hermes-agent 的 AIAgent 核心进行推理。
-
-        这里采用 hermes-agent 的 Python API 方式而非 CLI，
-        直接实例化 AIAgent 并调用 run_conversation。
-        """
-        _ensure_hermes_on_path()
-
-        try:
-            # 尝试使用 hermes-agent 的 model_tools 进行模型调用
-            # hermes-agent 的架构：run_agent.py → AIAgent → model_tools.py
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-
-            # 解析 provider 和模型
-            provider_name = provider or "openrouter"
-            model_name = model or os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
-
-            # 获取运行时 provider 配置
-            runtime = resolve_runtime_provider(requested=provider_name)
-            api_key = runtime.get("api_key", "")
-            api_base = runtime.get("base_url")
-
-            # 环境变量优先：OPENAI_API_KEY / OPENAI_BASE_URL 始终覆盖 runtime 配置
-            env_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
-            env_base = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-            if env_key:
-                api_key = env_key
-            if env_base:
-                api_base = env_base
-            # 兜底默认
-            if not api_base:
-                api_base = "https://openrouter.ai/api/v1"
-
-            # 使用 openai 兼容接口进行调用
-            import openai
-
-            client = openai.OpenAI(
-                api_key=api_key,
-                base_url=api_base,
-            )
-
-            messages = []
-            if system_prompt:
-                messages.append({"role": "system", "content": system_prompt})
-            if history:
-                messages.extend(history)
-            messages.append({"role": "user", "content": prompt})
-
-            kwargs: Dict[str, Any] = {
-                "model": runtime.get("model", model_name),
-                "messages": messages,
-            }
-            if max_tokens is not None:
-                kwargs["max_tokens"] = max_tokens
-            if temperature is not None:
-                kwargs["temperature"] = temperature
-
-            response = client.chat.completions.create(**kwargs)
-
-            choice = response.choices[0] if response.choices else None
-            text = choice.message.content if choice and choice.message else ""
-
-            usage_data = None
-            if response.usage:
-                usage_data = {
-                    "prompt_tokens": response.usage.prompt_tokens,
-                    "completion_tokens": response.usage.completion_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                }
-
-            return {
-                "text": text or "",
-                "model": response.model,
-                "provider": provider_name,
-                "usage": usage_data,
-            }
-
-        except ImportError as e:
-            # 如果 hermes-agent 的内部模块结构不可用，
-            # 降级为直接使用环境变量中的 API 配置
-            return self._invoke_fallback(
-                prompt=prompt,
-                model=model,
-                provider=provider,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                system_prompt=system_prompt,
-                history=history,
-                import_error=str(e),
-            )
-
-    def _invoke_fallback(
-        self,
-        prompt: str,
-        model: Optional[str] = None,
-        provider: Optional[str] = None,
-        max_tokens: Optional[int] = None,
-        temperature: Optional[float] = None,
-        system_prompt: Optional[str] = None,
-        history: Optional[List[Dict]] = None,
-        import_error: Optional[str] = None,
-    ) -> dict:
-        """
-        降级调用：如果 hermes-agent 的内部模块不可用，
-        直接使用 openai SDK + 环境变量进行模型调用。
-        """
-        try:
-            import openai
-        except ImportError:
-            raise RuntimeError(
-                "openai package is not installed. "
-                "Please run: pip install openai"
-            )
-
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
-        base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
-
-        client = openai.OpenAI(api_key=api_key, base_url=base_url)
-
-        messages = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": prompt})
-
-        kwargs: Dict[str, Any] = {
-            "model": model or default_model,
-            "messages": messages,
-        }
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
-        if temperature is not None:
-            kwargs["temperature"] = temperature
-
-        response = client.chat.completions.create(**kwargs)
-
-        choice = response.choices[0] if response.choices else None
-        text = choice.message.content if choice and choice.message else ""
-
-        usage_data = None
-        if response.usage:
-            usage_data = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
-
-        return {
-            "text": text or "",
-            "model": response.model,
-            "provider": provider or "fallback",
-            "usage": usage_data,
-            "_fallback": True,
-            "_import_error": import_error,
-        }
+        pool = get_agent_pool()
+        return pool._invoke_fallback(
+            prompt=prompt,
+            model=model,
+            provider=provider,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            history=history,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1666,6 +5153,15 @@ def main():
     else:
         print("[hermes-bridge] Hermes agent directory found.")
 
+    # 初始化 AgentPool（加载 AIAgent 类）
+    pool = get_agent_pool()
+    if pool.available:
+        print("[hermes-bridge] AgentPool: AIAgent mode ENABLED (full tool calling)")
+    else:
+        print(f"[hermes-bridge] AgentPool: FALLBACK mode (raw LLM) — {pool._init_error or 'unknown'}")
+    print(f"[hermes-bridge] AgentPool: base HERMES_HOME = {pool._base_hermes_home}")
+    print(f"[hermes-bridge] AgentPool: profiles dir = {pool.profiles_home}")
+
     # 初始化知识库
     try:
         from knowledge_store import init_knowledge_store, get_kb_stats
@@ -1742,6 +5238,17 @@ def main():
     print("  POST /wechat/send                 - 发送微信消息")
     print("  POST /wechat/adapter/start        - 启动长轮询适配器")
     print("  POST /wechat/adapter/stop         - 停止长轮询适配器")
+    print("  --- SDK 兼容 (/api/agent/*) ---")
+    print("  GET  /api/agent/my-agents          - 列出智体 (SDK 格式)")
+    print("  GET  /api/agent/tools              - 列出系统工具")
+    print("  POST /api/agent/create             - 创建智体 (SDK 格式)")
+    print("  PUT  /api/agent/{id}               - 更新智体 (SDK 格式)")
+    print("  --- SDK 兼容 (/api/platform/memory/*) ---")
+    print("  POST /api/platform/memory/store      - 存入记忆")
+    print("  POST /api/platform/memory/search     - 搜索记忆")
+    print("  GET  /api/platform/memory/stats      - 记忆统计")
+    print("  DELETE /api/platform/memory/{id}      - 删除单条记忆")
+    print("  DELETE /api/platform/memory/agent/{id} - 清除 agent 全部记忆")
 
     try:
         server.serve_forever()

@@ -690,6 +690,1174 @@ class TestHTTPHealthAndMisc:
 
 
 # ===================================================================
+# Phase 2: Memory / Skills / Tools / Cron 端点测试
+# ===================================================================
+
+
+class TestHTTPMemoryV2Endpoints:
+    """测试 /memory/* 路由。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_memory_stats(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/memory/stats")
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        assert "total" in r["body"]
+
+    def test_memory_store_and_search(self, bridge_server):
+        # Store
+        r = _http_request(f"{self.base(bridge_server)}/memory/store", "POST", {
+            "content": "测试记忆内容",
+            "agent_profile": "default",
+            "category": "test",
+        })
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        assert "entry" in r["body"]
+
+        # Search
+        r = _http_request(f"{self.base(bridge_server)}/memory/search", "POST", {
+            "query": "测试",
+            "agent_profile": "default",
+        })
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        assert len(r["body"]["results"]) >= 1
+
+    def test_memory_clear(self, bridge_server):
+        # Store first
+        _http_request(f"{self.base(bridge_server)}/memory/store", "POST", {
+            "content": "will be cleared",
+            "agent_profile": "test_clear_agent",
+        })
+        # Clear
+        r = _http_request(f"{self.base(bridge_server)}/memory/clear", "POST", {
+            "agent_profile": "test_clear_agent",
+        })
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+
+    def test_memory_clear_missing_profile(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/memory/clear", "POST", {})
+        assert r["status"] == 400
+
+
+class TestHTTPSkillsEndpoints:
+    """测试 /skills/* 路由。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_skills_list_empty(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/skills?agent_profile=default")
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        assert isinstance(r["body"]["skills"], list)
+
+    def test_skill_install_and_get_and_uninstall(self, bridge_server):
+        skill_content = """---
+name: test-skill
+description: A test skill for integration tests
+version: 1.0.0
+---
+
+# Test Skill
+
+This is a test skill.
+"""
+        # Install
+        r = _http_request(f"{self.base(bridge_server)}/skills/install", "POST", {
+            "name": "test-skill",
+            "content": skill_content,
+            "agent_profile": "default",
+        })
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+
+        # List — should include the new skill
+        r = _http_request(f"{self.base(bridge_server)}/skills?agent_profile=default")
+        assert r["status"] == 200
+        names = [s["name"] for s in r["body"]["skills"]]
+        assert "test-skill" in names
+
+        # Get
+        r = _http_request(f"{self.base(bridge_server)}/skills/test-skill?agent_profile=default")
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        assert "content" in r["body"]
+        assert "test-skill" in r["body"]["name"]
+
+        # Uninstall
+        r = _http_request(f"{self.base(bridge_server)}/skills/uninstall", "POST", {
+            "name": "test-skill",
+            "agent_profile": "default",
+        })
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+
+        # Verify removed
+        r = _http_request(f"{self.base(bridge_server)}/skills/test-skill?agent_profile=default")
+        assert r["status"] == 404
+
+    def test_skill_install_duplicate(self, bridge_server):
+        content = "---\nname: dup-skill\ndescription: dup\n---\n# Dup\ntest"
+        _http_request(f"{self.base(bridge_server)}/skills/install", "POST", {
+            "name": "dup-skill", "content": content, "agent_profile": "default",
+        })
+        r = _http_request(f"{self.base(bridge_server)}/skills/install", "POST", {
+            "name": "dup-skill", "content": content, "agent_profile": "default",
+        })
+        assert r["status"] == 409
+        # Cleanup
+        _http_request(f"{self.base(bridge_server)}/skills/uninstall", "POST", {
+            "name": "dup-skill", "agent_profile": "default",
+        })
+
+    def test_skill_install_missing_fields(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/skills/install", "POST", {})
+        assert r["status"] == 400
+
+    def test_skill_uninstall_not_found(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/skills/uninstall", "POST", {
+            "name": "nonexistent-skill-xyz", "agent_profile": "default",
+        })
+        assert r["status"] == 404
+
+    def test_skill_get_not_found(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/skills/nonexistent?agent_profile=default")
+        assert r["status"] == 404
+
+
+class TestHTTPToolsEndpoints:
+    """测试 /tools/* 路由。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_tools_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/tools?agent_profile=default")
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        # toolsets 可能为空（hermes-agent 不可用时），但响应格式正确
+        assert isinstance(r["body"]["toolsets"], list)
+
+    def test_tools_update_missing_profile(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/tools", "PUT", {
+            "enabled": ["web", "terminal"],
+        })
+        assert r["status"] == 400
+
+    def test_tools_update_profile_not_found(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/tools", "PUT", {
+            "agent_profile": "nonexistent_agent_xxx",
+            "enabled": ["web"],
+        })
+        assert r["status"] == 404
+
+    def test_tools_update_success(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/tools", "PUT", {
+            "agent_profile": "default",
+            "enabled": ["web", "terminal", "file"],
+        })
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        assert r["body"]["enabled_toolsets"] == ["web", "terminal", "file"]
+
+
+class TestHTTPCronEndpoints:
+    """测试 /cron/* 路由。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_cron_list_empty(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/cron?agent_profile=default")
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        assert r["body"]["jobs"] == []
+
+    def test_cron_create_and_list_and_delete(self, bridge_server):
+        # Create
+        r = _http_request(f"{self.base(bridge_server)}/cron", "POST", {
+            "prompt": "生成测试报告",
+            "schedule": "0 9 * * 1-5",
+            "name": "test-cron-job",
+            "agent_profile": "default",
+        })
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+        job_id = r["body"]["job"]["id"]
+        assert job_id.startswith("cron_")
+
+        # List
+        r = _http_request(f"{self.base(bridge_server)}/cron?agent_profile=default")
+        assert r["status"] == 200
+        assert r["body"]["count"] == 1
+        assert r["body"]["jobs"][0]["id"] == job_id
+
+        # Delete
+        r = _http_request(f"{self.base(bridge_server)}/cron/{job_id}?agent_profile=default", "DELETE")
+        assert r["status"] == 200
+        assert r["body"]["success"] is True
+
+        # Verify deleted
+        r = _http_request(f"{self.base(bridge_server)}/cron?agent_profile=default")
+        assert r["status"] == 200
+        assert r["body"]["count"] == 0
+
+    def test_cron_create_missing_schedule(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/cron", "POST", {
+            "prompt": "test",
+        })
+        assert r["status"] == 400
+
+    def test_cron_create_missing_prompt(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/cron", "POST", {
+            "schedule": "0 9 * * *",
+        })
+        assert r["status"] == 400
+
+    def test_cron_delete_not_found(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/cron/nonexistent_id?agent_profile=default",
+            "DELETE",
+        )
+        assert r["status"] == 404
+
+
+# ===================================================================
+# Part C: Hub OS 兼容性端点测试
+# ===================================================================
+
+
+class TestHTTPAgentTemplateEndpoints:
+    """Agent Templates 端点测试。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_list_default_templates(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/agent_config/default")
+        assert r["status"] == 200
+        templates = r["body"]
+        assert isinstance(templates, list)
+        assert len(templates) >= 5  # default, coder, writer, analyst, wechat
+        codes = [t["code"] for t in templates]
+        assert "default" in codes
+        assert "coder" in codes
+        # 每个模板需有 id, code, name 字段
+        for t in templates:
+            assert "id" in t
+            assert "code" in t
+            assert "name" in t
+            assert "allowed_tools" in t
+
+    def test_get_template(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/agent_config/coder")
+        assert r["status"] == 200
+        t = r["body"]
+        assert t["code"] == "coder"
+        assert t["name"] == "编程助手"
+
+    def test_get_template_not_found(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/agent_config/nonexistent_xyz")
+        assert r["status"] == 404
+
+
+class TestHTTPIAMEndpoints:
+    """IAM / Users 端点测试。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_get_profile(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/users/me")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["id"] == 1
+        assert data["username"] == "local-admin"
+        assert data["role"] == "ADMIN"
+        assert data["is_active"] is True
+        assert isinstance(data["teams"], list)
+
+    def test_update_profile(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/users/me",
+            "PUT",
+            data={"full_name": "测试用户", "email": "test@example.com"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["full_name"] == "测试用户"
+        assert data["email"] == "test@example.com"
+        # 验证持久化
+        r2 = _http_request(f"{self.base(bridge_server)}/api/users/me")
+        assert r2["body"]["data"]["full_name"] == "测试用户"
+
+    def test_update_preference(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/users/me/preference",
+            "PUT",
+            data={"preferred_model": "gpt-4o"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["preferred_model"] == "gpt-4o"
+
+    def test_list_users(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/users?page=1&page_size=10")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["total"] == 1
+        assert len(data["items"]) == 1
+        assert data["items"][0]["username"] == "local-admin"
+
+    def test_list_products(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/users/products")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+        assert len(data) == 0
+
+
+class TestHTTPModelsEndpoints:
+    """Models 端点测试。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_list_models(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        m = data[0]
+        assert "id" in m
+        assert "model_name" in m
+        assert "provider_name" in m
+        assert m["is_preferred"] is True
+
+    def test_list_providers(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/providers")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        assert "provider_name" in data[0]
+        assert "models" in data[0]
+
+    def test_list_runtimes(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/runtimes")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+        assert len(data) >= 1
+        assert data[0]["runtime_type"] == "openclaw"
+        assert data[0]["is_default"] is True
+
+    def test_resolve_model(self, bridge_server):
+        model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/resolve?model_name={model}")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["requested_model"] == model
+        assert "resolved_model" in data
+        assert "selected" in data
+
+    def test_resolve_model_missing(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/resolve")
+        assert r["status"] == 400
+
+    def test_get_route_profile(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/route")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "preferred_model" in data
+        assert "candidate_count" in data
+        assert "available_model_count" in data
+
+    def test_set_route_profile(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/models/route",
+            "PUT",
+            data={"preferred_model": "test-model"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["preferred_model"] == "test-model"
+
+    def test_set_route_missing_model(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/models/route",
+            "PUT",
+            data={},
+        )
+        assert r["status"] == 400
+
+    def test_usage_stub(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/usage")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["total_calls"] == 0
+        assert "breakdown" in data
+
+    def test_cost_stub(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/cost")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["total_amount"] == 0
+
+    def test_quota_stub(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/models/quota")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["daily_unlimited"] is True
+        assert data["monthly_unlimited"] is True
+
+
+class TestHTTPConversationsEndpoints:
+    """Conversations 端点测试。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_conversations_home_empty(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/conversations?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "stats" in data
+        assert "groups" in data
+        assert "history" in data
+
+    def test_conversations_stats(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/conversations/stats?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "group_count" in data
+        assert "msg_count" in data
+
+    def test_conversations_groups(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/conversations/groups?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+    def test_conversations_send_and_read(self, bridge_server):
+        """发送消息后能在 groups 和 messages 中看到。"""
+        # 先创建一个 session
+        r = _http_request(
+            f"{self.base(bridge_server)}/sessions",
+            "POST",
+            data={"user_id": "conv_test", "agent_profile": "default"},
+        )
+        assert r["status"] == 200
+        session_id = r["body"]["session_id"]
+
+        # 发送消息
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/conversations/messages",
+            "POST",
+            data={"team_id": 1, "content": "你好", "direction": "user_to_agent"},
+        )
+        assert r["status"] == 200
+        msg = r["body"]["data"]
+        assert msg["content"] == "你好"
+        assert msg["direction"] == "user_to_agent"
+
+    def test_conversations_group_messages(self, bridge_server):
+        """先创建 session + 消息，再通过 group messages 读取。"""
+        # 创建 session 并手动添加消息
+        r = _http_request(
+            f"{self.base(bridge_server)}/sessions",
+            "POST",
+            data={"user_id": "gm_test", "agent_profile": "default", "session_id": "ses_gm_test"},
+        )
+        assert r["status"] == 200
+
+        # 通过 invoke 产生消息（需 session 有消息），这里直接用 session clear 后 send
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/conversations/groups/ses_gm_test/messages?team_id=1",
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+    def test_conversations_history(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/conversations/history?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+
+class TestHTTPBillingEndpoints:
+    """Billing 端点测试（stub）。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_wallet(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/billing/wallet")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["balance"] == 0
+        assert data["currency"] == "CNY"
+
+    def test_records(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/billing/records?page=1&page_size=10")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["total"] == 0
+        assert data["items"] == []
+
+    def test_summary(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/billing/summary")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["total_spent"] == 0
+        assert data["total_recharge"] == 0
+
+
+class TestHTTPChannelsEndpoints:
+    """Channels 端点测试。"""
+
+    def base(self, bridge_server):
+        return bridge_server["url"]
+
+    def test_channels_overview(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/channels?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "supported_count" in data
+        assert "items" in data
+        assert data["supported_count"] == 4
+        keys = [i["channel_key"] for i in data["items"]]
+        assert "wechat_work" in keys
+        assert "feishu" in keys
+        assert "wechat_personal_openclaw" in keys
+
+    def test_wechat_work_config(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/channels/wechat-work/config?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["channel_key"] == "wechat_work"
+        assert "corp_id" in data
+        assert "secret_configured" in data
+
+    def test_wechat_work_config_update(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/wechat-work/config",
+            "POST",
+            data={"team_id": 1, "corp_id": "corp123", "agent_id": "agent456"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["corp_id"] == "corp123"
+        assert data["configured"] is True
+
+    def test_feishu_config(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/channels/feishu/config?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["channel_key"] == "feishu"
+
+    def test_feishu_config_update(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/feishu/config",
+            "POST",
+            data={"team_id": 1, "app_id": "app123", "app_secret": "secret456"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["app_id"] == "app123"
+        assert data["secret_configured"] is True
+
+    def test_wechat_personal_plugin_config(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/channels/wechat-personal-plugin/config?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["channel_key"] == "wechat_personal_plugin"
+        assert "setup_status" in data
+
+    def test_wechat_personal_openclaw_config(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/channels/wechat-personal-openclaw/config?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["channel_key"] == "wechat_personal_openclaw"
+        assert "gateway_online" in data
+        assert "setup_status" in data
+
+    def test_bindings_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/channels/bindings?team_id=1")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["total"] == 0
+        assert data["items"] == []
+
+    def test_binding_create(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings/create",
+            "POST",
+            data={
+                "team_id": 1,
+                "binding_type": "user",
+                "binding_target_id": "target_001",
+                "binding_target_name": "测试绑定",
+            },
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["binding_target_id"] == "target_001"
+        assert data["status"] == "pending"
+
+    # --- Step 1: Channels 补全 ---
+
+    def test_binding_disable(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings/disable",
+            "POST",
+            data={"binding_id": 1},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["status"] == "disabled"
+
+    def test_binding_regenerate_code(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings/regenerate-code",
+            "POST",
+            data={"binding_id": 1},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "binding_code" in data
+
+    def test_openclaw_qr_start(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/wechat-personal-openclaw/qr/start",
+            "POST",
+            data={},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "session_id" in data
+
+    def test_openclaw_qr_status(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/wechat-personal-openclaw/qr/status"
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "status" in data
+
+    # --- Step 2: Tenant ---
+
+    def test_tenant_context(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/users/me/context")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "user_id" in data or "id" in data
+        assert "teams" in data
+
+    def test_company_verification_get(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/company/verification")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["status"] == "none"
+
+    def test_company_verification_submit(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/company/verification",
+            "POST",
+            data={"company_name": "测试公司"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["status"] == "pending"
+
+    def test_company_verification_approve(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/company/verification/approve",
+            "POST",
+            data={},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["status"] == "approved"
+
+    # --- Step 3: File / Documents ---
+
+    def test_documents_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/documents")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+    def test_document_get(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/documents/1")
+        # 可能 404（不存在），也可能 200
+        assert r["status"] in (200, 404)
+
+    def test_product_documents(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/products/1/documents")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+    # --- Step 4: Workflow ---
+
+    def test_workflows_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/workflows")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+    def test_workflow_create(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/workflows",
+            "POST",
+            data={
+                "name": "测试工作流",
+                "description": "test workflow",
+                "nodes": [],
+                "edges": [],
+            },
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["name"] == "测试工作流"
+        assert "id" in data
+
+    def test_workflow_get(self, bridge_server):
+        # 先创建
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/workflows",
+            "POST",
+            data={"name": "get-test", "nodes": [], "edges": []},
+        )
+        wf_id = r1["body"]["data"]["id"]
+        # 再获取
+        r2 = _http_request(f"{self.base(bridge_server)}/api/workflows/{wf_id}")
+        assert r2["status"] == 200
+        assert r2["body"]["data"]["name"] == "get-test"
+
+    def test_workflow_run(self, bridge_server):
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/workflows",
+            "POST",
+            data={"name": "run-test", "nodes": [], "edges": []},
+        )
+        wf_id = r1["body"]["data"]["id"]
+        r2 = _http_request(
+            f"{self.base(bridge_server)}/api/workflows/{wf_id}/run",
+            "POST",
+            data={},
+        )
+        assert r2["status"] == 200
+        assert "execution_id" in r2["body"]["data"]
+
+    def test_workflow_execution_logs(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/workflows/executions/fake-exec-id/logs"
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+    # --- Step 5: Devices ---
+
+    def test_devices_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/devices")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+        assert len(data) >= 1
+
+    def test_devices_account_state(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/devices/account-state?installation_id=test"
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "state" in data
+
+    def test_devices_online(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/devices/online")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "runtime_label" in data
+
+    def test_devices_bootstrap(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/devices/bootstrap",
+            "POST",
+            data={
+                "installation_id": "inst_001",
+                "device_name": "测试设备",
+            },
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "device_id" in data
+
+    def test_devices_pair_code(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/devices/pair-code",
+            "POST",
+            data={},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "pair_code" in data
+
+    def test_devices_claim(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/devices/claim",
+            "POST",
+            data={"installation_id": "inst_002", "device_name": "claim设备"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "device_id" in data
+
+    def test_device_update(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/devices/1",
+            "PUT",
+            data={"device_name": "新名称"},
+        )
+        assert r["status"] == 200
+
+    def test_device_delete(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/devices/1",
+            "DELETE",
+        )
+        assert r["status"] == 200
+
+    # --- Step 6: Knowledge 新路径 ---
+
+    def test_platform_knowledge_list(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/list?team_id=1"
+        )
+        assert r["status"] == 200
+
+    def test_platform_knowledge_search(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/search?query=test&team_id=1"
+        )
+        assert r["status"] == 200
+
+    def test_platform_knowledge_stats(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/stats?team_id=1"
+        )
+        assert r["status"] == 200
+
+    def test_platform_knowledge_config(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/config?team_id=1"
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "watch_dir" in data
+
+    def test_platform_knowledge_config_update(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/config/update",
+            "POST",
+            data={"team_id": 1, "watch_dir": "/tmp/test_knowledge"},
+        )
+        assert r["status"] == 200
+
+    def test_platform_knowledge_download(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/download?source_name=test.txt&team_id=1"
+        )
+        # 可能 404（文件不存在）或 200
+        assert r["status"] in (200, 404)
+
+    # --- Step 7: Approval ---
+
+    def test_approvals_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/approvals")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "items" in data
+        assert "total" in data
+
+    def test_approval_request(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/approvals/request",
+            "POST",
+            data={
+                "approval_type": "tool_access",
+                "title": "请求使用终端",
+                "reason": "需要执行部署脚本",
+                "risk_level": "medium",
+            },
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["status"] == "pending"
+        assert "approval_id" in data
+
+    def test_approval_get(self, bridge_server):
+        # 先创建
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/platform/approvals/request",
+            "POST",
+            data={
+                "approval_type": "data_access",
+                "title": "数据访问",
+                "reason": "分析报表",
+                "risk_level": "low",
+            },
+        )
+        aid = r1["body"]["data"]["approval_id"]
+        # 再获取
+        r2 = _http_request(f"{self.base(bridge_server)}/api/platform/approvals/{aid}")
+        assert r2["status"] == 200
+        assert r2["body"]["data"]["approval_id"] == aid
+
+    def test_approval_resolve(self, bridge_server):
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/platform/approvals/request",
+            "POST",
+            data={
+                "approval_type": "exec_access",
+                "title": "执行权限",
+                "reason": "测试",
+                "risk_level": "high",
+            },
+        )
+        aid = r1["body"]["data"]["approval_id"]
+        r2 = _http_request(
+            f"{self.base(bridge_server)}/api/platform/approvals/{aid}/resolve",
+            "POST",
+            data={"action": "approved"},
+        )
+        assert r2["status"] == 200
+        assert r2["body"]["data"]["status"] == "approved"
+
+    # --- Step 8: Audit ---
+
+    def test_audit_events_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/audit/events")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "items" in data
+        assert "total" in data
+
+    def test_audit_record(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/audit/events",
+            "POST",
+            data={
+                "category": "operation",
+                "event_type": "tool_call",
+                "title": "调用终端工具",
+                "summary": "执行 ls 命令",
+            },
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "event_id" in data
+
+    def test_audit_summary(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/platform/audit/summary")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "total" in data
+
+    # --- Step 9: ApiKey ---
+
+    def test_app_keys_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/users/app-keys")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "items" in data
+        assert "total" in data
+
+    def test_app_key_create(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys",
+            "POST",
+            data={"name": "测试Key"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["name"] == "测试Key"
+        assert "app_key" in data
+        assert "app_secret" in data
+
+    def test_app_key_rename(self, bridge_server):
+        # 先创建
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys",
+            "POST",
+            data={"name": "rename-test"},
+        )
+        kid = r1["body"]["data"]["id"]
+        # 重命名
+        r2 = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys/{kid}/name",
+            "PUT",
+            data={"name": "新名称"},
+        )
+        assert r2["status"] == 200
+        assert r2["body"]["data"]["name"] == "新名称"
+
+    def test_app_key_set_active(self, bridge_server):
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys",
+            "POST",
+            data={"name": "active-test"},
+        )
+        kid = r1["body"]["data"]["id"]
+        r2 = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys/{kid}",
+            "PATCH",
+            data={"is_active": False},
+        )
+        assert r2["status"] == 200
+        assert r2["body"]["data"]["is_active"] is False
+
+    def test_app_key_delete(self, bridge_server):
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys",
+            "POST",
+            data={"name": "delete-test"},
+        )
+        kid = r1["body"]["data"]["id"]
+        r2 = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys/{kid}",
+            "DELETE",
+        )
+        assert r2["status"] == 200
+
+    def test_app_key_issue_token(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/users/app-keys/default/token",
+            "POST",
+            data={},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert "token" in data
+
+    def test_llm_keys_list(self, bridge_server):
+        r = _http_request(f"{self.base(bridge_server)}/api/llm/keys")
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert isinstance(data, list)
+
+    def test_llm_key_create(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/llm/keys",
+            "POST",
+            data={
+                "provider": "openai",
+                "api_key": "sk-test123",
+                "name": "测试LLM密钥",
+            },
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["provider"] == "openai"
+        assert "id" in data
+
+    def test_llm_key_update(self, bridge_server):
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/llm/keys",
+            "POST",
+            data={"provider": "anthropic", "api_key": "sk-ant-test", "name": "update-test"},
+        )
+        kid = r1["body"]["data"]["id"]
+        r2 = _http_request(
+            f"{self.base(bridge_server)}/api/llm/keys/{kid}",
+            "PUT",
+            data={"name": "更新后名称"},
+        )
+        assert r2["status"] == 200
+        assert r2["body"]["data"]["name"] == "更新后名称"
+
+    def test_llm_key_delete(self, bridge_server):
+        r1 = _http_request(
+            f"{self.base(bridge_server)}/api/llm/keys",
+            "POST",
+            data={"provider": "deepseek", "api_key": "sk-ds-test", "name": "delete-test"},
+        )
+        kid = r1["body"]["data"]["id"]
+        r2 = _http_request(
+            f"{self.base(bridge_server)}/api/llm/keys/{kid}",
+            "DELETE",
+        )
+        assert r2["status"] == 200
+
+    # --- Step 10: Policy ---
+
+    def test_policy_tool_access_check(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/policy/tool-access/check",
+            "POST",
+            data={"tool_name": "terminal"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["allowed"] is True
+
+    def test_policy_data_access_check(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/policy/data-access/check",
+            "POST",
+            data={"resource": "customer_db"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["allowed"] is True
+
+    def test_policy_exec_access_check(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/policy/exec-access/check",
+            "POST",
+            data={"command": "deploy.sh"},
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["allowed"] is True
+
+    # --- Step 11: Voice ---
+
+    def test_voice_asr(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/asr",
+            "POST",
+            data={},
+        )
+        assert r["status"] == 501
+
+    def test_voice_tts(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/tts",
+            "POST",
+            data={"text": "你好"},
+        )
+        assert r["status"] == 501
+
+    def test_voice_audio_speech(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/audio/speech",
+            "POST",
+            data={"text": "测试"},
+        )
+        assert r["status"] == 501
+
+
+# ===================================================================
 # 清理
 # ===================================================================
 

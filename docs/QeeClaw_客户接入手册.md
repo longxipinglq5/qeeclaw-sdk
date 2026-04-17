@@ -1,6 +1,6 @@
 # QeeClaw 客户接入手册
 
-最后更新：2026-04-09
+最后更新：2026-04-16
 
 ## 1. 这份文档解决什么问题
 
@@ -29,6 +29,7 @@
 - `Base URL`：服务所在的 IP 与端口（例如本地默认 `http://127.0.0.1:21747`）
 - 客户凭证：默认无需填写（填 `none`）或使用服务部署时下发的本地密钥
 - `runtimeType`：固定为 `hermes`，此时将无缝跳过云端业务数据的校验
+- **本地 Hermes Bridge Server 已实现 core-sdk 全部 17 个模块（145+ 端点）**，包括智体管理、知识库、会话、记忆、审批、审计、工作流、设备管理等。本地客户可使用与云端完全一致的 SDK 接口，无需依赖云端服务
 
 ### 对 `Ruisi` 这类本地优先产品
 
@@ -97,24 +98,44 @@
 - `GET /api/billing/records`
 - `GET /api/billing/summary`
 
-## 5. 哪些接口不该再给客户
+## 5. 云端与本地模式的接口范围差异
 
-以下域接口不建议作为客户公开云端 API：
+### 云端模式
 
-- `knowledge`
-- `conversations`
-- `devices`
-- `channels`
-- `audit`
-- `approvals`
-- `workflows`
-- `memory`
-- `policy`
+以下域接口在云端 SaaS 模式下不作为客户公开 API 暴露（由平台内部控制面管理）：
 
-原因：
+- `knowledge`、`conversations`、`devices`、`channels`
+- `audit`、`approvals`、`workflows`、`memory`、`policy`
 
-- 这些更适合平台内部控制面
-- 对本地优先产品，这些能力应沉到本地桌面数据层 / 本地 gateway / 本地 sidecar
+云端客户公开 API 仅保留 context + models + billing 三个域（共 15 个端点）。
+
+### 本地 Hermes Server 模式
+
+本地部署（`http://127.0.0.1:21747`）时，**上述所有域的接口均完整可用**。Bridge Server 已实现 core-sdk 全部 17 个模块、145+ 个端点，本地客户可以使用与云端完全一致的 `@qeeclaw/core-sdk` 进行对接。
+
+### 5.1 本地 Hermes Server 完整能力清单
+
+| 模块 | 端点数 | 路径前缀 | 说明 |
+|------|--------|---------|------|
+| agent | 11 | `/api/agent/*` | 智体 Profile 管理 |
+| models | 9 | `/api/platform/models/*` | 模型列表、路由、用量 |
+| iam | 5 | `/api/users/*` | 用户身份 |
+| tenant | 4 | `/api/users/me/context` | 工作空间上下文 |
+| billing | 3 | `/api/billing/*` | 计费（本地返回默认值） |
+| conversations | 6 | `/api/platform/conversations/*` | 会话中心 |
+| channels | 14 | `/api/platform/channels/*` | 渠道配置 + 绑定 |
+| memory | 5 | `/api/platform/memory/*` | 记忆存取 |
+| knowledge | 8 | `/api/platform/knowledge/*` | 知识库 CRUD + 向量检索 |
+| devices | 8 | `/api/platform/devices/*` | 设备管理 |
+| file | 3 | `/api/documents/*` | 文档管理 |
+| workflow | 5 | `/api/workflows/*` | 工作流 |
+| approval | 4 | `/api/platform/approvals/*` | 审批流 |
+| audit | 3 | `/api/platform/audit/*` | 审计日志 |
+| apikey | 10 | `/api/users/app-keys/*` | API Key 管理 |
+| policy | 3 | `/api/platform/policy/*` | 策略检查 |
+| voice | 3 | `/api/asr`, `/api/tts` | 语音（Stub，返回 501） |
+
+**总计 17/17 模块，145+ 端点。** 详细 API 参考请见 `QeeClaw_Bridge_Server_API参考手册.md`。
 
 ## 6. Web / 桌面 / 移动端怎么接
 
