@@ -26,7 +26,7 @@ import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from threading import Thread
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     import yaml
@@ -81,11 +81,33 @@ BRIDGE_PORT = int(os.environ.get(
 # 日志显示地址：0.0.0.0/:: 不可在浏览器中访问，替换为 127.0.0.1
 _DISPLAY_HOST = "127.0.0.1" if BRIDGE_HOST in ("0.0.0.0", "::") else BRIDGE_HOST
 
+
+def _resolve_repo_default_path(*relative_candidates: str) -> str:
+    here = os.path.dirname(__file__)
+    resolved = [os.path.abspath(os.path.join(here, candidate)) for candidate in relative_candidates]
+    for path in resolved:
+        if os.path.exists(path):
+            return path
+    return resolved[0]
+
+
+def _resolve_existing_override_path(override_path: Optional[str], *relative_candidates: str) -> str:
+    if override_path:
+        expanded = os.path.abspath(os.path.expanduser(str(override_path)))
+        if os.path.exists(expanded):
+            return expanded
+    return _resolve_repo_default_path(*relative_candidates)
+
 # hermes-agent 源码路径
 HERMES_AGENT_DIR = os.environ.get(
     "QEECLAW_HERMES_AGENT_DIR",
     _cfg("hermes", "agent_dir",
-         os.path.join(os.path.dirname(__file__), "..", "..", "vendor", "hermes-agent")),
+         _resolve_repo_default_path("../../../vendor/hermes-agent", "../../vendor/hermes-agent")),
+)
+HERMES_AGENT_DIR = _resolve_existing_override_path(
+    HERMES_AGENT_DIR,
+    "../../../vendor/hermes-agent",
+    "../../vendor/hermes-agent",
 )
 
 # HERMES_HOME: 数据/配置目录，默认 ~/.qeeclaw_hermes（避免与独立安装的 hermes-agent 冲突）
@@ -95,7 +117,12 @@ if "HERMES_HOME" not in os.environ:
 # HUD 源码路径
 HUD_DIR = os.environ.get(
     "QEECLAW_HUD_DIR",
-    _cfg("hud", "dir", os.path.join(os.path.dirname(__file__), "..", "vendor", "hermes-hudui")),
+    _cfg("hud", "dir", _resolve_repo_default_path("../../../vendor/hermes-hudui", "../vendor/hermes-hudui")),
+)
+HUD_DIR = _resolve_existing_override_path(
+    HUD_DIR,
+    "../../../vendor/hermes-hudui",
+    "../vendor/hermes-hudui",
 )
 HUD_ENABLED = _cfg("hud", "enabled", True)
 HUD_PORT = _cfg("hud", "port", 8134)
@@ -274,6 +301,23 @@ def _platform_json_response(handler, status: int, data, message: str = "success"
     })
 
 
+def _url_to_qr_data_url(url: str) -> str:
+    """将 URL 生成为 base64 编码的 PNG 二维码 data URL。"""
+    try:
+        import base64
+        import io
+        import qrcode
+        img = qrcode.make(url)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{b64}"
+    except Exception as exc:
+        print(f"[hermes-bridge] _url_to_qr_data_url failed: {exc}")
+        traceback.print_exc()
+        return url
+
+
 # ---------------------------------------------------------------------------
 # AgentPool：管理 AIAgent 配置，按请求创建实例
 # ---------------------------------------------------------------------------
@@ -391,8 +435,8 @@ class AgentPool:
             )
 
         # 从 profile 获取默认参数
-        effective_model = model or (profile.model if profile else "") or os.environ.get("HERMES_MODEL", "")
-        effective_provider = provider or ""
+        effective_model = model or (profile.model if profile else "") or _get_preferred_model()
+        effective_provider = _resolve_runtime_provider(provider or "", effective_model)
         effective_max_tokens = max_tokens or (profile.max_tokens if profile else None)
         effective_max_iterations = (profile.max_iterations if profile else 30) or 30
 
@@ -420,6 +464,15 @@ class AgentPool:
         }
         if effective_provider:
             agent_kwargs["provider"] = effective_provider
+        runtime_client = _resolve_runtime_client_config(effective_provider, effective_model)
+        if not _runtime_client_is_configured(runtime_client):
+            _raise_missing_runtime_credentials(runtime_client)
+        if runtime_client.get("credential_pool") is not None:
+            agent_kwargs["credential_pool"] = runtime_client["credential_pool"]
+        if runtime_client.get("api_key"):
+            agent_kwargs["api_key"] = runtime_client["api_key"]
+        if runtime_client.get("base_url"):
+            agent_kwargs["base_url"] = runtime_client["base_url"]
         if effective_max_tokens is not None:
             agent_kwargs["max_tokens"] = effective_max_tokens
         if enabled_ts is not None:
@@ -512,9 +565,12 @@ class AgentPool:
                 "Please run: pip install openai"
             )
 
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
-        base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+        runtime_client = _resolve_runtime_client_config(provider, model)
+        if not _runtime_client_is_configured(runtime_client):
+            _raise_missing_runtime_credentials(runtime_client)
+        api_key = runtime_client["api_key"]
+        base_url = runtime_client["base_url"]
+        default_model = runtime_client["model"]
 
         client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
@@ -550,7 +606,7 @@ class AgentPool:
         return {
             "text": text or "",
             "model": response.model,
-            "provider": provider or "fallback",
+            "provider": runtime_client["provider"] or provider or "fallback",
             "usage": usage_data,
             "_fallback": True,
             "_import_error": import_error,
@@ -572,9 +628,12 @@ class AgentPool:
         except ImportError:
             raise RuntimeError("openai package is not installed.")
 
-        api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
-        base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-        default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+        runtime_client = _resolve_runtime_client_config(provider, model)
+        if not _runtime_client_is_configured(runtime_client):
+            _raise_missing_runtime_credentials(runtime_client)
+        api_key = runtime_client["api_key"]
+        base_url = runtime_client["base_url"]
+        default_model = runtime_client["model"]
 
         client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
@@ -676,29 +735,345 @@ def _infer_provider_from_url(base_url: str) -> str:
     return "custom"
 
 
-def _discover_models() -> List[Dict[str, Any]]:
-    """从环境变量和 AgentProfile 枚举可用模型。"""
-    models: Dict[str, Dict[str, Any]] = {}
-    base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-    provider = _infer_provider_from_url(base_url)
-    default_model = os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+_PROVIDER_ALIASES = {
+    "aliyun": "alibaba",
+    "dashscope": "alibaba",
+    "qwen-oauth": "alibaba",
+}
 
-    # 主模型
-    models[default_model] = {
-        "id": _get_model_id(default_model),
-        "provider_name": provider,
-        "model_name": default_model,
-        "provider_model_id": default_model,
-        "label": default_model,
-        "is_preferred": True,
+
+def _normalize_provider_name(provider_name: Optional[str]) -> str:
+    raw_name = str(provider_name or "").strip().lower()
+    if not raw_name:
+        return ""
+    return _PROVIDER_ALIASES.get(raw_name, raw_name)
+
+
+def _get_runtime_hermes_home() -> str:
+    return os.environ.get("HERMES_HOME", os.path.expanduser("~/.qeeclaw_hermes"))
+
+
+def _read_json_file(file_path: str, default: Any) -> Any:
+    if os.path.isfile(file_path):
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return default
+
+
+def _load_auth_credential_pools() -> Dict[str, List[Dict[str, Any]]]:
+    auth_file = os.path.join(_get_runtime_hermes_home(), "auth.json")
+    data = _read_json_file(auth_file, {})
+    raw_pools = data.get("credential_pool") if isinstance(data, dict) else None
+    if not isinstance(raw_pools, dict):
+        return {}
+    pools: Dict[str, List[Dict[str, Any]]] = {}
+    for provider_name, entries in raw_pools.items():
+        normalized = _normalize_provider_name(provider_name)
+        if not normalized or not isinstance(entries, list) or not entries:
+            continue
+        pools.setdefault(normalized, []).extend([item for item in entries if isinstance(item, dict)])
+    return pools
+
+
+def _load_models_dev_cache() -> Dict[str, Any]:
+    cache_file = os.path.join(_get_runtime_hermes_home(), "models_dev_cache.json")
+    data = _read_json_file(cache_file, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _get_user_preferred_model() -> str:
+    profile = _load_user_profile()
+    pref = (profile.get("preference") or {}).get("preferred_model")
+    if pref:
+        return str(pref)
+    return ""
+
+
+def _make_model_record(model_name: str, provider_name: str, is_preferred: bool = False, label: Optional[str] = None) -> Dict[str, Any]:
+    normalized_provider = _normalize_provider_name(provider_name) or "openai"
+    default_currency = "CNY" if normalized_provider == "alibaba" else "USD"
+    return {
+        "id": _get_model_id(model_name),
+        "provider_name": normalized_provider,
+        "model_name": model_name,
+        "provider_model_id": model_name,
+        "label": label or model_name,
+        "is_preferred": is_preferred,
         "availability_status": "available",
         "unit_price": 0,
         "output_unit_price": 0,
-        "currency": "CNY",
+        "currency": default_currency,
         "billing_mode": "token",
         "text_unit_chars": 1000,
         "text_min_amount": 0,
     }
+
+
+def _infer_provider_from_model_name(model_name: str) -> str:
+    if not model_name:
+        return ""
+    normalized_model = str(model_name).strip()
+    prefix = _normalize_provider_name(normalized_model.split("/", 1)[0])
+    auth_pools = _load_auth_credential_pools()
+    if prefix and prefix in auth_pools:
+        return prefix
+    cache = _load_models_dev_cache()
+
+    # Prefer providers that actually have local credentials.
+    for provider_name in auth_pools.keys():
+        provider_payload = cache.get(provider_name) if isinstance(cache, dict) else None
+        models = provider_payload.get("models") if isinstance(provider_payload, dict) else None
+        if not isinstance(models, dict):
+            continue
+        if normalized_model in models:
+            return provider_name
+        bare_model = normalized_model.split("/", 1)[-1]
+        if bare_model in models:
+            return provider_name
+
+    for provider_name, provider_payload in cache.items():
+        normalized_provider = _normalize_provider_name(provider_name)
+        models = provider_payload.get("models") if isinstance(provider_payload, dict) else None
+        if not isinstance(models, dict):
+            continue
+        if normalized_model in models:
+            return normalized_provider
+        bare_model = normalized_model.split("/", 1)[-1]
+        if bare_model in models:
+            return normalized_provider
+    return prefix
+
+
+def _resolve_runtime_provider(provider_name: Optional[str], model_name: Optional[str]) -> str:
+    normalized_provider = _normalize_provider_name(provider_name)
+    if normalized_provider:
+        return normalized_provider
+
+    auth_pools = _load_auth_credential_pools()
+    if len(auth_pools) == 1:
+        sole_provider = next(iter(auth_pools.keys()))
+        inferred_from_model = _infer_provider_from_model_name(str(model_name or ""))
+        return inferred_from_model or sole_provider
+
+    inferred_from_model = _infer_provider_from_model_name(str(model_name or ""))
+    if inferred_from_model:
+        return inferred_from_model
+
+    base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+    inferred_from_env = _normalize_provider_name(_infer_provider_from_url(base_url))
+    if not inferred_from_env:
+        return ""
+    lowered_base_url = str(base_url).lower()
+    if "localhost" in lowered_base_url or "127.0.0.1" in lowered_base_url:
+        return inferred_from_env
+    required_env_keys = {
+        "alibaba": ("DASHSCOPE_API_KEY", "ALIBABA_API_KEY"),
+        "deepseek": ("DEEPSEEK_API_KEY",),
+        "openrouter": ("OPENROUTER_API_KEY",),
+        "openai": ("OPENAI_API_KEY",),
+    }
+    for env_key in required_env_keys.get(inferred_from_env, ()):
+        if os.environ.get(env_key):
+            return inferred_from_env
+    return ""
+
+
+def _load_runtime_credential(provider_name: Optional[str], model_name: Optional[str]) -> Tuple[str, Any, Any]:
+    resolved_provider = _resolve_runtime_provider(provider_name, model_name)
+    if not resolved_provider:
+        return "", None, None
+
+    direct_entries = _load_auth_credential_pools().get(resolved_provider) or []
+    if direct_entries:
+        return resolved_provider, None, direct_entries[0]
+
+    try:
+        _ensure_hermes_on_path()
+        from agent.credential_pool import load_pool
+
+        pool = load_pool(resolved_provider)
+        if pool is None or (hasattr(pool, "has_credentials") and not pool.has_credentials()):
+            return resolved_provider, None, None
+        entries = pool.entries() if hasattr(pool, "entries") else []
+        entry = pool.current() if hasattr(pool, "current") else None
+        if entry is None and entries:
+            entry = entries[0]
+        return resolved_provider, pool, entry
+    except Exception:
+        return resolved_provider, None, None
+
+
+def _resolve_runtime_client_config(provider_name: Optional[str], model_name: Optional[str]) -> Dict[str, Any]:
+    resolved_model = str(model_name or "").strip() or _get_user_preferred_model()
+    if not resolved_model:
+        resolved_model = os.environ.get("HERMES_MODEL", "")
+
+    resolved_provider, credential_pool, credential_entry = _load_runtime_credential(provider_name, resolved_model)
+    runtime_api_key = None
+    runtime_base_url = None
+    if credential_entry is not None:
+        if isinstance(credential_entry, dict):
+            runtime_api_key = credential_entry.get("runtime_api_key") or credential_entry.get("access_token")
+            runtime_base_url = credential_entry.get("runtime_base_url") or credential_entry.get("base_url")
+        else:
+            runtime_api_key = getattr(credential_entry, "runtime_api_key", None) or getattr(credential_entry, "access_token", None)
+            runtime_base_url = getattr(credential_entry, "runtime_base_url", None) or getattr(credential_entry, "base_url", None)
+
+    if not runtime_api_key:
+        provider_env_keys: List[str] = []
+        if resolved_provider == "alibaba":
+            provider_env_keys = ["DASHSCOPE_API_KEY", "ALIBABA_API_KEY"]
+        elif resolved_provider == "deepseek":
+            provider_env_keys = ["DEEPSEEK_API_KEY"]
+        elif resolved_provider == "openrouter":
+            provider_env_keys = ["OPENROUTER_API_KEY"]
+        elif resolved_provider == "openai":
+            provider_env_keys = ["OPENAI_API_KEY"]
+
+        for env_key in provider_env_keys:
+            runtime_api_key = os.environ.get(env_key, "")
+            if runtime_api_key:
+                break
+
+        if not runtime_api_key:
+            runtime_api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+    if not runtime_base_url:
+        if resolved_provider == "alibaba":
+            runtime_base_url = (
+                os.environ.get("DASHSCOPE_BASE_URL")
+                or os.environ.get("OPENAI_BASE_URL")
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
+        elif resolved_provider == "deepseek":
+            runtime_base_url = (
+                os.environ.get("DEEPSEEK_BASE_URL")
+                or os.environ.get("OPENAI_BASE_URL")
+                or "https://api.deepseek.com/v1"
+            )
+        elif resolved_provider == "openrouter":
+            runtime_base_url = os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+        else:
+            runtime_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+
+    return {
+        "provider": resolved_provider or _normalize_provider_name(_infer_provider_from_url(str(runtime_base_url))) or "",
+        "model": resolved_model,
+        "api_key": runtime_api_key,
+        "base_url": runtime_base_url,
+        "credential_pool": credential_pool,
+    }
+
+
+def _runtime_client_is_configured(runtime_client: Dict[str, Any]) -> bool:
+    if runtime_client.get("credential_pool") is not None:
+        return True
+    if runtime_client.get("api_key"):
+        return True
+    base_url = str(runtime_client.get("base_url") or "").lower()
+    return "localhost" in base_url or "127.0.0.1" in base_url
+
+
+def _raise_missing_runtime_credentials(runtime_client: Dict[str, Any]) -> None:
+    provider = runtime_client.get("provider") or "the selected provider"
+    model = runtime_client.get("model") or "the selected model"
+    raise RuntimeError(
+        f"No local runtime credentials configured for provider '{provider}' and model '{model}'. "
+        "Configure a real LLM credential in ~/.qeeclaw_hermes/auth.json credential_pool, "
+        "or set a provider API key such as DASHSCOPE_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY."
+    )
+
+
+def _summarize_providers(models: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    preferred_model = _get_preferred_model()
+    for item in models:
+        provider_name = _normalize_provider_name(item.get("provider_name")) or "openai"
+        group = grouped.setdefault(provider_name, {
+            "provider_name": provider_name,
+            "configured": True,
+            "provider_status": "active",
+            "visible_count": 0,
+            "hidden_count": 0,
+            "disabled_count": 0,
+            "models": [],
+            "preferred_model_supported": False,
+            "is_default_route_provider": False,
+            "default_route_model": None,
+            "default_route_provider_model_id": None,
+        })
+        group["visible_count"] += 1
+        group["models"].append(item["model_name"])
+        if item["model_name"] == preferred_model:
+            group["preferred_model_supported"] = True
+            group["is_default_route_provider"] = True
+            group["default_route_model"] = item["model_name"]
+            group["default_route_provider_model_id"] = item["provider_model_id"]
+
+    if grouped and preferred_model:
+        for group in grouped.values():
+            if group["preferred_model_supported"]:
+                break
+        else:
+            first_provider = next(iter(grouped.values()))
+            first_provider["default_route_model"] = preferred_model
+            first_provider["default_route_provider_model_id"] = preferred_model
+
+    return list(grouped.values())
+
+
+def _discover_models() -> List[Dict[str, Any]]:
+    """从本地凭证池和模型缓存枚举可用模型；无本地配置时回退到环境变量。"""
+    models: Dict[str, Dict[str, Any]] = {}
+    preferred_model = _get_user_preferred_model()
+    auth_pools = _load_auth_credential_pools()
+    cache = _load_models_dev_cache()
+
+    if auth_pools:
+        for provider_name in auth_pools.keys():
+            provider_cache = cache.get(provider_name) if isinstance(cache, dict) else None
+            cache_models = provider_cache.get("models") if isinstance(provider_cache, dict) else None
+            if isinstance(cache_models, dict) and cache_models:
+                for model_name, payload in cache_models.items():
+                    label = payload.get("name") if isinstance(payload, dict) else None
+                    models[model_name] = _make_model_record(
+                        model_name=model_name,
+                        provider_name=provider_name,
+                        is_preferred=False,
+                        label=label,
+                    )
+
+        if preferred_model and preferred_model not in models:
+            inferred_provider = _resolve_runtime_provider(None, preferred_model)
+            models[preferred_model] = _make_model_record(
+                model_name=preferred_model,
+                provider_name=inferred_provider or next(iter(auth_pools.keys())),
+                is_preferred=True,
+            )
+
+        if models:
+            if preferred_model and preferred_model in models:
+                models[preferred_model]["is_preferred"] = True
+            else:
+                first_model = next(iter(models.values()))
+                first_model["is_preferred"] = True
+            return list(models.values())
+
+    env_model = os.environ.get("HERMES_MODEL", "").strip()
+    env_provider = _normalize_provider_name(_infer_provider_from_url(
+        os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+    ))
+    env_runtime = _resolve_runtime_client_config(env_provider, env_model)
+    if not _runtime_client_is_configured(env_runtime):
+        return []
+
+    provider = env_runtime.get("provider") or env_provider or "openai"
+    default_model = env_runtime.get("model") or env_model
+    if not default_model:
+        return []
+    models[default_model] = _make_model_record(default_model, provider, is_preferred=True)
 
     # 从 AgentProfile 收集额外模型
     try:
@@ -707,21 +1082,7 @@ def _discover_models() -> List[Dict[str, Any]]:
         for p in sm._profiles.values():
             m = p.model
             if m and m not in models:
-                models[m] = {
-                    "id": _get_model_id(m),
-                    "provider_name": provider,
-                    "model_name": m,
-                    "provider_model_id": m,
-                    "label": m,
-                    "is_preferred": False,
-                    "availability_status": "available",
-                    "unit_price": 0,
-                    "output_unit_price": 0,
-                    "currency": "CNY",
-                    "billing_mode": "token",
-                    "text_unit_chars": 1000,
-                    "text_min_amount": 0,
-                }
+                models[m] = _make_model_record(m, _resolve_runtime_provider(None, m) or provider, is_preferred=False)
     except Exception:
         pass
 
@@ -730,11 +1091,16 @@ def _discover_models() -> List[Dict[str, Any]]:
 
 def _get_preferred_model() -> str:
     """获取当前 preferred model：优先用户偏好 > 环境变量默认。"""
-    profile = _load_user_profile()
-    pref = (profile.get("preference") or {}).get("preferred_model")
+    pref = _get_user_preferred_model()
     if pref:
         return pref
-    return os.environ.get("HERMES_MODEL", "deepseek/deepseek-v3.2-exp")
+    models = _discover_models()
+    for item in models:
+        if item.get("is_preferred"):
+            return item.get("model_name") or ""
+    if models:
+        return models[0].get("model_name") or ""
+    return os.environ.get("HERMES_MODEL", "")
 
 
 # ---------------------------------------------------------------------------
@@ -743,6 +1109,21 @@ def _get_preferred_model() -> str:
 
 _HERMES_HOME = os.environ.get("HERMES_HOME", os.path.expanduser("~/.qeeclaw_hermes"))
 _WORKFLOWS_FILE = os.path.join(_HERMES_HOME, "workflows.json")
+_BUILDER_PROJECTS_DIR = os.path.join(_HERMES_HOME, "builder", "projects")
+
+# Import builder SQLite storage
+try:
+    from builder_storage import (
+        load_builder_project as _load_builder_project,
+        list_builder_projects as _list_builder_projects,
+        save_builder_project as _save_builder_project,
+        delete_builder_project as _delete_builder_project,
+        run_builder_project_test as _run_builder_project_test,
+    )
+    _BUILDER_SQLITE_ENABLED = True
+except ImportError:
+    _BUILDER_SQLITE_ENABLED = False
+    print("[bridge] WARNING: builder_storage.py not found, using legacy JSON file storage")
 
 
 def _load_workflows() -> List[Dict[str, Any]]:
@@ -764,6 +1145,195 @@ def _save_workflows(workflows: List[Dict[str, Any]]):
         print(f"[bridge] WARNING: Failed to save workflows: {e}")
 
 
+def _sanitize_builder_project_id(project_id: str) -> Optional[str]:
+    value = str(project_id or "").strip()
+    if not value:
+        return None
+    if any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for ch in value):
+        return None
+    return value
+
+
+def _builder_project_path(project_id: str) -> Optional[str]:
+    safe_id = _sanitize_builder_project_id(project_id)
+    if not safe_id:
+        return None
+    return os.path.join(_BUILDER_PROJECTS_DIR, f"{safe_id}.json")
+
+
+def _load_builder_project_legacy(project_id: str) -> Optional[Dict[str, Any]]:
+    """Legacy JSON file storage (fallback)"""
+    path = _builder_project_path(project_id)
+    if not path or not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data if isinstance(data, dict) else None
+
+
+def _list_builder_projects_legacy() -> List[Dict[str, Any]]:
+    """Legacy JSON file storage (fallback)"""
+    if not os.path.isdir(_BUILDER_PROJECTS_DIR):
+        return []
+    projects: List[Dict[str, Any]] = []
+    for filename in os.listdir(_BUILDER_PROJECTS_DIR):
+        if not filename.endswith(".json"):
+            continue
+        path = os.path.join(_BUILDER_PROJECTS_DIR, filename)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                projects.append(data)
+        except Exception as exc:
+            print(f"[bridge] WARNING: Failed to load builder project {filename}: {exc}")
+    projects.sort(key=lambda item: str(item.get("updatedAt") or item.get("createdAt") or ""), reverse=True)
+    return projects
+
+
+def _save_builder_project_legacy(project: Dict[str, Any], project_id: Optional[str] = None) -> Dict[str, Any]:
+    """Legacy JSON file storage (fallback)"""
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    data = dict(project)
+    data_id = _sanitize_builder_project_id(project_id or data.get("id") or "")
+    if not data_id:
+        data_id = f"builder_{uuid.uuid4().hex[:12]}"
+    data["id"] = data_id
+    data.setdefault("createdAt", now)
+    data["updatedAt"] = now
+    data.setdefault("status", "draft")
+    data.setdefault("stage", "idea")
+    data.setdefault("versions", [])
+    data.setdefault("testRuns", [])
+    path = _builder_project_path(data_id)
+    if not path:
+        raise ValueError("invalid builder project id")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    return data
+
+
+def _run_builder_project_test_legacy(project: Dict[str, Any]) -> Dict[str, Any]:
+    """Legacy test runner (fallback)"""
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    data = dict(project)
+    blueprint = data.get("blueprint") if isinstance(data.get("blueprint"), dict) else {}
+    role_type = str(blueprint.get("roleType") or "")
+    name = str(blueprint.get("name") or "数字员工")
+    goal = str(blueprint.get("goal") or "")
+    is_document = role_type == "document_clerk"
+    is_collection = role_type == "collection_assistant"
+    approval_policies = blueprint.get("approvalPolicies") if isinstance(blueprint.get("approvalPolicies"), list) else []
+    exception_policies = blueprint.get("exceptionPolicies") if isinstance(blueprint.get("exceptionPolicies"), list) else []
+    acceptance_criteria = blueprint.get("acceptanceCriteria") if isinstance(blueprint.get("acceptanceCriteria"), list) else []
+    checklist = blueprint.get("launchChecklist") if isinstance(blueprint.get("launchChecklist"), list) else []
+
+    run = {
+        "id": f"test_{uuid.uuid4().hex[:12]}",
+        "projectId": data.get("id"),
+        "status": "passed",
+        "sampleSet": [
+            {
+                "id": "live-api-1",
+                "label": "资料来源 API 校验" if is_document else "业务输入 API 校验",
+                "description": "由本地 hermes-bridge Builder API 生成的验收输入",
+            },
+            {
+                "id": "live-api-2",
+                "label": "审批策略 API 校验" if is_collection else "输出结构 API 校验",
+                "description": "由本地 hermes-bridge Builder API 生成的验收输入",
+            },
+        ],
+        "inputSummary": f"{name} API 测试：{goal}",
+        "outputPreview": {
+            "title": f"{name} API 测试输出",
+            "lines": (
+                ["已通过本地 Builder API 校验资料识别、归档建议和异常确认点。"]
+                if is_document else
+                ["已通过本地 Builder API 校验催收话术、人工确认和后续跟进动作。"]
+                if is_collection else
+                ["已通过本地 Builder API 校验报告摘要、风险提示和确认流程。"]
+            ),
+        },
+        "approvalPoints": [
+            str(policy.get("action"))
+            for policy in approval_policies
+            if isinstance(policy, dict) and policy.get("required") and policy.get("action")
+        ],
+        "risks": [
+            str(policy.get("condition"))
+            for policy in exception_policies
+            if isinstance(policy, dict) and policy.get("condition")
+        ],
+        "acceptanceResults": [
+            {
+                "criterionId": str(criterion.get("id") or index),
+                "passed": True,
+                "note": f"{criterion.get('metric') or '验收项'} 已通过本地 Builder API 校验。",
+            }
+            for index, criterion in enumerate(acceptance_criteria)
+            if isinstance(criterion, dict)
+        ],
+        "createdAt": now,
+    }
+
+    blueprint = dict(blueprint)
+    blueprint["launchChecklist"] = [
+        {
+            **item,
+            "status": item.get("status") if item.get("status") == "blocked" else "passed",
+        }
+        for item in checklist
+        if isinstance(item, dict)
+    ]
+    data["blueprint"] = blueprint
+    data["status"] = "ready_to_deploy"
+    data["stage"] = "launch"
+    data["testRuns"] = [run] + (data.get("testRuns") if isinstance(data.get("testRuns"), list) else [])
+    return _save_builder_project_legacy(data, project_id=str(data.get("id") or ""))
+
+
+def _delete_builder_project_legacy(project_id: str) -> bool:
+    """Legacy JSON file storage (fallback)"""
+    path = _builder_project_path(project_id)
+    if not path or not os.path.isfile(path):
+        return False
+    os.remove(path)
+    return True
+
+
+# Wrapper functions that use SQLite if available, otherwise fall back to JSON
+def load_builder_project(project_id: str) -> Optional[Dict[str, Any]]:
+    if _BUILDER_SQLITE_ENABLED:
+        return _load_builder_project(project_id)
+    return _load_builder_project_legacy(project_id)
+
+
+def list_builder_projects() -> List[Dict[str, Any]]:
+    if _BUILDER_SQLITE_ENABLED:
+        return _list_builder_projects()
+    return _list_builder_projects_legacy()
+
+
+def save_builder_project(project: Dict[str, Any], project_id: Optional[str] = None) -> Dict[str, Any]:
+    if _BUILDER_SQLITE_ENABLED:
+        return _save_builder_project(project, project_id)
+    return _save_builder_project_legacy(project, project_id)
+
+
+def delete_builder_project(project_id: str) -> bool:
+    if _BUILDER_SQLITE_ENABLED:
+        return _delete_builder_project(project_id)
+    return _delete_builder_project_legacy(project_id)
+
+
+def run_builder_project_test(project: Dict[str, Any]) -> Dict[str, Any]:
+    if _BUILDER_SQLITE_ENABLED:
+        return _run_builder_project_test(project)
+    return _run_builder_project_test_legacy(project)
+
+
 # ---------------------------------------------------------------------------
 # Device 辅助函数
 # ---------------------------------------------------------------------------
@@ -779,18 +1349,21 @@ def _load_device_info() -> Dict[str, Any]:
         except Exception:
             pass
     import platform as _platform
-    return {
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    info = {
         "id": 1,
         "device_name": _platform.node() or "local-device",
         "hostname": _platform.node(),
         "os_info": f"{_platform.system()} {_platform.release()}",
         "status": "online",
-        "last_seen": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "created_time": "2026-01-01T00:00:00Z",
+        "last_seen": now,
+        "created_time": now,
         "team_id": 1,
         "registration_mode": "local",
         "installation_id": f"local-{uuid.uuid4().hex[:8]}",
     }
+    _save_device_info(info)
+    return info
 
 
 def _save_device_info(info: Dict[str, Any]):
@@ -800,6 +1373,244 @@ def _save_device_info(info: Dict[str, Any]):
             json.dump(info, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[bridge] WARNING: Failed to save device info: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Channels 辅助函数
+# ---------------------------------------------------------------------------
+
+_CHANNELS_PLUGIN_CONFIG_FILE = os.path.join(_HERMES_HOME, "channel_wechat_personal_plugin.json")
+_CHANNELS_BINDINGS_FILE = os.path.join(_HERMES_HOME, "channel_bindings.json")
+_CHANNELS_WECHAT_WORK_CONFIG_FILE = os.path.join(_HERMES_HOME, "channel_wechat_work.json")
+_CHANNELS_FEISHU_CONFIG_FILE = os.path.join(_HERMES_HOME, "channel_feishu.json")
+
+
+def _load_json_file(path: str, default: Any) -> Any:
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if data is not None else default
+        except Exception:
+            pass
+    return default
+
+
+def _save_json_file(path: str, data: Any, label: str):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save {label}: {e}")
+
+
+def _load_wechat_work_channel_config() -> Dict[str, Any]:
+    data = _load_json_file(_CHANNELS_WECHAT_WORK_CONFIG_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_wechat_work_channel_config(config: Dict[str, Any]):
+    _save_json_file(_CHANNELS_WECHAT_WORK_CONFIG_FILE, config, "wechat work config")
+
+
+def _load_feishu_channel_config() -> Dict[str, Any]:
+    data = _load_json_file(_CHANNELS_FEISHU_CONFIG_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _save_feishu_channel_config(config: Dict[str, Any]):
+    _save_json_file(_CHANNELS_FEISHU_CONFIG_FILE, config, "feishu config")
+
+
+def _load_wechat_personal_plugin_channel_config() -> Dict[str, Any]:
+    if os.path.isfile(_CHANNELS_PLUGIN_CONFIG_FILE):
+        try:
+            with open(_CHANNELS_PLUGIN_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "display_name": "微信个人号(插件)",
+        "kernel_source": "unconfigured",
+        "kernel_configured": False,
+        "kernel_isolated": False,
+        "kernel_corp_id": "",
+        "kernel_agent_id": "",
+        "kernel_secret": "",
+        "kernel_secret_configured": False,
+        "kernel_verify_token": "",
+        "kernel_aes_key": "",
+        "effective_kernel_corp_id": "",
+        "effective_kernel_agent_id": "",
+        "effective_kernel_verify_token": "",
+        "effective_kernel_aes_key": "",
+        "setup_status": "planned",
+        "assistant_name": "",
+        "welcome_message": "",
+        "capability_stage": "planned",
+        "binding_enabled": False,
+        "enabled": False,
+        "configured": False,
+        "updated_time": None,
+    }
+
+
+def _save_wechat_personal_plugin_channel_config(config: Dict[str, Any]):
+    try:
+        os.makedirs(os.path.dirname(_CHANNELS_PLUGIN_CONFIG_FILE), exist_ok=True)
+        with open(_CHANNELS_PLUGIN_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save wechat personal plugin config: {e}")
+
+
+def _load_channel_bindings() -> List[Dict[str, Any]]:
+    if os.path.isfile(_CHANNELS_BINDINGS_FILE):
+        try:
+            with open(_CHANNELS_BINDINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data if isinstance(data, list) else []
+        except Exception:
+            pass
+    return []
+
+
+def _save_channel_bindings(items: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_CHANNELS_BINDINGS_FILE), exist_ok=True)
+        with open(_CHANNELS_BINDINGS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save channel bindings: {e}")
+
+
+def _restore_channel_bindings_snapshot(items: List[Dict[str, Any]], file_existed: bool):
+    if file_existed:
+        _save_channel_bindings(items)
+        return
+
+    if os.path.isfile(_CHANNELS_BINDINGS_FILE):
+        try:
+            os.remove(_CHANNELS_BINDINGS_FILE)
+        except Exception as e:
+            print(f"[bridge] WARNING: Failed to remove temporary channel bindings file: {e}")
+
+
+def _create_channel_binding_record(body: Dict[str, Any]) -> Dict[str, Any]:
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    expires_hours = int(body.get("expires_in_hours") or 72)
+    binding = {
+        "id": int(time.time() * 1000),
+        "team_id": body.get("team_id", 1),
+        "channel_key": body.get("channel_key", "wechat_personal_plugin"),
+        "binding_type": body.get("binding_type", ""),
+        "binding_target_id": body.get("binding_target_id", ""),
+        "binding_target_name": body.get("binding_target_name"),
+        "binding_code": f"bind_{uuid.uuid4().hex[:10]}",
+        "code_expires_at": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ",
+            time.gmtime(time.time() + expires_hours * 3600),
+        ),
+        "status": "pending",
+        "created_by_user_id": int(body.get("created_by_user_id", 1) or 1),
+        "bound_by_user_id": body.get("bound_by_user_id"),
+        "binding_enabled_snapshot": bool(_load_wechat_personal_plugin_channel_config().get("binding_enabled", True)),
+        "notes": body.get("notes"),
+        "bound_at": body.get("bound_at"),
+        "created_time": now,
+        "updated_time": now,
+        "identity": body.get("identity"),
+    }
+    items = _load_channel_bindings()
+    items.append(binding)
+    _save_channel_bindings(items)
+    return binding
+
+
+def _disable_channel_binding_record(binding_id: int) -> Optional[Dict[str, Any]]:
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    items = _load_channel_bindings()
+    binding = None
+    for item in items:
+        if int(item.get("id", 0)) == binding_id:
+            item["status"] = "disabled"
+            item["binding_enabled_snapshot"] = False
+            item["updated_time"] = now
+            binding = item
+            break
+    if binding is not None:
+        _save_channel_bindings(items)
+    return binding
+
+
+def _regenerate_channel_binding_code_record(binding_id: int, expires_hours: int = 72) -> Optional[Dict[str, Any]]:
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    items = _load_channel_bindings()
+    binding = None
+    for item in items:
+        if int(item.get("id", 0)) == binding_id:
+            item["binding_code"] = f"bind_{uuid.uuid4().hex[:12]}"
+            item["code_expires_at"] = time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(time.time() + expires_hours * 3600),
+            )
+            item["status"] = "pending"
+            item["updated_time"] = now
+            binding = item
+            break
+    if binding is not None:
+        _save_channel_bindings(items)
+    return binding
+
+
+def _probe_channel_bindings_write_path(team_id: int, channel_key: str) -> Dict[str, Any]:
+    original_file_existed = os.path.isfile(_CHANNELS_BINDINGS_FILE)
+    original_items = _load_channel_bindings()
+
+    try:
+        created_binding = _create_channel_binding_record({
+            "team_id": team_id,
+            "channel_key": channel_key,
+            "binding_type": "probe",
+            "binding_target_id": "__bindings_validate_probe__",
+            "binding_target_name": "绑定链路校验探针",
+            "notes": "startup validate probe",
+            "created_by_user_id": 0,
+            "expires_in_hours": 1,
+        })
+        probe_id = int(created_binding["id"])
+
+        reloaded_items = _load_channel_bindings()
+        reloaded_probe = next((item for item in reloaded_items if int(item.get("id", 0)) == probe_id), None)
+        if reloaded_probe is None:
+            raise RuntimeError("probe binding create/list validation failed")
+
+        initial_code = reloaded_probe.get("binding_code")
+        rotated_probe = _regenerate_channel_binding_code_record(probe_id, expires_hours=1)
+        if rotated_probe is None or rotated_probe.get("binding_code") == initial_code:
+            raise RuntimeError("probe binding regenerate validation failed")
+
+        disabled_probe = _disable_channel_binding_record(probe_id)
+        if disabled_probe is None or disabled_probe.get("status") != "disabled":
+            raise RuntimeError("probe binding disable validation failed")
+
+        _restore_channel_bindings_snapshot(original_items, original_file_existed)
+        return {
+            "ok": True,
+            "operations": ["create", "list", "regenerate-code", "disable", "cleanup"],
+        }
+    except Exception as e:
+        cleanup_error = None
+        try:
+            _restore_channel_bindings_snapshot(original_items, original_file_existed)
+        except Exception as restore_exc:
+            cleanup_error = str(restore_exc)
+        return {
+            "ok": False,
+            "error": str(e),
+            "cleanup_error": cleanup_error,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -855,10 +1666,116 @@ def _save_audit_events(events: List[Dict[str, Any]]):
 
 
 # ---------------------------------------------------------------------------
+# Workflows 辅助函数
+# ---------------------------------------------------------------------------
+
+_WORKFLOWS_FILE = os.path.join(_HERMES_HOME, "workflows.json")
+
+
+def _load_workflows() -> List[Dict[str, Any]]:
+    if os.path.isfile(_WORKFLOWS_FILE):
+        try:
+            with open(_WORKFLOWS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_workflows(items: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_WORKFLOWS_FILE), exist_ok=True)
+        with open(_WORKFLOWS_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save workflows: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Policy 辅助函数
+# ---------------------------------------------------------------------------
+
+_POLICIES_FILE = os.path.join(_HERMES_HOME, "policies.json")
+
+
+def _load_policies() -> List[Dict[str, Any]]:
+    if os.path.isfile(_POLICIES_FILE):
+        try:
+            with open(_POLICIES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_policies(items: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_POLICIES_FILE), exist_ok=True)
+        with open(_POLICIES_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save policies: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Files 辅助函数
+# ---------------------------------------------------------------------------
+
+_FILES_META_FILE = os.path.join(_HERMES_HOME, "files_meta.json")
+
+
+def _load_files_meta() -> List[Dict[str, Any]]:
+    if os.path.isfile(_FILES_META_FILE):
+        try:
+            with open(_FILES_META_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_files_meta(items: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_FILES_META_FILE), exist_ok=True)
+        with open(_FILES_META_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save files_meta: {e}")
+
+
+# ---------------------------------------------------------------------------
+# Voice 辅助函数
+# ---------------------------------------------------------------------------
+
+_VOICE_CONFIG_FILE = os.path.join(_HERMES_HOME, "voice_config.json")
+
+
+def _load_voice_config() -> Dict[str, Any]:
+    if os.path.isfile(_VOICE_CONFIG_FILE):
+        try:
+            with open(_VOICE_CONFIG_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {"enabled": False, "provider": None, "language": "zh-CN"}
+
+
+def _save_voice_config(cfg: Dict[str, Any]):
+    try:
+        os.makedirs(os.path.dirname(_VOICE_CONFIG_FILE), exist_ok=True)
+        with open(_VOICE_CONFIG_FILE, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save voice_config: {e}")
+
+
+# ---------------------------------------------------------------------------
 # ApiKey 辅助函数
 # ---------------------------------------------------------------------------
 
 _API_KEYS_FILE = os.path.join(_HERMES_HOME, "api_keys.json")
+_FINANCE_WALLET_FILE = os.path.join(_HERMES_HOME, "finance_wallet.json")
+_FINANCE_USAGE_FILE = os.path.join(_HERMES_HOME, "finance_usage_records.json")
 
 
 def _load_api_keys() -> Dict[str, Any]:
@@ -878,6 +1795,218 @@ def _save_api_keys(data: Dict[str, Any]):
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"[bridge] WARNING: Failed to save api keys: {e}")
+
+
+def _load_finance_wallet() -> Dict[str, Any]:
+    if os.path.isfile(_FINANCE_WALLET_FILE):
+        try:
+            with open(_FINANCE_WALLET_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "balance": 0.0,
+        "currency": None,
+        "daily_limit": None,
+        "monthly_limit": None,
+        "total_recharge": 0.0,
+        "updated_time": None,
+    }
+
+
+def _save_finance_wallet(data: Dict[str, Any]):
+    try:
+        os.makedirs(os.path.dirname(_FINANCE_WALLET_FILE), exist_ok=True)
+        with open(_FINANCE_WALLET_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save finance wallet: {e}")
+
+
+def _load_finance_usage_records() -> List[Dict[str, Any]]:
+    if os.path.isfile(_FINANCE_USAGE_FILE):
+        try:
+            with open(_FINANCE_USAGE_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def _save_finance_usage_records(items: List[Dict[str, Any]]):
+    try:
+        os.makedirs(os.path.dirname(_FINANCE_USAGE_FILE), exist_ok=True)
+        with open(_FINANCE_USAGE_FILE, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"[bridge] WARNING: Failed to save finance usage records: {e}")
+
+
+def _iso_to_timestamp(value: Optional[str]) -> float:
+    if not value:
+        return 0.0
+    try:
+        return time.mktime(time.strptime(value, "%Y-%m-%dT%H:%M:%SZ"))
+    except Exception:
+        return 0.0
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        if value is None:
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+
+
+def _extract_usage_numbers(usage: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    usage = usage or {}
+    prompt_tokens = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    completion_tokens = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    total_tokens = int(usage.get("total_tokens") or (prompt_tokens + completion_tokens))
+    return {
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def _record_finance_usage(
+    prompt: str,
+    text: str,
+    model: Optional[str],
+    provider: Optional[str],
+    usage: Optional[Dict[str, Any]],
+    duration_seconds: float,
+):
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    wallet = _load_finance_wallet()
+    usage_numbers = _extract_usage_numbers(usage)
+    estimated_cost = _safe_float((usage or {}).get("estimated_cost_usd"))
+    currency = "USD" if estimated_cost > 0 else str(wallet.get("currency") or "CNY")
+    effective_model = str(model or "unknown")
+    effective_provider = str(provider or "unknown")
+    record = {
+        "id": int(time.time() * 1000),
+        "product_name": effective_model,
+        "label": effective_model,
+        "group_type": "model",
+        "model_name": effective_model,
+        "provider_names": [effective_provider],
+        "record_type": "consumption",
+        "call_count": 1,
+        "text_input_chars": len(prompt or ""),
+        "text_output_chars": len(text or ""),
+        "duration_seconds": round(max(duration_seconds, 0.0), 3),
+        "amount": estimated_cost,
+        "currency": currency,
+        "prompt_tokens": usage_numbers["prompt_tokens"],
+        "completion_tokens": usage_numbers["completion_tokens"],
+        "total_tokens": usage_numbers["total_tokens"],
+        "remark": f"provider={effective_provider}",
+        "balance_snapshot": _safe_float(wallet.get("balance")),
+        "created_time": now,
+        "last_used_at": now,
+    }
+    items = _load_finance_usage_records()
+    items.insert(0, record)
+    _save_finance_usage_records(items[:5000])
+
+
+def _filter_finance_usage_records(days: Optional[int] = None) -> List[Dict[str, Any]]:
+    items = _load_finance_usage_records()
+    if not days or days <= 0:
+        return items
+    cutoff = time.time() - (days * 86400)
+    return [item for item in items if _iso_to_timestamp(item.get("created_time")) >= cutoff]
+
+
+def _sum_usage_amount(items: List[Dict[str, Any]], start_ts: Optional[float] = None, end_ts: Optional[float] = None) -> float:
+    total = 0.0
+    for item in items:
+        created_ts = _iso_to_timestamp(item.get("created_time"))
+        if start_ts is not None and created_ts < start_ts:
+            continue
+        if end_ts is not None and created_ts > end_ts:
+            continue
+        total += _safe_float(item.get("amount"))
+    return round(total, 6)
+
+
+def _aggregate_usage_breakdown(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[str, Dict[str, Any]] = {}
+    for item in items:
+        key = str(item.get("product_name") or item.get("model_name") or "unknown")
+        bucket = grouped.setdefault(key, {
+            "product_name": key,
+            "label": item.get("label") or key,
+            "group_type": item.get("group_type") or "model",
+            "model_name": item.get("model_name") or key,
+            "provider_names": [],
+            "call_count": 0,
+            "text_input_chars": 0,
+            "text_output_chars": 0,
+            "duration_seconds": 0.0,
+            "last_used_at": None,
+            "amount": 0.0,
+            "currency": item.get("currency") or None,
+            "currency_breakdown": {},
+            "last_billed_at": None,
+        })
+        bucket["call_count"] += int(item.get("call_count") or 0)
+        bucket["text_input_chars"] += int(item.get("text_input_chars") or 0)
+        bucket["text_output_chars"] += int(item.get("text_output_chars") or 0)
+        bucket["duration_seconds"] += _safe_float(item.get("duration_seconds"))
+        bucket["amount"] += _safe_float(item.get("amount"))
+        provider_names = item.get("provider_names") or []
+        for provider_name in provider_names:
+            if provider_name and provider_name not in bucket["provider_names"]:
+                bucket["provider_names"].append(provider_name)
+        created_time = item.get("created_time")
+        if created_time and (bucket["last_used_at"] is None or _iso_to_timestamp(created_time) > _iso_to_timestamp(bucket["last_used_at"])):
+            bucket["last_used_at"] = created_time
+            bucket["last_billed_at"] = created_time
+        currency = str(item.get("currency") or bucket.get("currency") or "USD")
+        bucket["currency"] = currency
+        bucket["currency_breakdown"][currency] = bucket["currency_breakdown"].get(currency, 0.0) + _safe_float(item.get("amount"))
+
+    breakdown = []
+    for bucket in grouped.values():
+        amount = round(bucket["amount"], 6)
+        breakdown.append({
+            "product_name": bucket["product_name"],
+            "label": bucket["label"],
+            "group_type": bucket["group_type"],
+            "model_name": bucket["model_name"],
+            "provider_names": bucket["provider_names"],
+            "call_count": bucket["call_count"],
+            "text_input_chars": bucket["text_input_chars"],
+            "text_output_chars": bucket["text_output_chars"],
+            "duration_seconds": round(bucket["duration_seconds"], 3),
+            "last_used_at": bucket["last_used_at"],
+            "amount": amount,
+            "average_amount": round(amount / max(bucket["call_count"], 1), 6),
+            "currency": bucket["currency"],
+            "currency_breakdown": [
+                {"currency": currency, "amount": round(value, 6)}
+                for currency, value in bucket["currency_breakdown"].items()
+            ],
+            "last_billed_at": bucket["last_billed_at"],
+        })
+    breakdown.sort(key=lambda item: item["amount"], reverse=True)
+    return breakdown
+
+
+def _resolve_finance_currency(wallet: Dict[str, Any], items: List[Dict[str, Any]]) -> str:
+    configured_currency = wallet.get("currency")
+    if configured_currency:
+        return str(configured_currency)
+    for item in items:
+        record_currency = item.get("currency")
+        if record_currency:
+            return str(record_currency)
+    return "CNY"
 
 
 # ---------------------------------------------------------------------------
@@ -1102,6 +2231,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_agents_list()
         elif _path.startswith("/agents/") and _path.count("/") == 2:
             self._handle_agent_get()
+        # --- Builder ---
+        elif _path == "/api/builder/projects" or _path == "/api/builder/projects/":
+            self._handle_builder_projects_list()
+        elif _path.startswith("/api/builder/projects/") and _path.count("/") == 4:
+            self._handle_builder_project_get()
         # --- SDK 兼容路径 (/api/agent/*) ---
         elif _path == "/api/agent/my-agents":
             self._handle_api_agent_list()
@@ -1109,6 +2243,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_api_agent_tools()
         elif _path == "/api/platform/memory/stats":
             self._handle_memory_stats()
+        # --- Billing ---
+        elif _path == "/api/billing/wallet":
+            self._handle_billing_wallet()
+        elif _path == "/api/billing/records":
+            self._handle_billing_records()
+        elif _path == "/api/billing/summary":
+            self._handle_billing_summary()
         # --- Phase 2: Memory / Skills / Tools / Cron ---
         elif _path == "/memory/stats":
             self._handle_memory_stats_v2()
@@ -1160,13 +2301,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_conversations_history()
         elif _path == "/api/platform/conversations" or _path == "/api/platform/conversations/":
             self._handle_conversations_home()
-        # --- Billing ---
-        elif _path == "/api/billing/wallet":
-            self._handle_billing_wallet()
-        elif _path == "/api/billing/records":
-            self._handle_billing_records()
-        elif _path == "/api/billing/summary":
-            self._handle_billing_summary()
         # --- Channels ---
         elif _path.startswith("/api/platform/channels/wechat-work/config"):
             self._handle_channel_wechat_work_config()
@@ -1174,6 +2308,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_channel_feishu_config()
         elif _path.startswith("/api/platform/channels/wechat-personal-plugin/config"):
             self._handle_channel_wechat_personal_plugin_config()
+        elif _path == "/api/platform/channels/bindings/validate":
+            self._handle_channel_bindings_validate()
         elif _path == "/api/platform/channels/wechat-personal-openclaw/qr/status":
             self._handle_channel_openclaw_qr_status()
         elif _path.startswith("/api/platform/channels/wechat-personal-openclaw/config"):
@@ -1194,6 +2330,15 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_devices_online()
         elif _path == "/api/platform/devices" or _path == "/api/platform/devices/":
             self._handle_devices_list()
+        # --- Other Products ---
+        elif _path == "/api/platform/workflows" or _path == "/api/platform/workflows/":
+            self._handle_platform_workflows()
+        elif _path == "/api/platform/policy" or _path == "/api/platform/policy/":
+            self._handle_platform_policy()
+        elif _path == "/api/platform/files" or _path == "/api/platform/files/":
+            self._handle_platform_files()
+        elif _path == "/api/platform/voice" or _path == "/api/platform/voice/":
+            self._handle_platform_voice()
         # --- Knowledge new paths ---
         elif _path == "/api/platform/knowledge/config":
             self._handle_platform_knowledge_config()
@@ -1241,6 +2386,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._check_auth():
             return
+        _path = urllib.parse.urlparse(self.path).path
         if self.path == "/invoke":
             self._handle_invoke()
         elif self.path == "/invoke/stream":
@@ -1282,6 +2428,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_agent_create()
         elif self.path.startswith("/agents/") and self.path.endswith("/delete"):
             self._handle_agent_delete()
+        # --- Builder ---
+        elif _path.startswith("/api/builder/projects/") and _path.endswith("/test-runs") and _path.count("/") == 5:
+            self._handle_builder_project_test_run()
+        elif _path == "/api/builder/projects" or _path == "/api/builder/projects/":
+            self._handle_builder_project_create()
         # --- SDK 兼容路径 (/api/agent/*) ---
         elif self.path == "/api/agent/create":
             self._handle_api_agent_create()
@@ -1359,6 +2510,15 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_app_key_create()
         elif self.path == "/api/llm/keys":
             self._handle_llm_key_create()
+        # --- Platform Products ---
+        elif self.path == "/api/platform/workflows" or self.path == "/api/platform/workflows/":
+            self._handle_platform_workflow_create()
+        elif self.path == "/api/platform/policy" or self.path == "/api/platform/policy/":
+            self._handle_platform_policy_create()
+        elif self.path == "/api/platform/files" or self.path == "/api/platform/files/":
+            self._handle_platform_file_upload()
+        elif self.path == "/api/platform/voice" or self.path == "/api/platform/voice/":
+            self._handle_platform_voice_update()
         # --- Policy ---
         elif self.path == "/api/platform/policy/tool-access/check":
             self._handle_policy_check()
@@ -1383,6 +2543,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # PUT /api/agent/{id}
         if _path.startswith("/api/agent/") and _path.count("/") == 3:
             self._handle_api_agent_update()
+        # PUT /api/builder/projects/{id}
+        elif _path.startswith("/api/builder/projects/") and _path.count("/") == 4:
+            self._handle_builder_project_update()
         # --- Phase 2: Tools ---
         elif _path == "/tools":
             self._handle_tools_update()
@@ -1413,6 +2576,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # DELETE /api/agent/{id}
         if _path.startswith("/api/agent/") and _path.count("/") == 3:
             self._handle_api_agent_delete()
+        # DELETE /api/builder/projects/{id}
+        elif _path.startswith("/api/builder/projects/") and _path.count("/") == 4:
+            self._handle_builder_project_delete()
         # DELETE /api/platform/memory/agent/{agentId}
         elif _path.startswith("/api/platform/memory/agent/"):
             self._handle_memory_clear_agent()
@@ -1431,6 +2597,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # --- Devices ---
         elif _path.startswith("/api/platform/devices/") and _path.count("/") == 4:
             self._handle_device_delete()
+        # --- Platform Products ---
+        elif _path.startswith("/api/platform/workflows/") and _path.count("/") == 4:
+            self._handle_platform_workflow_delete()
+        elif _path.startswith("/api/platform/files/") and _path.count("/") == 4:
+            self._handle_platform_file_delete()
         else:
             _json_response(self, 404, {"error": "Not found"})
 
@@ -1506,6 +2677,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """
         try:
             body = _read_json_body(self)
+            started_at = time.perf_counter()
             prompt = body.get("prompt", "")
             model = body.get("model")
             provider = body.get("provider")
@@ -1587,6 +2759,15 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             result["turn_count"] = session.turn_count
             if rag_context:
                 result["_rag_used"] = True
+
+            _record_finance_usage(
+                prompt=prompt,
+                text=assistant_text,
+                model=result.get("model"),
+                provider=result.get("provider"),
+                usage=result.get("usage"),
+                duration_seconds=time.perf_counter() - started_at,
+            )
 
             _json_response(self, 200, result)
 
@@ -1806,6 +2987,104 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             _json_response(self, 500, {"error": str(e)})
 
+    # ----- Builder 接口 (/api/builder/*) -----
+
+    def _builder_project_id_from_path(self) -> Optional[str]:
+        _path = urllib.parse.urlparse(self.path).path
+        parts = _path.strip("/").split("/")
+        if len(parts) < 4:
+            return None
+        return urllib.parse.unquote(parts[3])
+
+    def _handle_builder_projects_list(self):
+        """GET /api/builder/projects — 列出本地 Builder 项目。"""
+        try:
+            _platform_json_response(self, 200, {"projects": list_builder_projects()})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_builder_project_get(self):
+        """GET /api/builder/projects/{id} — 获取单个 Builder 项目。"""
+        try:
+            project_id = self._builder_project_id_from_path()
+            if not _sanitize_builder_project_id(project_id or ""):
+                _platform_json_response(self, 400, None, "invalid builder project id")
+                return
+            project = load_builder_project(project_id or "")
+            if not project:
+                _platform_json_response(self, 404, None, f"builder project {project_id} not found")
+                return
+            _platform_json_response(self, 200, project)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_builder_project_create(self):
+        """POST /api/builder/projects — 创建本地 Builder 项目。"""
+        try:
+            body = _read_json_body(self)
+            if not isinstance(body.get("blueprint"), dict):
+                _platform_json_response(self, 400, None, "blueprint is required")
+                return
+            project = save_builder_project(body)
+            _platform_json_response(self, 200, project)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_builder_project_test_run(self):
+        """POST /api/builder/projects/{id}/test-runs — 运行本地 Builder 测试并持久化结果。"""
+        try:
+            parts = urllib.parse.urlparse(self.path).path.strip("/").split("/")
+            project_id = urllib.parse.unquote(parts[3]) if len(parts) >= 5 else None
+            if not _sanitize_builder_project_id(project_id or ""):
+                _platform_json_response(self, 400, None, "invalid builder project id")
+                return
+            project = load_builder_project(project_id or "")
+            if not project:
+                _platform_json_response(self, 404, None, f"builder project {project_id} not found")
+                return
+            updated = run_builder_project_test(project)
+            _platform_json_response(self, 200, updated)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_builder_project_update(self):
+        """PUT /api/builder/projects/{id} — 更新本地 Builder 项目。"""
+        try:
+            project_id = self._builder_project_id_from_path()
+            if not _sanitize_builder_project_id(project_id or ""):
+                _platform_json_response(self, 400, None, "invalid builder project id")
+                return
+            body = _read_json_body(self)
+            if not isinstance(body.get("blueprint"), dict):
+                _platform_json_response(self, 400, None, "blueprint is required")
+                return
+            previous = load_builder_project(project_id or "") or {}
+            project = save_builder_project({**previous, **body}, project_id=project_id)
+            _platform_json_response(self, 200, project)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_builder_project_delete(self):
+        """DELETE /api/builder/projects/{id} — 删除本地 Builder 项目。"""
+        try:
+            project_id = self._builder_project_id_from_path()
+            if not _sanitize_builder_project_id(project_id or ""):
+                _platform_json_response(self, 400, None, "invalid builder project id")
+                return
+            deleted = delete_builder_project(project_id or "")
+            if not deleted:
+                _platform_json_response(self, 404, None, f"builder project {project_id} not found")
+                return
+            _platform_json_response(self, 200, {"id": project_id, "deleted": True})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
     # ----- SDK 兼容接口 (/api/agent/*) -----
 
     def _handle_api_agent_list(self):
@@ -1884,6 +3163,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             description = body.get("description", "")
             model = body.get("model", "")
             runtime_type = body.get("runtime_type", "openclaw")
+            metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
 
             if not name:
                 _platform_json_response(self, 400, None, "name is required")
@@ -1909,6 +3189,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "system_prompt": description,
                 "model": model,
                 "metadata": {
+                    **metadata,
                     "description": description,
                     "runtime_type": runtime_type,
                 },
@@ -1951,6 +3232,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             model = body.get("model", profile.model)
             runtime_type = body.get("runtime_type",
                                     profile.metadata.get("runtime_type", "openclaw"))
+            metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
 
             # 更新 profile 字段
             profile.display_name = name
@@ -1959,6 +3241,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 profile.metadata["description"] = description
             if model:
                 profile.model = model
+            if metadata:
+                profile.metadata.update(metadata)
             profile.metadata["runtime_type"] = runtime_type
             sm._save_custom_profiles()
 
@@ -2256,6 +3540,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """
         try:
             body = _read_json_body(self)
+            started_at = time.perf_counter()
             prompt = body.get("prompt", "")
 
             if not prompt:
@@ -2378,10 +3663,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     if chunk.choices[0].finish_reason:
                         break
                 full_response = "".join(collected_text)
+                result = {
+                    "model": model_name,
+                    "provider": provider_name or "fallback",
+                    "usage": None,
+                }
 
             # 记录本轮对话到 session
             if full_response:
                 sm.append_turn(actual_session_id, prompt, full_response)
+
+            _record_finance_usage(
+                prompt=prompt,
+                text=full_response,
+                model=(result or {}).get("model"),
+                provider=(result or {}).get("provider"),
+                usage=(result or {}).get("usage"),
+                duration_seconds=time.perf_counter() - started_at,
+            )
 
             # 发送完成信号
             self.wfile.write(b"data: [DONE]\n\n")
@@ -2404,20 +3703,63 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle_kb_upload(self):
         """上传文档到知识库。"""
         try:
-            body = _read_json_body(self)
-            content = body.get("content", "")
-            filename = body.get("filename", "")
-            doc_type = body.get("doc_type", "text")
-            scope = body.get("scope", "default")
-            tags = body.get("tags", [])
+            ctype = self.headers.get("Content-Type", "")
+            
+            content_str = ""
+            filename = ""
+            doc_type = "text"
+            scope = "default"
+            tags = []
 
-            if not content:
-                _json_response(self, 400, {"error": "content is required"})
+            if "multipart/form-data" in ctype:
+                import cgi
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", DeprecationWarning)
+                    form = cgi.FieldStorage(
+                        fp=self.rfile,
+                        headers=self.headers,
+                        environ={'REQUEST_METHOD': 'POST'},
+                        keep_blank_values=True
+                    )
+                
+                if "file" in form:
+                    file_item = form["file"]
+                    filename = file_item.filename
+                    raw_content = file_item.file.read()
+                    content_str = raw_content.decode("utf-8", errors="ignore")
+                elif "content" in form:
+                    raw_c = form.getvalue("content", b"")
+                    content_str = raw_c.decode("utf-8", errors="ignore") if isinstance(raw_c, bytes) else str(raw_c)
+                    filename = form.getvalue("source_name", "")
+                
+                scope_val = form.getvalue("scope", "default")
+                if isinstance(scope_val, bytes):
+                    scope = scope_val.decode("utf-8", errors="ignore")
+                else:
+                    scope = str(scope_val)
+                    
+                # 从 form 中提取可能的团队或 agent 信息，虽然原版没有处理
+                # tag 尚未支持通过 form
+            else:
+                body = _read_json_body(self)
+                content = body.get("content", "")
+                if isinstance(content, bytes):
+                    content_str = content.decode("utf-8", errors="ignore")
+                else:
+                    content_str = str(content)
+                filename = body.get("filename", "")
+                doc_type = body.get("doc_type", "text")
+                scope = body.get("scope", "default")
+                tags = body.get("tags", [])
+
+            if not content_str:
+                _json_response(self, 400, {"error": "content or file is required"})
                 return
 
             from knowledge_store import add_document
             result = add_document(
-                content=content,
+                content=content_str,
                 filename=filename,
                 doc_type=doc_type,
                 scope=scope,
@@ -3330,24 +4672,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """GET /api/platform/models/providers — 模型供应商概览。"""
         try:
             models = _discover_models()
-            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-            provider = _infer_provider_from_url(base_url)
-            preferred = _get_preferred_model()
-            model_names = [m["model_name"] for m in models]
-            summary = {
-                "provider_name": provider,
-                "configured": True,
-                "provider_status": "active",
-                "visible_count": len(models),
-                "hidden_count": 0,
-                "disabled_count": 0,
-                "models": model_names,
-                "preferred_model_supported": preferred in model_names,
-                "is_default_route_provider": True,
-                "default_route_model": preferred,
-                "default_route_provider_model_id": preferred,
-            }
-            _platform_json_response(self, 200, [summary])
+            _platform_json_response(self, 200, _summarize_providers(models))
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
@@ -3356,8 +4681,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """GET /api/platform/models/runtimes — 运行时列表。"""
         try:
             runtime = {
-                "runtime_type": "openclaw",
-                "runtime_label": "OpenClaw",
+                "runtime_type": "hermes",
+                "runtime_label": "Hermes",
                 "runtime_status": "active",
                 "runtime_stage": "production",
                 "is_default": True,
@@ -3397,12 +4722,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 _platform_json_response(self, 404, None, f"no models available to resolve '{model_name}'")
                 return
 
-            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-            provider = _infer_provider_from_url(base_url)
             _platform_json_response(self, 200, {
                 "requested_model": model_name,
                 "resolved_model": selected["model_name"],
-                "provider_name": provider,
+                "provider_name": selected["provider_name"],
                 "provider_model_id": selected["provider_model_id"],
                 "candidate_count": len(models),
                 "selected": selected,
@@ -3416,8 +4739,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             models = _discover_models()
             preferred = _get_preferred_model()
-            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-            provider = _infer_provider_from_url(base_url)
 
             selected = None
             for m in models:
@@ -3431,10 +4752,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "preferred_model": preferred,
                 "preferred_model_available": selected is not None,
                 "resolved_model": selected["model_name"] if selected else None,
-                "resolved_provider_name": provider,
+                "resolved_provider_name": selected["provider_name"] if selected else None,
                 "resolved_provider_model_id": selected["provider_model_id"] if selected else None,
                 "candidate_count": len(models),
-                "configured_provider_count": 1,
+                "configured_provider_count": len(_summarize_providers(models)),
                 "available_model_count": len(models),
                 "resolution_reason": "preferred_model_match" if selected else "fallback",
                 "selected": selected,
@@ -3461,8 +4782,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
             # 返回更新后的路由 profile
             models = _discover_models()
-            base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-            provider = _infer_provider_from_url(base_url)
             selected = None
             for m in models:
                 if m["model_name"] == preferred_model:
@@ -3475,10 +4794,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "preferred_model": preferred_model,
                 "preferred_model_available": selected is not None,
                 "resolved_model": selected["model_name"] if selected else None,
-                "resolved_provider_name": provider,
+                "resolved_provider_name": selected["provider_name"] if selected else None,
                 "resolved_provider_model_id": selected["provider_model_id"] if selected else None,
                 "candidate_count": len(models),
-                "configured_provider_count": 1,
+                "configured_provider_count": len(_summarize_providers(models)),
                 "available_model_count": len(models),
                 "resolution_reason": "preferred_model_match" if selected else "fallback",
                 "selected": selected,
@@ -3488,61 +4807,176 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_models_usage(self):
-        """GET /api/platform/models/usage — 用量统计（边缘设备 stub）。"""
+        """GET /api/platform/models/usage — 用量统计（本地账本聚合）。"""
         try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            days = int((params.get("days") or ["30"])[0] or 30)
+            items = _filter_finance_usage_records(days)
+            breakdown = _aggregate_usage_breakdown(items)
             now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             _platform_json_response(self, 200, {
-                "window_days": 30,
+                "window_days": days,
                 "period_start": now,
                 "period_end": now,
                 "attribution_mode": "local",
-                "record_count": 0,
-                "total_calls": 0,
-                "total_input_chars": 0,
-                "total_output_chars": 0,
-                "total_duration_seconds": 0,
-                "last_used_at": None,
-                "breakdown": [],
+                "record_count": len(items),
+                "total_calls": sum(int(item.get("call_count") or 0) for item in items),
+                "total_input_chars": sum(int(item.get("text_input_chars") or 0) for item in items),
+                "total_output_chars": sum(int(item.get("text_output_chars") or 0) for item in items),
+                "total_duration_seconds": round(sum(_safe_float(item.get("duration_seconds")) for item in items), 3),
+                "last_used_at": items[0].get("created_time") if items else None,
+                "breakdown": [
+                    {
+                        "product_name": item["product_name"],
+                        "label": item["label"],
+                        "group_type": item["group_type"],
+                        "model_name": item["model_name"],
+                        "provider_names": item["provider_names"],
+                        "call_count": item["call_count"],
+                        "text_input_chars": item["text_input_chars"],
+                        "text_output_chars": item["text_output_chars"],
+                        "duration_seconds": item["duration_seconds"],
+                        "last_used_at": item["last_used_at"],
+                    }
+                    for item in breakdown
+                ],
             })
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_models_cost(self):
-        """GET /api/platform/models/cost — 费用统计（边缘设备 stub）。"""
+        """GET /api/platform/models/cost — 费用统计（本地账本聚合）。"""
         try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            days = int((params.get("days") or ["30"])[0] or 30)
+            items = _filter_finance_usage_records(days)
+            breakdown = _aggregate_usage_breakdown(items)
+            currency_breakdown: Dict[str, float] = {}
+            for item in items:
+                currency = str(item.get("currency") or "USD")
+                currency_breakdown[currency] = currency_breakdown.get(currency, 0.0) + _safe_float(item.get("amount"))
             now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
             _platform_json_response(self, 200, {
-                "window_days": 30,
+                "window_days": days,
                 "period_start": now,
                 "period_end": now,
                 "attribution_mode": "local",
-                "record_count": 0,
-                "total_amount": 0,
-                "primary_currency": "CNY",
-                "currency_breakdown": [],
-                "last_billed_at": None,
-                "breakdown": [],
+                "record_count": len(items),
+                "total_amount": round(sum(_safe_float(item.get("amount")) for item in items), 6),
+                "primary_currency": next(iter(currency_breakdown.keys()), "USD"),
+                "currency_breakdown": [
+                    {"currency": currency, "amount": round(amount, 6)}
+                    for currency, amount in currency_breakdown.items()
+                ],
+                "last_billed_at": items[0].get("created_time") if items else None,
+                "breakdown": breakdown,
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_billing_wallet(self):
+        """GET /api/billing/wallet — 本地账单钱包摘要。"""
+        try:
+            wallet = _load_finance_wallet()
+            items = _load_finance_usage_records()
+            currency = _resolve_finance_currency(wallet, items)
+            now_struct = time.gmtime()
+            month_start_ts = time.mktime((now_struct.tm_year, now_struct.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+            _platform_json_response(self, 200, {
+                "balance": _safe_float(wallet.get("balance")),
+                "currency": currency,
+                "total_spent": _sum_usage_amount(items),
+                "total_recharge": _safe_float(wallet.get("total_recharge")),
+                "current_month_spent": _sum_usage_amount(items, start_ts=month_start_ts),
+                "updated_time": wallet.get("updated_time"),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_billing_records(self):
+        """GET /api/billing/records — 本地账单流水列表。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            page = int((params.get("page") or ["1"])[0] or 1)
+            page_size = int((params.get("page_size") or ["20"])[0] or 20)
+            requested_type = (params.get("type") or [None])[0]
+            items = _load_finance_usage_records()
+            if requested_type:
+                items = [item for item in items if str(item.get("record_type") or "") == requested_type]
+            total = len(items)
+            start = max((page - 1) * page_size, 0)
+            page_items = items[start:start + page_size]
+            _platform_json_response(self, 200, {
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "items": [
+                    {
+                        "id": item["id"],
+                        "product_name": item["product_name"],
+                        "record_type": item.get("record_type") or "consumption",
+                        "duration_seconds": item.get("duration_seconds") or 0,
+                        "text_input_length": item.get("text_input_chars") or 0,
+                        "text_output_length": item.get("text_output_chars") or 0,
+                        "unit_price": 0,
+                        "output_unit_price": 0,
+                        "amount": item.get("amount") or 0,
+                        "currency": item.get("currency") or "USD",
+                        "remark": item.get("remark"),
+                        "balance_snapshot": item.get("balance_snapshot") or 0,
+                        "created_time": item.get("created_time"),
+                    }
+                    for item in page_items
+                ],
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_billing_summary(self):
+        """GET /api/billing/summary — 本地账单汇总。"""
+        try:
+            wallet = _load_finance_wallet()
+            items = _load_finance_usage_records()
+            _platform_json_response(self, 200, {
+                "total_spent": _sum_usage_amount(items),
+                "total_recharge": _safe_float(wallet.get("total_recharge")),
             })
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_models_quota(self):
-        """GET /api/platform/models/quota — 配额查询（边缘设备无限额）。"""
+        """GET /api/platform/models/quota — 配额查询（本地钱包配置 + 实际消费）。"""
         try:
+            wallet = _load_finance_wallet()
+            items = _load_finance_usage_records()
+            currency = _resolve_finance_currency(wallet, items)
+            now_struct = time.gmtime()
+            day_start_ts = time.mktime((now_struct.tm_year, now_struct.tm_mon, now_struct.tm_mday, 0, 0, 0, 0, 0, -1))
+            month_start_ts = time.mktime((now_struct.tm_year, now_struct.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+            daily_spent = _sum_usage_amount(items, start_ts=day_start_ts)
+            monthly_spent = _sum_usage_amount(items, start_ts=month_start_ts)
+            daily_limit = wallet.get("daily_limit")
+            monthly_limit = wallet.get("monthly_limit")
             _platform_json_response(self, 200, {
-                "wallet_balance": 0,
-                "currency": "CNY",
-                "daily_limit": None,
-                "daily_spent": 0,
-                "daily_remaining": None,
-                "daily_unlimited": True,
-                "monthly_limit": None,
-                "monthly_spent": 0,
-                "monthly_remaining": None,
-                "monthly_unlimited": True,
-                "updated_time": None,
+                "wallet_balance": _safe_float(wallet.get("balance")),
+                "currency": currency,
+                "daily_limit": daily_limit,
+                "daily_spent": daily_spent,
+                "daily_remaining": None if daily_limit is None else round(_safe_float(daily_limit) - daily_spent, 6),
+                "daily_unlimited": daily_limit is None,
+                "monthly_limit": monthly_limit,
+                "monthly_spent": monthly_spent,
+                "monthly_remaining": None if monthly_limit is None else round(_safe_float(monthly_limit) - monthly_spent, 6),
+                "monthly_unlimited": monthly_limit is None,
+                "updated_time": wallet.get("updated_time"),
             })
         except Exception as e:
             traceback.print_exc()
@@ -3764,51 +5198,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
 
-    # ----- Billing (/api/billing/*) — 边缘设备 stub -----
-
-    def _handle_billing_wallet(self):
-        """GET /api/billing/wallet — 钱包余额（stub）。"""
-        try:
-            _platform_json_response(self, 200, {
-                "balance": 0,
-                "currency": "CNY",
-                "total_spent": 0,
-                "total_recharge": 0,
-                "current_month_spent": 0,
-                "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            })
-        except Exception as e:
-            traceback.print_exc()
-            _platform_json_response(self, 500, None, str(e))
-
-    def _handle_billing_records(self):
-        """GET /api/billing/records — 消费记录（stub 空列表）。"""
-        try:
-            qs = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(qs)
-            page = int((params.get("page") or ["1"])[0])
-            page_size = int((params.get("page_size") or ["20"])[0])
-            _platform_json_response(self, 200, {
-                "total": 0,
-                "page": page,
-                "page_size": page_size,
-                "items": [],
-            })
-        except Exception as e:
-            traceback.print_exc()
-            _platform_json_response(self, 500, None, str(e))
-
-    def _handle_billing_summary(self):
-        """GET /api/billing/summary — 消费汇总（stub）。"""
-        try:
-            _platform_json_response(self, 200, {
-                "total_spent": 0,
-                "total_recharge": 0,
-            })
-        except Exception as e:
-            traceback.print_exc()
-            _platform_json_response(self, 500, None, str(e))
-
     # ----- Channels (/api/platform/channels/*) -----
 
     def _make_channel_item(self, key, name, group, kernel, configured=False, enabled=False):
@@ -3833,7 +5222,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             openclaw_configured = False
             openclaw_enabled = False
             try:
-                # 尝试获取 gateway 状态
                 _ensure_hermes_on_path()
                 from gateway.gateway_manager import GatewayManager
                 gm = GatewayManager()
@@ -3842,18 +5230,21 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+            wechat_work_config = _load_wechat_work_channel_config()
+            feishu_config = _load_feishu_channel_config()
             items = [
                 self._make_channel_item(
                     "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
+                    configured=bool(wechat_work_config.get("configured")),
+                    enabled=bool(wechat_work_config.get("enabled")),
                 ),
                 self._make_channel_item(
                     "feishu", "飞书", "enterprise_collab", "feishu",
+                    configured=bool(feishu_config.get("configured")),
+                    enabled=bool(feishu_config.get("enabled")),
                 ),
                 self._make_channel_item(
-                    "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
-                ),
-                self._make_channel_item(
-                    "wechat_personal_openclaw", "微信个人号(OpenClaw)", "personal_reach",
+                    "wechat_personal_openclaw", "微信个人号", "personal_reach",
                     "openclaw_wechat_plugin",
                     configured=openclaw_configured,
                     enabled=openclaw_enabled,
@@ -3872,18 +5263,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_wechat_work_config(self):
-        """GET /api/platform/channels/wechat-work/config — 企业微信配置（stub）。"""
+        """GET /api/platform/channels/wechat-work/config — 企业微信配置。"""
         try:
+            stored = _load_wechat_work_channel_config()
             config = self._make_channel_item(
                 "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
+                configured=bool(stored.get("configured")),
+                enabled=bool(stored.get("enabled")),
             )
             config.update({
-                "corp_id": "",
-                "agent_id": "",
+                "corp_id": stored.get("corp_id", ""),
+                "agent_id": stored.get("agent_id", ""),
                 "secret": "",
-                "secret_configured": False,
-                "verify_token": "",
-                "aes_key": "",
+                "secret_configured": bool(stored.get("secret_configured")),
+                "verify_token": stored.get("verify_token", ""),
+                "aes_key": stored.get("aes_key", ""),
+                "bot_webhook_url": stored.get("bot_webhook_url", ""),
+                "bot_webhook_configured": bool(stored.get("bot_webhook_configured")),
+                "updated_time": stored.get("updated_time"),
             })
             _platform_json_response(self, 200, config)
         except Exception as e:
@@ -3891,20 +5288,43 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_wechat_work_config_update(self):
-        """POST /api/platform/channels/wechat-work/config — 更新企业微信配置（stub）。"""
+        """POST /api/platform/channels/wechat-work/config — 更新企业微信配置。"""
         try:
             body = _read_json_body(self)
+            previous = _load_wechat_work_channel_config()
+            secret_configured = bool(body.get("secret")) or bool(previous.get("secret_configured"))
+            bot_webhook_configured = bool(body.get("bot_webhook_url", previous.get("bot_webhook_url", "")))
+            stored = {
+                "corp_id": body.get("corp_id", previous.get("corp_id", "")),
+                "agent_id": body.get("agent_id", previous.get("agent_id", "")),
+                "secret_configured": secret_configured,
+                "verify_token": body.get("verify_token", previous.get("verify_token", "")),
+                "aes_key": body.get("aes_key", previous.get("aes_key", "")),
+                "bot_webhook_url": body.get("bot_webhook_url", previous.get("bot_webhook_url", "")),
+                "bot_webhook_configured": bot_webhook_configured,
+                "enabled": bool(body.get("enabled", previous.get("enabled", False))),
+                "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            stored["configured"] = bool(
+                bot_webhook_configured
+                or (stored["corp_id"] and stored["agent_id"] and secret_configured)
+            )
+            _save_wechat_work_channel_config(stored)
             config = self._make_channel_item(
                 "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
-                configured=True,
+                configured=stored["configured"],
+                enabled=stored["enabled"],
             )
             config.update({
-                "corp_id": body.get("corp_id", ""),
-                "agent_id": body.get("agent_id", ""),
+                "corp_id": stored["corp_id"],
+                "agent_id": stored["agent_id"],
                 "secret": "",
-                "secret_configured": bool(body.get("secret")),
-                "verify_token": "",
-                "aes_key": "",
+                "secret_configured": stored["secret_configured"],
+                "verify_token": stored["verify_token"],
+                "aes_key": stored["aes_key"],
+                "bot_webhook_url": stored["bot_webhook_url"],
+                "bot_webhook_configured": stored["bot_webhook_configured"],
+                "updated_time": stored["updated_time"],
             })
             _platform_json_response(self, 200, config)
         except Exception as e:
@@ -3912,17 +5332,23 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_feishu_config(self):
-        """GET /api/platform/channels/feishu/config — 飞书配置（stub）。"""
+        """GET /api/platform/channels/feishu/config — 飞书配置。"""
         try:
+            stored = _load_feishu_channel_config()
             config = self._make_channel_item(
                 "feishu", "飞书", "enterprise_collab", "feishu",
+                configured=bool(stored.get("configured")),
+                enabled=bool(stored.get("enabled")),
             )
             config.update({
-                "app_id": "",
+                "app_id": stored.get("app_id", ""),
                 "app_secret": "",
-                "verification_token": "",
-                "encrypt_key": "",
-                "secret_configured": False,
+                "verification_token": stored.get("verification_token", ""),
+                "encrypt_key": stored.get("encrypt_key", ""),
+                "secret_configured": bool(stored.get("secret_configured")),
+                "bot_webhook_url": stored.get("bot_webhook_url", ""),
+                "bot_webhook_configured": bool(stored.get("bot_webhook_configured")),
+                "updated_time": stored.get("updated_time"),
             })
             _platform_json_response(self, 200, config)
         except Exception as e:
@@ -3930,19 +5356,38 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_feishu_config_update(self):
-        """POST /api/platform/channels/feishu/config — 更新飞书配置（stub）。"""
+        """POST /api/platform/channels/feishu/config — 更新飞书配置。"""
         try:
             body = _read_json_body(self)
+            previous = _load_feishu_channel_config()
+            secret_configured = bool(body.get("app_secret")) or bool(previous.get("secret_configured"))
+            bot_webhook_configured = bool(body.get("bot_webhook_url", previous.get("bot_webhook_url", "")))
+            stored = {
+                "app_id": body.get("app_id", previous.get("app_id", "")),
+                "verification_token": body.get("verification_token", previous.get("verification_token", "")),
+                "encrypt_key": body.get("encrypt_key", previous.get("encrypt_key", "")),
+                "secret_configured": secret_configured,
+                "bot_webhook_url": body.get("bot_webhook_url", previous.get("bot_webhook_url", "")),
+                "bot_webhook_configured": bot_webhook_configured,
+                "enabled": bool(body.get("enabled", previous.get("enabled", False))),
+                "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            stored["configured"] = bool(bot_webhook_configured or (stored["app_id"] and secret_configured))
+            _save_feishu_channel_config(stored)
             config = self._make_channel_item(
                 "feishu", "飞书", "enterprise_collab", "feishu",
-                configured=True,
+                configured=stored["configured"],
+                enabled=stored["enabled"],
             )
             config.update({
-                "app_id": body.get("app_id", ""),
+                "app_id": stored["app_id"],
                 "app_secret": "",
-                "verification_token": "",
-                "encrypt_key": "",
-                "secret_configured": bool(body.get("app_secret")),
+                "verification_token": stored["verification_token"],
+                "encrypt_key": stored["encrypt_key"],
+                "secret_configured": stored["secret_configured"],
+                "bot_webhook_url": stored["bot_webhook_url"],
+                "bot_webhook_configured": stored["bot_webhook_configured"],
+                "updated_time": stored["updated_time"],
             })
             _platform_json_response(self, 200, config)
         except Exception as e:
@@ -3950,30 +5395,16 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_wechat_personal_plugin_config(self):
-        """GET /api/platform/channels/wechat-personal-plugin/config — 个人微信插件配置（stub）。"""
+        """GET /api/platform/channels/wechat-personal-plugin/config — 个人微信插件配置。"""
         try:
+            stored = _load_wechat_personal_plugin_channel_config()
             config = self._make_channel_item(
                 "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
+                configured=bool(stored.get("configured")),
+                enabled=bool(stored.get("enabled")),
             )
             config.update({
-                "display_name": "微信个人号(插件)",
-                "kernel_source": "unconfigured",
-                "kernel_configured": False,
-                "kernel_isolated": False,
-                "kernel_corp_id": "",
-                "kernel_agent_id": "",
-                "kernel_secret": "",
-                "kernel_secret_configured": False,
-                "kernel_verify_token": "",
-                "kernel_aes_key": "",
-                "effective_kernel_corp_id": "",
-                "effective_kernel_agent_id": "",
-                "effective_kernel_verify_token": "",
-                "effective_kernel_aes_key": "",
-                "setup_status": "planned",
-                "assistant_name": "",
-                "welcome_message": "",
-                "capability_stage": "planned",
+                **stored,
             })
             _platform_json_response(self, 200, config)
         except Exception as e:
@@ -3981,32 +5412,57 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_wechat_personal_plugin_config_update(self):
-        """POST /api/platform/channels/wechat-personal-plugin/config — 更新（stub）。"""
+        """POST /api/platform/channels/wechat-personal-plugin/config — 更新。"""
         try:
             body = _read_json_body(self)
+            previous = _load_wechat_personal_plugin_channel_config()
+            kernel_corp_id = body.get("kernel_corp_id", previous.get("kernel_corp_id", ""))
+            kernel_agent_id = body.get("kernel_agent_id", previous.get("kernel_agent_id", ""))
+            kernel_secret = body.get("kernel_secret", "")
+            kernel_verify_token = body.get("kernel_verify_token", previous.get("kernel_verify_token", ""))
+            kernel_aes_key = body.get("kernel_aes_key", previous.get("kernel_aes_key", ""))
+            kernel_secret_configured = bool(kernel_secret) or bool(previous.get("kernel_secret_configured"))
+            kernel_configured = bool(kernel_corp_id and kernel_agent_id and kernel_secret_configured)
+            configured = bool(body.get("display_name", previous.get("display_name", "")).strip()) and kernel_configured
+            enabled_requested = bool(body.get("enabled", previous.get("enabled", False)))
+            binding_enabled_requested = bool(body.get("binding_enabled", previous.get("binding_enabled", False)))
+            enabled = bool(configured and enabled_requested)
+            binding_enabled = bool(configured and binding_enabled_requested)
+            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+            stored = {
+                "display_name": body.get("display_name", previous.get("display_name", "微信个人号(插件)")),
+                "kernel_source": "independent" if kernel_configured else previous.get("kernel_source", "unconfigured"),
+                "kernel_configured": kernel_configured,
+                "kernel_isolated": kernel_configured,
+                "kernel_corp_id": kernel_corp_id,
+                "kernel_agent_id": kernel_agent_id,
+                "kernel_secret": "",
+                "kernel_secret_configured": kernel_secret_configured,
+                "kernel_verify_token": kernel_verify_token,
+                "kernel_aes_key": kernel_aes_key,
+                "effective_kernel_corp_id": kernel_corp_id,
+                "effective_kernel_agent_id": kernel_agent_id,
+                "effective_kernel_verify_token": kernel_verify_token,
+                "effective_kernel_aes_key": kernel_aes_key,
+                "setup_status": "active" if configured else ("beta" if kernel_configured else "planned"),
+                "assistant_name": body.get("assistant_name", previous.get("assistant_name", "")),
+                "welcome_message": body.get("welcome_message", previous.get("welcome_message", "")),
+                "capability_stage": "beta" if configured else "planned",
+                "binding_enabled": binding_enabled,
+                "enabled": enabled,
+                "configured": configured,
+                "updated_time": now,
+            }
+            _save_wechat_personal_plugin_channel_config(stored)
+
             config = self._make_channel_item(
                 "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
-                configured=True,
+                configured=configured,
+                enabled=enabled,
             )
             config.update({
-                "display_name": body.get("display_name", "微信个人号(插件)"),
-                "kernel_source": "independent",
-                "kernel_configured": False,
-                "kernel_isolated": False,
-                "kernel_corp_id": body.get("kernel_corp_id", ""),
-                "kernel_agent_id": body.get("kernel_agent_id", ""),
-                "kernel_secret": "",
-                "kernel_secret_configured": False,
-                "kernel_verify_token": "",
-                "kernel_aes_key": "",
-                "effective_kernel_corp_id": body.get("kernel_corp_id", ""),
-                "effective_kernel_agent_id": body.get("kernel_agent_id", ""),
-                "effective_kernel_verify_token": "",
-                "effective_kernel_aes_key": "",
-                "setup_status": "planned",
-                "assistant_name": body.get("assistant_name", ""),
-                "welcome_message": body.get("welcome_message", ""),
-                "capability_stage": "planned",
+                **stored,
             })
             _platform_json_response(self, 200, config)
         except Exception as e:
@@ -4032,9 +5488,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 enabled=gateway_online,
             )
             config.update({
-                "display_name": "微信个人号(OpenClaw)",
-                "channel_mode": "official_openclaw_plugin",
-                "setup_status": "ready" if gateway_online else "waiting_gateway",
+                "display_name": "微信个人号(插件)",
+                "channel_mode": "hermes_plugin",
+                "setup_status": "ready",
                 "manual_cli_required": False,
                 "preinstall_supported": True,
                 "qr_supported": True,
@@ -4049,40 +5505,92 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_bindings_list(self):
-        """GET /api/platform/channels/bindings — 绑定列表（stub 空）。"""
+        """GET /api/platform/channels/bindings — 绑定列表。"""
         try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            team_id = int((params.get("team_id") or ["1"])[0])
+            channel_key = (params.get("channel_key") or ["wechat_personal_plugin"])[0]
+            bindings = [
+                item for item in _load_channel_bindings()
+                if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
+            ]
             _platform_json_response(self, 200, {
-                "items": [],
-                "total": 0,
+                "items": bindings,
+                "total": len(bindings),
+            })
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_channel_bindings_validate(self):
+        """GET /api/platform/channels/bindings/validate — 无残留绑定链路校验。"""
+        try:
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            team_id = int((params.get("team_id") or ["1"])[0])
+            channel_key = (params.get("channel_key") or ["wechat_personal_plugin"])[0]
+            storage_dir = os.path.dirname(_CHANNELS_BINDINGS_FILE)
+            storage_parent = os.path.dirname(storage_dir) or storage_dir
+            storage_file_exists = os.path.isfile(_CHANNELS_BINDINGS_FILE)
+            storage_dir_exists = os.path.isdir(storage_dir)
+            storage_readable = storage_file_exists and os.access(_CHANNELS_BINDINGS_FILE, os.R_OK)
+            storage_writable = (
+                os.access(_CHANNELS_BINDINGS_FILE, os.W_OK)
+                if storage_file_exists
+                else os.access(storage_dir, os.W_OK)
+                if storage_dir_exists
+                else os.access(storage_parent, os.W_OK)
+            )
+            bindings = [
+                item for item in _load_channel_bindings()
+                if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
+            ]
+            probe_result = _probe_channel_bindings_write_path(team_id, channel_key) if storage_writable else {
+                "ok": False,
+                "error": "bindings storage is not writable",
+                "cleanup_error": None,
+            }
+
+            _platform_json_response(self, 200, {
+                "team_id": team_id,
+                "channel_key": channel_key,
+                "ready": bool(storage_writable and probe_result.get("ok")),
+                "storage_file": _CHANNELS_BINDINGS_FILE,
+                "storage_file_exists": storage_file_exists,
+                "storage_dir": storage_dir,
+                "storage_dir_exists": storage_dir_exists,
+                "storage_readable": storage_readable,
+                "storage_writable": storage_writable,
+                "bindings_count": len(bindings),
+                "binding_enabled": bool(_load_wechat_personal_plugin_channel_config().get("binding_enabled", False)),
+                "supported_operations": ["list", "create", "disable", "regenerate-code"],
+                "probe_write_ok": bool(probe_result.get("ok")),
+                "probe_cleanup_ok": probe_result.get("cleanup_error") is None,
+                "probe_error": probe_result.get("error"),
+                "validation_mode": "active-write-no-residue",
             })
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_channel_binding_create(self):
-        """POST /api/platform/channels/bindings/create — 创建绑定（stub）。"""
+        """POST /api/platform/channels/bindings/create — 创建绑定。"""
         try:
             body = _read_json_body(self)
-            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            binding = {
-                "id": int(time.time()),
-                "team_id": body.get("team_id", 1),
-                "channel_key": body.get("channel_key", "wechat_personal_plugin"),
-                "binding_type": body.get("binding_type", ""),
-                "binding_target_id": body.get("binding_target_id", ""),
-                "binding_target_name": body.get("binding_target_name"),
-                "binding_code": f"bind_{int(time.time())}",
-                "code_expires_at": None,
-                "status": "pending",
-                "created_by_user_id": 1,
-                "bound_by_user_id": None,
-                "binding_enabled_snapshot": True,
-                "notes": body.get("notes"),
-                "bound_at": None,
-                "created_time": now,
-                "updated_time": now,
-                "identity": None,
-            }
+            channel_key = body.get("channel_key", "wechat_personal_plugin")
+            if channel_key == "wechat_personal_plugin":
+                plugin_config = _load_wechat_personal_plugin_channel_config()
+                if not bool(plugin_config.get("configured")):
+                    _platform_json_response(self, 400, None, "wechat personal plugin channel is not fully configured")
+                    return
+                if not bool(plugin_config.get("enabled")):
+                    _platform_json_response(self, 400, None, "wechat personal plugin channel is not enabled")
+                    return
+                if not bool(plugin_config.get("binding_enabled")):
+                    _platform_json_response(self, 400, None, "wechat personal plugin binding is not enabled")
+                    return
+            binding = _create_channel_binding_record(body)
             _platform_json_response(self, 200, binding)
         except Exception as e:
             traceback.print_exc()
@@ -4098,26 +5606,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/disable — 禁用绑定。"""
         try:
             body = _read_json_body(self)
-            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            binding = {
-                "id": body.get("binding_id", 0),
-                "team_id": 1,
-                "channel_key": "wechat_personal_plugin",
-                "binding_type": "user",
-                "binding_target_id": "",
-                "binding_target_name": None,
-                "binding_code": "",
-                "code_expires_at": None,
-                "status": "disabled",
-                "created_by_user_id": 1,
-                "bound_by_user_id": None,
-                "binding_enabled_snapshot": False,
-                "notes": None,
-                "bound_at": None,
-                "created_time": now,
-                "updated_time": now,
-                "identity": None,
-            }
+            binding_id = int(body.get("binding_id", 0))
+            binding = _disable_channel_binding_record(binding_id)
+            if binding is None:
+                _platform_json_response(self, 404, None, f"binding {binding_id} not found")
+                return
             _platform_json_response(self, 200, binding)
         except Exception as e:
             traceback.print_exc()
@@ -4127,30 +5620,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/regenerate-code — 重新生成绑定码。"""
         try:
             body = _read_json_body(self)
-            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            expires_hours = body.get("expires_in_hours", 72)
-            binding = {
-                "id": body.get("binding_id", 0),
-                "team_id": 1,
-                "channel_key": "wechat_personal_plugin",
-                "binding_type": "user",
-                "binding_target_id": "",
-                "binding_target_name": None,
-                "binding_code": f"bind_{uuid.uuid4().hex[:12]}",
-                "code_expires_at": time.strftime(
-                    "%Y-%m-%dT%H:%M:%SZ",
-                    time.gmtime(time.time() + expires_hours * 3600),
-                ),
-                "status": "pending",
-                "created_by_user_id": 1,
-                "bound_by_user_id": None,
-                "binding_enabled_snapshot": True,
-                "notes": None,
-                "bound_at": None,
-                "created_time": now,
-                "updated_time": now,
-                "identity": None,
-            }
+            expires_hours = int(body.get("expires_in_hours", 72))
+            binding_id = int(body.get("binding_id", 0))
+            binding = _regenerate_channel_binding_code_record(binding_id, expires_hours=expires_hours)
+            if binding is None:
+                _platform_json_response(self, 404, None, f"binding {binding_id} not found")
+                return
             _platform_json_response(self, 200, binding)
         except Exception as e:
             traceback.print_exc()
@@ -4159,19 +5634,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle_channel_openclaw_qr_start(self):
         """POST /api/platform/channels/wechat-personal-openclaw/qr/start — QR 扫码登录。"""
         try:
+            _ensure_hermes_on_path()
+            from wechat_gateway import start_qr_login
+            result = start_qr_login()
+            status = str(result.get("status") or "unknown")
+            qr_url = result.get("qr_url", "") or ""
             _platform_json_response(self, 200, {
-                "status": "waiting_scan",
-                "message": "请使用微信扫描二维码",
-                "qr_data_url": "",
-                "qr_url": "",
-                "session_id": f"qr_{uuid.uuid4().hex[:12]}",
+                "status": "waiting_scan" if status in {"started", "already_in_progress"} else status,
+                "message": result.get("message") or "请使用微信扫描二维码",
+                "qr_data_url": _url_to_qr_data_url(qr_url) if qr_url else "",
+                "qr_url": qr_url,
+                "session_id": result.get("session_id", ""),
                 "account_id": "",
                 "expires_at": time.strftime(
                     "%Y-%m-%dT%H:%M:%SZ",
                     time.gmtime(time.time() + 300),
-                ),
+                ) if status in {"started", "already_in_progress"} else None,
                 "connected": False,
                 "binding": None,
+                "raw": result,
             })
         except Exception as e:
             traceback.print_exc()
@@ -4180,16 +5661,23 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle_channel_openclaw_qr_status(self):
         """GET /api/platform/channels/wechat-personal-openclaw/qr/status — QR 状态。"""
         try:
+            _ensure_hermes_on_path()
+            from wechat_gateway import get_qr_login_status
+            result = get_qr_login_status()
+            state = str(result.get("status") or result.get("state") or "none")
+            credentials = result.get("credentials") or {}
+            qr_url = result.get("qr_url", "") or ""
             _platform_json_response(self, 200, {
-                "status": "waiting_scan",
-                "message": "等待扫码",
-                "qr_data_url": "",
-                "qr_url": "",
-                "session_id": "",
-                "account_id": "",
+                "status": "waiting_scan" if state == "pending" else state,
+                "message": result.get("message") or "等待扫码",
+                "qr_data_url": _url_to_qr_data_url(qr_url) if qr_url else "",
+                "qr_url": qr_url,
+                "session_id": result.get("session_id", "") or "",
+                "account_id": credentials.get("account_id", "") if isinstance(credentials, dict) else "",
                 "expires_at": None,
-                "connected": False,
+                "connected": bool(result.get("connected")),
                 "binding": None,
+                "raw": result,
             })
         except Exception as e:
             traceback.print_exc()
@@ -4389,18 +5877,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_workflow_run(self):
-        """POST /api/workflows/{id}/run — 运行 workflow（stub）。"""
+        """POST /api/workflows/{id}/run — 运行 workflow。"""
         try:
-            exec_id = f"exec_{uuid.uuid4().hex[:12]}"
-            _platform_json_response(self, 200, {"execution_id": exec_id})
+            _platform_json_response(self, 501, None, "Workflow executor is not available on this bridge")
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_workflow_execution_logs(self):
-        """GET /api/workflows/executions/{id}/logs — 执行日志（stub 空）。"""
+        """GET /api/workflows/executions/{id}/logs — 执行日志。"""
         try:
-            _platform_json_response(self, 200, [])
+            _platform_json_response(self, 501, None, "Workflow executor is not available on this bridge")
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
@@ -4439,14 +5926,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """GET /api/platform/devices/online — 设备在线状态。"""
         try:
             _platform_json_response(self, 200, {
-                "runtime_type": "openclaw",
-                "runtime_label": "OpenClaw",
+                "runtime_type": "hermes",
+                "runtime_label": "Hermes",
                 "runtime_status": "running",
                 "runtime_stage": "phase_device_bridge_only",
                 "supports_device_bridge": True,
                 "supports_managed_download": False,
                 "online_team_ids": [1],
-                "notes": "当前设备中心仅管理 OpenClaw device bridge。",
+                "notes": "当前设备中心仅管理 Hermes device bridge。",
             })
         except Exception as e:
             traceback.print_exc()
@@ -4481,7 +5968,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_devices_pair_code(self):
-        """POST /api/platform/devices/pair-code — 生成配对码（stub）。"""
+        """POST /api/platform/devices/pair-code — 生成配对码。"""
         try:
             _platform_json_response(self, 200, {
                 "pair_code": f"PAIR-{uuid.uuid4().hex[:6].upper()}",
@@ -4517,8 +6004,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_device_delete(self):
-        """DELETE /api/platform/devices/{id} — 删除设备（stub）。"""
+        """DELETE /api/platform/devices/{id} — 删除设备。"""
         try:
+            if os.path.isfile(_DEVICE_INFO_FILE):
+                os.remove(_DEVICE_INFO_FILE)
             _platform_json_response(self, 200, None)
         except Exception as e:
             traceback.print_exc()
@@ -5018,6 +6507,149 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
 
+    # ----- Product: Workflows (/api/platform/workflows) -----
+
+    def _handle_platform_workflows(self):
+        """GET /api/platform/workflows — 工作流列表。"""
+        try:
+            items = _load_workflows()
+            _platform_json_response(self, 200, items)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_workflow_create(self):
+        """POST /api/platform/workflows — 创建工作流。"""
+        try:
+            body = _read_json_body(self)
+            workflow = {
+                "id": f"wf_{uuid.uuid4().hex[:12]}",
+                "name": body.get("name", "未命名工作流"),
+                "description": body.get("description", ""),
+                "steps": body.get("steps", []),
+                "status": "draft",
+                "created_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "updated_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            items = _load_workflows()
+            items.insert(0, workflow)
+            _save_workflows(items)
+            _platform_json_response(self, 200, workflow)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_workflow_delete(self):
+        """DELETE /api/platform/workflows/{id} — 删除工作流。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            wf_id = _path.split("/")[-1]
+            items = _load_workflows()
+            items = [w for w in items if w.get("id") != wf_id]
+            _save_workflows(items)
+            _platform_json_response(self, 200, None)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Product: Policy (/api/platform/policy) -----
+
+    def _handle_platform_policy(self):
+        """GET /api/platform/policy — 策略列表。"""
+        try:
+            items = _load_policies()
+            _platform_json_response(self, 200, {"policies": items})
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_policy_create(self):
+        """POST /api/platform/policy — 创建策略规则。"""
+        try:
+            body = _read_json_body(self)
+            policy = {
+                "id": f"pol_{uuid.uuid4().hex[:12]}",
+                "name": body.get("name", "未命名策略"),
+                "type": body.get("type", "custom"),
+                "rules": body.get("rules", []),
+                "enabled": body.get("enabled", True),
+                "created_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            items = _load_policies()
+            items.insert(0, policy)
+            _save_policies(items)
+            _platform_json_response(self, 200, policy)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Product: Files (/api/platform/files) -----
+
+    def _handle_platform_files(self):
+        """GET /api/platform/files — 文件元数据列表。"""
+        try:
+            items = _load_files_meta()
+            _platform_json_response(self, 200, items)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_file_upload(self):
+        """POST /api/platform/files — 上传文件记录元数据。"""
+        try:
+            body = _read_json_body(self)
+            file_meta = {
+                "id": f"file_{uuid.uuid4().hex[:12]}",
+                "name": body.get("name", "untitled"),
+                "size": body.get("size", 0),
+                "mime_type": body.get("mime_type", "application/octet-stream"),
+                "path": body.get("path", ""),
+                "uploaded_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            items = _load_files_meta()
+            items.insert(0, file_meta)
+            _save_files_meta(items)
+            _platform_json_response(self, 200, file_meta)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_file_delete(self):
+        """DELETE /api/platform/files/{id} — 删除文件记录。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            file_id = _path.split("/")[-1]
+            items = _load_files_meta()
+            items = [f for f in items if f.get("id") != file_id]
+            _save_files_meta(items)
+            _platform_json_response(self, 200, None)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    # ----- Product: Voice (/api/platform/voice) -----
+
+    def _handle_platform_voice(self):
+        """GET /api/platform/voice — 语音配置。"""
+        try:
+            cfg = _load_voice_config()
+            _platform_json_response(self, 200, cfg)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_voice_update(self):
+        """POST /api/platform/voice — 更新语音配置。"""
+        try:
+            body = _read_json_body(self)
+            cfg = _load_voice_config()
+            cfg.update(body)
+            _save_voice_config(cfg)
+            _platform_json_response(self, 200, cfg)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
     # ----- Step 10: Policy -----
 
     def _handle_policy_check(self):
@@ -5033,7 +6665,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
 
-    # ----- Step 11: Voice (stub) -----
+    # ----- Step 11: Voice -----
 
     def _handle_voice_not_implemented(self):
         """POST /api/asr, /api/tts, /api/audio/speech — 语音服务未实现。"""
