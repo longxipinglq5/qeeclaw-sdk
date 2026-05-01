@@ -119,6 +119,10 @@ def init_knowledge_store() -> Optional[str]:
             name="qeeclaw_knowledge",
             metadata={"hnsw:space": "cosine"},
         )
+        # Pre-warm the embedding model so the first upload doesn't hit a cold start.
+        # all-MiniLM-L6-v2 is ~80 MB and takes several seconds to download and load.
+        _collection.add(documents=["warmup"], ids=["_warmup"])
+        _collection.delete(ids=["_warmup"])
         _kb_ready = True
         _kb_error = None
         return None

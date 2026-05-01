@@ -14,6 +14,8 @@ export interface SidecarConfig {
   sidecarHost: string;
   sidecarPort: number;
   sidecarAuthToken?: string;
+  gatewayAuthToken?: string;
+  gatewayAuthPassword?: string;
   allowRemoteAccess: boolean;
   startGatewayOnBoot: boolean;
   startBridgeOnBoot?: boolean;
@@ -28,6 +30,9 @@ export interface SidecarConfig {
   bridgePidFilePath?: string;
   knowledgeConfigFilePath: string;
   approvalsCacheFilePath: string;
+  channelSecretsFilePath: string;
+  channelAttachmentDirPath: string;
+  channelRuntimeMode: "gateway" | "echo";
   deviceName: string;
   hostname: string;
   osInfo: string;
@@ -156,6 +161,7 @@ export interface SidecarHealth {
     deviceId?: number;
   };
   gateway: GatewayAdapterStatus;
+  channels?: ChannelManagerStatus;
 }
 
 export interface SidecarPublicAuthState {
@@ -184,6 +190,8 @@ export interface SidecarSelfCheck {
     stateDirWritableHint?: string;
     knowledgeConfigPath: string;
     approvalsCachePath: string;
+    channelSecretsPath: string;
+    channelAttachmentDirPath: string;
   };
   auth: {
     installationId?: string;
@@ -195,4 +203,64 @@ export interface SidecarSelfCheck {
   };
   gateway: GatewayAdapterStatus;
   knowledge: KnowledgeConfig;
+  channels?: ChannelManagerStatus;
+}
+
+export type ChannelKey = "feishu" | "wechat_work" | "wechat_personal";
+
+export type ChannelChatType = "dm" | "group";
+
+export type ChannelAttachmentType = "image" | "file" | "voice" | "video";
+
+export interface ChannelAttachment {
+  id?: string;
+  type: ChannelAttachmentType;
+  name?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  localPath?: string;
+  dataBase64?: string;
+  remoteUrl?: string;
+  rawMeta?: Record<string, unknown>;
+}
+
+export interface ChannelMessage {
+  channel: ChannelKey;
+  messageId: string;
+  chatId: string;
+  chatType: ChannelChatType;
+  senderId: string;
+  senderName?: string;
+  text?: string;
+  attachments: ChannelAttachment[];
+  rawMeta?: Record<string, unknown>;
+  receivedAt: string;
+}
+
+export interface ChannelReply {
+  text?: string;
+  attachments?: ChannelAttachment[];
+  rawMeta?: Record<string, unknown>;
+}
+
+export interface ChannelAdapterStatus {
+  channel: ChannelKey;
+  configured: boolean;
+  running: boolean;
+  mode: "local_bridge";
+  lastMessageAt?: string;
+  lastError?: string;
+}
+
+export interface ChannelManagerStatus {
+  running: boolean;
+  adapters: ChannelAdapterStatus[];
+}
+
+export interface ChannelRouteResult {
+  accepted: boolean;
+  duplicate: boolean;
+  messageId: string;
+  channel: ChannelKey;
+  reply?: ChannelReply;
 }

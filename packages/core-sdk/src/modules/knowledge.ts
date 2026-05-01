@@ -68,21 +68,22 @@ export class KnowledgeModule {
     if (payload.agentId) {
       form.set("agent_id", payload.agentId);
     }
+    if (payload.sourceName) {
+      form.set("source_name", payload.sourceName);
+    }
 
     if (payload.file !== undefined) {
       const blob = buildBlob(payload.file, payload.contentType);
       form.set("file", blob, payload.filename ?? "knowledge.bin");
     } else {
       form.set("content", payload.content ?? "");
-      if (payload.sourceName) {
-        form.set("source_name", payload.sourceName);
-      }
     }
 
     return this.http.request<Record<string, unknown>>({
       method: "POST",
       path: "/api/platform/knowledge/upload",
       body: form,
+      timeoutMs: 300_000,
     });
   }
 

@@ -5,8 +5,14 @@ declare namespace NodeJS {
 }
 
 declare class Buffer {
+  readonly length: number;
+  readonly byteLength: number;
+  readonly [index: number]: number;
   toString(encoding?: string): string;
-  static from(data: string | ArrayBuffer | ArrayLike<number> | null | undefined): Buffer;
+  subarray(start?: number, end?: number): Buffer;
+  readUInt32BE(offset?: number): number;
+  static from(data: string | ArrayBuffer | ArrayLike<number> | null | undefined, encoding?: string): Buffer;
+  static from(data: ArrayBuffer, byteOffset?: number, length?: number): Buffer;
   static concat(chunks: readonly Buffer[]): Buffer;
   static isBuffer(value: unknown): value is Buffer;
 }
@@ -52,11 +58,24 @@ declare module "node:path" {
 }
 
 declare module "node:crypto" {
+  export interface Hash {
+    update(data: string): Hash;
+    digest(encoding: "hex" | "base64" | "base64url"): string;
+  }
+
+  export interface Decipher {
+    setAutoPadding(autoPadding?: boolean): Decipher;
+    update(data: string, inputEncoding: string): Buffer;
+    final(): Buffer;
+  }
+
   const crypto: {
     randomUUID(): string;
     randomBytes(size: number): {
       toString(encoding?: string): string;
     };
+    createHash(algorithm: string): Hash;
+    createDecipheriv(algorithm: string, key: Buffer, iv: Buffer): Decipher;
   };
   export default crypto;
 }
@@ -90,9 +109,10 @@ declare module "node:fs/promises" {
 
   export function access(path: string): Promise<void>;
   export function mkdir(path: string, options?: { recursive?: boolean }): Promise<void>;
+  export function readFile(path: string): Promise<Buffer>;
   export function readFile(path: string, encoding: "utf8"): Promise<string>;
-  export function writeFile(path: string, content: string): Promise<void>;
-  export function rm(path: string, options?: { force?: boolean }): Promise<void>;
+  export function writeFile(path: string, content: string | Buffer): Promise<void>;
+  export function rm(path: string, options?: { force?: boolean; recursive?: boolean }): Promise<void>;
   export function stat(path: string): Promise<FileStat>;
   export function readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>;
 }

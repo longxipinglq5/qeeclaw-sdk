@@ -32,6 +32,7 @@ export interface QeeClawRequestOptions extends QeeClawAuthContext {
   body?: BodyInit | Record<string, unknown>;
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  timeoutMs?: number;
 }
 
 export interface PaginatedResult<T> {

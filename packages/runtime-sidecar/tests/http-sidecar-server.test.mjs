@@ -109,6 +109,19 @@ function createDeps(config, stateStore) {
         return [];
       },
     },
+    channelManager: {
+      getStatus() {
+        return { running: false, adapters: [] };
+      },
+    },
+    channelSecretStore: {
+      async publicStatus() {
+        return [];
+      },
+      async patch(channel, patch) {
+        return { channel, ...patch };
+      },
+    },
   };
 }
 
@@ -147,6 +160,8 @@ test("http sidecar server requires bearer token and masks auth state", async (t)
     bridgePidFilePath: path.join(tmpDir, "gateway.json"),
     knowledgeConfigFilePath: path.join(tmpDir, "knowledge.json"),
     approvalsCacheFilePath: path.join(tmpDir, "approvals.json"),
+    channelSecretsFilePath: path.join(tmpDir, "channel-secrets.json"),
+    channelAttachmentDirPath: path.join(tmpDir, "channel-attachments"),
     deviceName: "QeeClaw Test",
     hostname: "localhost",
     osInfo: "test-os",
@@ -236,6 +251,8 @@ test("http sidecar server refuses non-loopback bind unless explicitly allowed", 
     bridgePidFilePath: path.join(tmpDir, "gateway.json"),
     knowledgeConfigFilePath: path.join(tmpDir, "knowledge.json"),
     approvalsCacheFilePath: path.join(tmpDir, "approvals.json"),
+    channelSecretsFilePath: path.join(tmpDir, "channel-secrets.json"),
+    channelAttachmentDirPath: path.join(tmpDir, "channel-attachments"),
     deviceName: "QeeClaw Test",
     hostname: "localhost",
     osInfo: "test-os",

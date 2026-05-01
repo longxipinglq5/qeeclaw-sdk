@@ -140,6 +140,16 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     sidecarHost: env.QEECLAW_SIDECAR_HOST?.trim() || "127.0.0.1",
     sidecarPort: numberFromEnv(env.QEECLAW_SIDECAR_PORT, 21736),
     sidecarAuthToken: env.QEECLAW_SIDECAR_AUTH_TOKEN?.trim() || undefined,
+    gatewayAuthToken:
+      env.QEECLAW_GATEWAY_AUTH_TOKEN?.trim() ||
+      env.OPENCLAW_GATEWAY_TOKEN?.trim() ||
+      env.QEECLAW_GATEWAY_TOKEN?.trim() ||
+      undefined,
+    gatewayAuthPassword:
+      env.QEECLAW_GATEWAY_AUTH_PASSWORD?.trim() ||
+      env.OPENCLAW_GATEWAY_PASSWORD?.trim() ||
+      env.QEECLAW_GATEWAY_PASSWORD?.trim() ||
+      undefined,
     allowRemoteAccess: boolFromEnv(env.QEECLAW_SIDECAR_ALLOW_REMOTE, false),
     startGatewayOnBoot,
     startBridgeOnBoot: startGatewayOnBoot,
@@ -154,6 +164,9 @@ export function loadSidecarConfig(env: NodeJS.ProcessEnv = process.env): Sidecar
     bridgePidFilePath: path.join(sidecarStateDir, "gateway-adapter.json"),
     knowledgeConfigFilePath: path.join(sidecarStateDir, "knowledge-worker.json"),
     approvalsCacheFilePath: path.join(sidecarStateDir, "approval-agent.json"),
+    channelSecretsFilePath: env.QEECLAW_CHANNEL_SECRETS_FILE?.trim() || path.join(sidecarStateDir, "channel-secrets.json"),
+    channelAttachmentDirPath: env.QEECLAW_CHANNEL_ATTACHMENT_DIR?.trim() || path.join(sidecarStateDir, "channel-attachments"),
+    channelRuntimeMode: env.QEECLAW_CHANNEL_RUNTIME_MODE === "echo" ? "echo" : "gateway",
     deviceName: env.QEECLAW_DEVICE_NAME || os.hostname() || "QeeClaw Device",
     hostname: env.QEECLAW_HOSTNAME || os.hostname() || "localhost",
     osInfo: env.QEECLAW_OS_INFO || `${os.platform()} ${os.release()}`,

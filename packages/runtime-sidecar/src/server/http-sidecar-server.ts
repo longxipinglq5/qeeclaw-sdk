@@ -9,6 +9,18 @@ import type { MemoryWorker } from "../workers/memory-worker.js";
 import type { KnowledgeWorker } from "../workers/knowledge-worker.js";
 import type { SidecarConfig, SidecarHealth, SyncResult } from "../types.js";
 import type { SyncService } from "../sync/sync-service.js";
+import type { ChannelManager } from "../channels/manager.js";
+import type { ChannelSecretStore } from "../channels/secret-store.js";
+import type { WechatWorkIncomingPayload } from "../channels/wechat-work/adapter.js";
+import {
+  parseWechatWorkCallbackBody,
+  verifyWechatWorkUrl,
+  type WechatWorkCallbackCredentials,
+} from "../channels/wechat-work/callback-crypto.js";
+import type {
+  MemoryWechatPersonalTransport,
+  WechatPersonalIncomingPayload,
+} from "../channels/wechat-personal/adapter.js";
 
 type Dependencies = {
   config: SidecarConfig;
@@ -19,17 +31,30 @@ type Dependencies = {
   knowledgeWorker: KnowledgeWorker;
   securityAgent: LocalSecurityAgent;
   approvalAgent: ApprovalAgent;
+  channelManager: ChannelManager;
+  channelSecretStore: ChannelSecretStore;
+  reloadChannels?: () => Promise<void>;
+  emitWechatWorkMessage?: (payload: WechatWorkIncomingPayload) => Promise<void>;
+  wechatPersonalTransport?: MemoryWechatPersonalTransport;
 };
 
 async function readJsonBody(request: http.IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  if (!chunks.length) {
+  const raw = await readRawBody(request);
+  if (!raw.trim()) {
     return {};
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+  return JSON.parse(raw) as Record<string, unknown>;
+}
+
+async function readRawBody(request: http.IncomingMessage): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  if (!chunks.length) {
+    return "";
+  }
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 function isLoopbackHost(host: string): boolean {
@@ -63,10 +88,32 @@ function sendError(response: http.ServerResponse, status: number, error: unknown
   );
 }
 
+function sendText(response: http.ServerResponse, status: number, data: string): void {
+  response.statusCode = status;
+  response.setHeader("Content-Type", "text/plain; charset=utf-8");
+  response.end(data);
+}
+
 export class HttpSidecarServer {
   private server?: http.Server;
 
   constructor(private readonly deps: Dependencies) {}
+
+  private async getWechatWorkCallbackCredentials(): Promise<WechatWorkCallbackCredentials> {
+    const record = await this.deps.channelSecretStore.get("wechat_work");
+    const credentials = record?.credentials || {};
+    const corpId = credentials.corpId?.trim();
+    const token = credentials.token?.trim();
+    const encodingAesKey = credentials.encodingAesKey?.trim() || credentials.aesKey?.trim();
+    if (!record?.enabled || !corpId || !token || !encodingAesKey) {
+      throw new Error("WeChat Work local callback is not configured");
+    }
+    return {
+      corpId,
+      token,
+      encodingAesKey,
+    };
+  }
 
   private async ensureRequestAuthorized(
     request: http.IncomingMessage,
@@ -107,11 +154,64 @@ export class HttpSidecarServer {
     this.server = http.createServer(async (request: http.IncomingMessage, response: http.ServerResponse) => {
       try {
         const method = request.method || "GET";
+        const origin = request.headers.origin;
+        response.setHeader("Access-Control-Allow-Origin", origin || "*");
+        response.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
+        response.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type");
+        response.setHeader("Vary", "Origin");
+
+        if (method === "OPTIONS") {
+          response.statusCode = 204;
+          response.end("");
+          return;
+        }
+
         const url = new URL(
           request.url || "/",
           `http://${this.deps.config.sidecarHost}:${this.deps.config.sidecarPort}`,
         );
         const pathname = url.pathname;
+
+        if (pathname === "/channels/wechat-work/callback") {
+          if (!this.deps.emitWechatWorkMessage) {
+            sendText(response, 404, "not available");
+            return;
+          }
+          const credentials = await this.getWechatWorkCallbackCredentials();
+          const msgSignature = url.searchParams.get("msg_signature") || "";
+          const timestamp = url.searchParams.get("timestamp") || "";
+          const nonce = url.searchParams.get("nonce") || "";
+
+          if (method === "GET") {
+            const echostr = url.searchParams.get("echostr") || "";
+            const reply = verifyWechatWorkUrl({
+              msgSignature,
+              timestamp,
+              nonce,
+              echostr,
+              credentials,
+            });
+            sendText(response, 200, reply);
+            return;
+          }
+
+          if (method === "POST") {
+            const rawBody = await readRawBody(request);
+            const payload = parseWechatWorkCallbackBody({
+              rawBody,
+              msgSignature,
+              timestamp,
+              nonce,
+              credentials,
+            });
+            await this.deps.emitWechatWorkMessage(payload);
+            sendText(response, 200, "success");
+            return;
+          }
+
+          sendText(response, 405, "method not allowed");
+          return;
+        }
 
         if (!(await this.ensureRequestAuthorized(request, response))) {
           return;
@@ -136,6 +236,7 @@ export class HttpSidecarServer {
               configuredAuthToken: this.deps.config.sidecarAuthToken,
             }) as SidecarHealth["auth"],
             gateway,
+            channels: this.deps.channelManager.getStatus(),
           };
           sendJson(response, 200, payload);
           return;
@@ -160,6 +261,88 @@ export class HttpSidecarServer {
 
         if (method === "GET" && pathname === "/gateway/status") {
           sendJson(response, 200, await this.deps.gatewayAdapter.status());
+          return;
+        }
+
+        if (method === "GET" && pathname === "/channels/status") {
+          sendJson(response, 200, {
+            ...this.deps.channelManager.getStatus(),
+            secrets: await this.deps.channelSecretStore.publicStatus(),
+          });
+          return;
+        }
+
+        if (method === "POST" && pathname === "/channels/reload") {
+          if (!this.deps.reloadChannels) {
+            sendError(response, 501, "Channel reload is not available");
+            return;
+          }
+          await this.deps.reloadChannels();
+          sendJson(response, 200, {
+            ...this.deps.channelManager.getStatus(),
+            secrets: await this.deps.channelSecretStore.publicStatus(),
+          });
+          return;
+        }
+
+        if (method === "PATCH" && pathname.startsWith("/channels/secrets/")) {
+          const channel = decodeURIComponent(pathname.replace("/channels/secrets/", ""));
+          if (!["feishu", "wechat_work", "wechat_personal"].includes(channel)) {
+            sendError(response, 400, `Unsupported channel: ${channel}`);
+            return;
+          }
+          const body = await readJsonBody(request);
+          const credentials =
+            body.credentials && typeof body.credentials === "object" && !Array.isArray(body.credentials)
+              ? Object.fromEntries(
+                  Object.entries(body.credentials as Record<string, unknown>)
+                    .filter(([, value]) => typeof value === "string")
+                    .map(([key, value]) => [key, String(value)]),
+                )
+              : undefined;
+          await this.deps.channelSecretStore.patch(channel as "feishu" | "wechat_work" | "wechat_personal", {
+            enabled: typeof body.enabled === "boolean" ? body.enabled : undefined,
+            credentials,
+          });
+          sendJson(response, 200, {
+            secrets: await this.deps.channelSecretStore.publicStatus(),
+            reloadRequired: true,
+          });
+          return;
+        }
+
+        if (method === "POST" && pathname === "/channels/wechat-personal/upstream") {
+          if (!this.deps.wechatPersonalTransport) {
+            sendError(response, 404, "WeChat personal local bridge transport is not available");
+            return;
+          }
+          const body = await readJsonBody(request);
+          const payload =
+            body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
+              ? (body.payload as WechatPersonalIncomingPayload)
+              : (body as WechatPersonalIncomingPayload);
+          const replies = await this.deps.wechatPersonalTransport.emitAndCollectReplies(payload);
+          sendJson(response, 200, {
+            handled: true,
+            replies,
+          });
+          return;
+        }
+
+        if (method === "POST" && pathname === "/channels/wechat-work/upstream") {
+          if (!this.deps.emitWechatWorkMessage) {
+            sendError(response, 404, "WeChat Work local bridge transport is not available");
+            return;
+          }
+          const body = await readJsonBody(request);
+          const payload =
+            body.payload && typeof body.payload === "object" && !Array.isArray(body.payload)
+              ? (body.payload as WechatWorkIncomingPayload)
+              : (body as WechatWorkIncomingPayload);
+          await this.deps.emitWechatWorkMessage(payload);
+          sendJson(response, 200, {
+            handled: true,
+          });
           return;
         }
 

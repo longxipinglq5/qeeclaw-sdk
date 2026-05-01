@@ -1193,7 +1193,7 @@ class TestHTTPConversationsEndpoints:
 
 
 class TestHTTPBillingEndpoints:
-    """Billing 端点测试（stub）。"""
+    """Billing 端点测试。"""
 
     def base(self, bridge_server):
         return bridge_server["url"]
@@ -1219,12 +1219,87 @@ class TestHTTPBillingEndpoints:
         assert data["total_spent"] == 0
         assert data["total_recharge"] == 0
 
+    def test_recorded_usage_updates_local_finance_views(self, bridge_server):
+        import bridge_server as bs_mod
+
+        try:
+            bs_mod._save_finance_usage_records([])
+            bs_mod._record_finance_usage(
+                prompt="hello finance",
+                text="world",
+                model="gpt-4o-mini",
+                provider="openai",
+                usage={
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                    "estimated_cost_usd": 0.42,
+                },
+                duration_seconds=1.75,
+            )
+
+            usage = _http_request(f"{self.base(bridge_server)}/api/platform/models/usage?days=7")
+            assert usage["status"] == 200
+            usage_data = usage["body"]["data"]
+            assert usage_data["record_count"] == 1
+            assert usage_data["total_calls"] == 1
+            assert usage_data["breakdown"][0]["product_name"] == "gpt-4o-mini"
+
+            cost = _http_request(f"{self.base(bridge_server)}/api/platform/models/cost?days=7")
+            assert cost["status"] == 200
+            cost_data = cost["body"]["data"]
+            assert cost_data["record_count"] == 1
+            assert cost_data["primary_currency"] == "USD"
+            assert cost_data["total_amount"] == pytest.approx(0.42)
+
+            quota = _http_request(f"{self.base(bridge_server)}/api/platform/models/quota")
+            assert quota["status"] == 200
+            quota_data = quota["body"]["data"]
+            assert quota_data["currency"] == "USD"
+            assert quota_data["monthly_spent"] == pytest.approx(0.42)
+
+            wallet = _http_request(f"{self.base(bridge_server)}/api/billing/wallet")
+            assert wallet["status"] == 200
+            wallet_data = wallet["body"]["data"]
+            assert wallet_data["currency"] == "USD"
+            assert wallet_data["current_month_spent"] == pytest.approx(0.42)
+
+            records = _http_request(f"{self.base(bridge_server)}/api/billing/records?page=1&page_size=10")
+            assert records["status"] == 200
+            records_data = records["body"]["data"]
+            assert records_data["total"] == 1
+            assert records_data["items"][0]["product_name"] == "gpt-4o-mini"
+            assert records_data["items"][0]["amount"] == pytest.approx(0.42)
+        finally:
+            bs_mod._save_finance_usage_records([])
+
 
 class TestHTTPChannelsEndpoints:
     """Channels 端点测试。"""
 
     def base(self, bridge_server):
         return bridge_server["url"]
+
+    def configure_plugin_channel(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/wechat-personal-plugin/config",
+            "POST",
+            data={
+                "team_id": 1,
+                "display_name": "微信个人号(插件)",
+                "kernel_corp_id": "corp_test",
+                "kernel_agent_id": "agent_test",
+                "kernel_secret": "secret_test",
+                "kernel_verify_token": "verify_test",
+                "kernel_aes_key": "aes_test",
+                "enabled": True,
+                "binding_enabled": True,
+            },
+        )
+        assert r["status"] == 200
+        assert r["body"]["data"]["configured"] is True
+        assert r["body"]["data"]["enabled"] is True
+        assert r["body"]["data"]["binding_enabled"] is True
 
     def test_channels_overview(self, bridge_server):
         r = _http_request(f"{self.base(bridge_server)}/api/platform/channels?team_id=1")
@@ -1281,6 +1356,24 @@ class TestHTTPChannelsEndpoints:
         assert data["channel_key"] == "wechat_personal_plugin"
         assert "setup_status" in data
 
+    def test_wechat_personal_plugin_config_does_not_enable_until_configured(self, bridge_server):
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/wechat-personal-plugin/config",
+            "POST",
+            data={
+                "team_id": 1,
+                "display_name": "微信个人号(插件)",
+                "enabled": True,
+                "binding_enabled": True,
+            },
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["configured"] is False
+        assert data["enabled"] is False
+        assert data["binding_enabled"] is False
+        assert data["setup_status"] == "planned"
+
     def test_wechat_personal_openclaw_config(self, bridge_server):
         r = _http_request(f"{self.base(bridge_server)}/api/platform/channels/wechat-personal-openclaw/config?team_id=1")
         assert r["status"] == 200
@@ -1293,10 +1386,38 @@ class TestHTTPChannelsEndpoints:
         r = _http_request(f"{self.base(bridge_server)}/api/platform/channels/bindings?team_id=1")
         assert r["status"] == 200
         data = r["body"]["data"]
-        assert data["total"] == 0
-        assert data["items"] == []
+        assert isinstance(data["items"], list)
+        assert data["total"] == len(data["items"])
+
+    def test_bindings_validate(self, bridge_server):
+        before = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings?team_id=1&channel_key=wechat_personal_plugin"
+        )
+        assert before["status"] == 200
+        before_total = before["body"]["data"]["total"]
+
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings/validate?team_id=1&channel_key=wechat_personal_plugin"
+        )
+        assert r["status"] == 200
+        data = r["body"]["data"]
+        assert data["channel_key"] == "wechat_personal_plugin"
+        assert data["ready"] is True
+        assert data["probe_write_ok"] is True
+        assert data["probe_cleanup_ok"] is True
+        assert data["validation_mode"] == "active-write-no-residue"
+        assert "list" in data["supported_operations"]
+        assert "create" in data["supported_operations"]
+
+        after = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings?team_id=1&channel_key=wechat_personal_plugin"
+        )
+        assert after["status"] == 200
+        assert after["body"]["data"]["total"] == before_total
 
     def test_binding_create(self, bridge_server):
+        self.configure_plugin_channel(bridge_server)
+
         r = _http_request(
             f"{self.base(bridge_server)}/api/platform/channels/bindings/create",
             "POST",
@@ -1312,23 +1433,76 @@ class TestHTTPChannelsEndpoints:
         assert data["binding_target_id"] == "target_001"
         assert data["status"] == "pending"
 
+        listed = _http_request(f"{self.base(bridge_server)}/api/platform/channels/bindings?team_id=1")
+        assert listed["status"] == 200
+        items = listed["body"]["data"]["items"]
+        assert any(item["id"] == data["id"] for item in items)
+
+    def test_binding_create_requires_configured_plugin_channel(self, bridge_server):
+        plugin_config_file = os.path.join(os.environ["HERMES_HOME"], "channel_wechat_personal_plugin.json")
+        if os.path.exists(plugin_config_file):
+            os.remove(plugin_config_file)
+
+        r = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings/create",
+            "POST",
+            data={
+                "team_id": 1,
+                "binding_type": "user",
+                "binding_target_id": "target_unconfigured",
+                "binding_target_name": "未配置绑定",
+            },
+        )
+        assert r["status"] == 400
+        assert "not fully configured" in r["body"]["message"]
+
     # --- Step 1: Channels 补全 ---
 
     def test_binding_disable(self, bridge_server):
+        self.configure_plugin_channel(bridge_server)
+
+        created = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings/create",
+            "POST",
+            data={
+                "team_id": 1,
+                "binding_type": "user",
+                "binding_target_id": "target_disable",
+                "binding_target_name": "待禁用绑定",
+            },
+        )
+        assert created["status"] == 200
+        binding_id = created["body"]["data"]["id"]
+
         r = _http_request(
             f"{self.base(bridge_server)}/api/platform/channels/bindings/disable",
             "POST",
-            data={"binding_id": 1},
+            data={"binding_id": binding_id},
         )
         assert r["status"] == 200
         data = r["body"]["data"]
         assert data["status"] == "disabled"
 
     def test_binding_regenerate_code(self, bridge_server):
+        self.configure_plugin_channel(bridge_server)
+
+        created = _http_request(
+            f"{self.base(bridge_server)}/api/platform/channels/bindings/create",
+            "POST",
+            data={
+                "team_id": 1,
+                "binding_type": "user",
+                "binding_target_id": "target_regenerate",
+                "binding_target_name": "待重置绑定码",
+            },
+        )
+        assert created["status"] == 200
+        binding_id = created["body"]["data"]["id"]
+
         r = _http_request(
             f"{self.base(bridge_server)}/api/platform/channels/bindings/regenerate-code",
             "POST",
-            data={"binding_id": 1},
+            data={"binding_id": binding_id},
         )
         assert r["status"] == 200
         data = r["body"]["data"]
@@ -1351,6 +1525,7 @@ class TestHTTPChannelsEndpoints:
         assert r["status"] == 200
         data = r["body"]["data"]
         assert "status" in data
+        assert "connected" in data
 
     # --- Step 2: Tenant ---
 

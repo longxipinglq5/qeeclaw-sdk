@@ -42,7 +42,7 @@ function isEnvelope<T>(value: unknown): value is QeeClawResponseEnvelope<T> {
 function getMessage(value: unknown, fallback: string): string {
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
-    const message = record.message ?? record.msg ?? record.detail;
+    const message = record.message ?? record.msg ?? record.detail ?? record.error;
     if (typeof message === "string" && message.trim()) {
       return message;
     }
@@ -81,8 +81,9 @@ export class HttpClient {
     const url = new URL(joinUrl(this.baseUrl, options.path));
     appendQuery(url, options.query);
 
+    const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     const headers = new Headers(this.headers);
     for (const [key, value] of Object.entries(options.headers ?? {})) {

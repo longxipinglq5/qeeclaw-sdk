@@ -269,6 +269,14 @@ def start_qr_login() -> Dict[str, Any]:
                         }
                     _save_credentials_to_env(credentials)
                     logger.info(f"WeChat login success, account_id={account_id}")
+
+                    # 自动启动 adapter 开始接收消息
+                    try:
+                        result = start_adapter()
+                        logger.info(f"[wechat] Auto-started adapter after login: {result}")
+                    except Exception as e:
+                        logger.warning(f"[wechat] Auto-start adapter failed: {e}")
+
                     return
 
                 time.sleep(2)
@@ -396,6 +404,36 @@ def get_wechat_credentials() -> Dict[str, Any]:
     }
 
 
+def _load_credentials_to_env():
+    """从 ~/.hermes/.env 加载微信凭证到当前进程环境变量。"""
+    try:
+        hermes_home = Path(_get_hermes_home())
+        env_file = hermes_home / ".env"
+
+        if not env_file.exists():
+            return False
+
+        # 读取 .env 文件
+        env_content = env_file.read_text(encoding="utf-8")
+        for line in env_content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                if key.startswith("WEIXIN_"):
+                    os.environ[key] = value
+                    logger.debug(f"[wechat] Loaded {key} from .env")
+
+        return True
+    except Exception as e:
+        logger.warning(f"[wechat] Failed to load credentials from .env: {e}")
+        return False
+
+
+
 def configure_wechat(config: Dict[str, Any]) -> Dict[str, Any]:
     """
     手动配置微信凭证和策略。
@@ -486,6 +524,114 @@ def send_message(chat_id: str, message: str, media_files: Optional[List[str]] = 
 # 完整适配器生命周期管理
 # ---------------------------------------------------------------------------
 
+# 全局 AgentPool 引用（从 bridge_server 导入）
+_agent_pool = None
+
+
+def _get_agent_pool():
+    """获取 AgentPool 实例（延迟导入避免循环依赖）。"""
+    global _agent_pool
+    if _agent_pool is None:
+        try:
+            # 从 bridge_server 导入 AgentPool
+            import bridge_server
+            _agent_pool = bridge_server.get_agent_pool()
+        except Exception as e:
+            logger.error(f"Failed to get AgentPool: {e}")
+    return _agent_pool
+
+
+# 消息处理回调（需要在 start_adapter 中注册）
+async def _handle_incoming_message(event):
+    """
+    处理从 WeixinAdapter 接收到的微信消息。
+
+    将消息转发给 AI 并返回回复。
+    """
+    try:
+        # 提取消息信息
+        sender_id = event.source.user_id or "unknown"
+        chat_id = event.source.chat_id or sender_id
+        text = event.text or ""
+
+        logger.info(f"[wechat] Received message from {sender_id}: {text[:50]}")
+
+        # 直接调用 paas.qeeshu.com 的模型 API
+        try:
+            import urllib.request
+            import json as json_module
+
+            api_url = "https://paas.qeeshu.com/api/platform/models/invoke"
+            api_key = "mJXR0OavZjP8-unrkrDUNw"
+            current_time = time.localtime()
+            weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+            current_date_context = (
+                f"当前系统时间是 {current_time.tm_year}年{current_time.tm_mon:02d}月{current_time.tm_mday:02d}日 "
+                f"{weekday_names[current_time.tm_wday]}。回答涉及今天、当前日期、星期几、现在时间等问题时，"
+                f"必须以这个时间为准，不要使用训练数据中的过期日期。"
+            )
+
+            request_data = {
+                "prompt": f"{current_date_context}\n\n用户消息：{text}",
+                # 不指定 model，让平台根据用户选择的模型自动处理
+            }
+
+            req = urllib.request.Request(
+                api_url,
+                data=json_module.dumps(request_data).encode('utf-8'),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {api_key}",
+                },
+                method="POST"
+            )
+
+            with urllib.request.urlopen(req, timeout=30) as response:
+                result = json_module.loads(response.read().decode('utf-8'))
+
+            # 提取回复文本
+            if result.get("code") == 0:
+                reply = result.get("data", {}).get("text", "抱歉，我无法处理您的消息。")
+            else:
+                reply = f"抱歉，处理您的消息时出错了：{result.get('message', '未知错误')}"
+
+            logger.info(f"[wechat] AI reply: {reply[:100]}")
+
+        except Exception as e:
+            logger.error(f"[wechat] AI invocation error: {e}")
+            traceback.print_exc()
+            reply = f"抱歉，处理您的消息时出错了：{str(e)}"
+
+        # 发送回复
+        account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")
+        token = os.environ.get("WEIXIN_TOKEN", "")
+        base_url = os.environ.get("WEIXIN_BASE_URL", "")
+
+        if account_id and token:
+            from gateway.platforms.weixin import send_weixin_direct
+
+            extra = {
+                "account_id": account_id,
+                "base_url": base_url,
+            }
+
+            result = await send_weixin_direct(
+                extra=extra,
+                token=token,
+                chat_id=chat_id,
+                message=reply,
+                media_files=None,
+            )
+
+            logger.info(f"[wechat] Sent reply to {chat_id}: {result}")
+        else:
+            logger.warning("[wechat] Cannot send reply: credentials not configured")
+
+    except Exception as e:
+        logger.error(f"[wechat] Message handling error: {e}")
+        traceback.print_exc()
+
+
 def start_adapter() -> Dict[str, Any]:
     """
     启动 WeixinAdapter 长轮询适配器。
@@ -498,6 +644,9 @@ def start_adapter() -> Dict[str, Any]:
     with _adapter_lock:
         if _adapter_instance is not None and _adapter_loop is not None:
             return {"status": "already_running"}
+
+        # 从文件加载凭证到环境变量
+        _load_credentials_to_env()
 
         # 校验凭证
         creds = get_wechat_credentials()
@@ -524,6 +673,10 @@ def start_adapter() -> Dict[str, Any]:
             )
 
             adapter = WeixinAdapter(config)
+
+            # 注册消息处理器（关键！）
+            adapter.set_message_handler(_handle_incoming_message)
+            logger.info("[wechat] Message handler registered")
 
         except ImportError as e:
             return {"error": f"weixin 模块导入失败: {e}"}

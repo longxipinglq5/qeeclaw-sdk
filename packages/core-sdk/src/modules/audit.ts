@@ -14,6 +14,10 @@ export class AuditModule {
         module: payload.module ?? "SDK",
         path: payload.path,
         params: payload.params,
+        summary: payload.summary,
+        status: payload.status,
+        risk_level: payload.riskLevel,
+        metadata: payload.metadata,
       },
     });
   }
@@ -87,6 +91,10 @@ export interface AuditRecordRequest {
   module?: string;
   path?: string;
   params?: string;
+  summary?: string;
+  status?: string;
+  riskLevel?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AuditEvent {

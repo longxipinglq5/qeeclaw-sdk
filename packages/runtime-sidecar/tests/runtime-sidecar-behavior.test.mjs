@@ -30,6 +30,8 @@ function createSidecarConfig(tmpDir) {
     bridgePidFilePath: path.join(tmpDir, "gateway.json"),
     knowledgeConfigFilePath: path.join(tmpDir, "knowledge.json"),
     approvalsCacheFilePath: path.join(tmpDir, "approvals.json"),
+    channelSecretsFilePath: path.join(tmpDir, "channel-secrets.json"),
+    channelAttachmentDirPath: path.join(tmpDir, "channel-attachments"),
     deviceName: "QeeClaw Test",
     hostname: "localhost",
     osInfo: "test-os",
@@ -144,4 +146,121 @@ test("runtime sidecar start tolerates startup sync failure and still starts loca
   assert.equal(serverStarted, true);
   assert.ok(stderrWrites.some((entry) => entry.includes("startup sync skipped")));
   assert.ok(await sidecar.getLocalApiToken());
+});
+
+test("runtime sidecar configures and removes local feishu adapter from local secrets", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "qeeclaw-sidecar-channels-"));
+  t.after(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const sidecar = createRuntimeSidecar(createSidecarConfig(tmpDir));
+  const calls = [];
+  sidecar.channelManager.replaceAdapter = async (adapter) => {
+    calls.push({ op: "replace", channel: adapter.channel });
+  };
+  sidecar.channelManager.removeAdapter = async (channel) => {
+    calls.push({ op: "remove", channel });
+    return true;
+  };
+
+  await sidecar.channelSecretStore.patch("feishu", {
+    enabled: true,
+    credentials: {
+      appId: "cli_xxx",
+      appSecret: "secret",
+    },
+  });
+  await sidecar.configureLocalChannelsFromSecrets();
+
+  await sidecar.channelSecretStore.patch("feishu", {
+    enabled: false,
+  });
+  await sidecar.configureLocalChannelsFromSecrets();
+
+  assert.deepEqual(calls, [
+    { op: "remove", channel: "wechat_work" },
+    { op: "replace", channel: "feishu" },
+    { op: "remove", channel: "wechat_personal" },
+    { op: "remove", channel: "wechat_work" },
+    { op: "remove", channel: "feishu" },
+    { op: "remove", channel: "wechat_personal" },
+  ]);
+});
+
+test("runtime sidecar configures and removes local wechat work adapter from local secrets", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "qeeclaw-sidecar-wechat-work-"));
+  t.after(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const sidecar = createRuntimeSidecar(createSidecarConfig(tmpDir));
+  const calls = [];
+  sidecar.channelManager.replaceAdapter = async (adapter) => {
+    calls.push({ op: "replace", channel: adapter.channel });
+  };
+  sidecar.channelManager.removeAdapter = async (channel) => {
+    calls.push({ op: "remove", channel });
+    return true;
+  };
+
+  await sidecar.channelSecretStore.patch("wechat_work", {
+    enabled: true,
+    credentials: {
+      corpId: "ww_corp",
+      corpSecret: "secret",
+      agentId: "1000001",
+    },
+  });
+  await sidecar.configureLocalChannelsFromSecrets();
+
+  await sidecar.channelSecretStore.patch("wechat_work", {
+    enabled: false,
+  });
+  await sidecar.configureLocalChannelsFromSecrets();
+
+  assert.deepEqual(calls, [
+    { op: "replace", channel: "wechat_work" },
+    { op: "remove", channel: "feishu" },
+    { op: "remove", channel: "wechat_personal" },
+    { op: "remove", channel: "wechat_work" },
+    { op: "remove", channel: "feishu" },
+    { op: "remove", channel: "wechat_personal" },
+  ]);
+});
+
+test("runtime sidecar configures and removes local wechat personal adapter from local secrets", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "qeeclaw-sidecar-wechat-personal-"));
+  t.after(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const sidecar = createRuntimeSidecar(createSidecarConfig(tmpDir));
+  const calls = [];
+  sidecar.channelManager.replaceAdapter = async (adapter) => {
+    calls.push({ op: "replace", channel: adapter.channel });
+  };
+  sidecar.channelManager.removeAdapter = async (channel) => {
+    calls.push({ op: "remove", channel });
+    return true;
+  };
+
+  await sidecar.channelSecretStore.patch("wechat_personal", {
+    enabled: true,
+  });
+  await sidecar.configureLocalChannelsFromSecrets();
+
+  await sidecar.channelSecretStore.patch("wechat_personal", {
+    enabled: false,
+  });
+  await sidecar.configureLocalChannelsFromSecrets();
+
+  assert.deepEqual(calls, [
+    { op: "remove", channel: "wechat_work" },
+    { op: "remove", channel: "feishu" },
+    { op: "replace", channel: "wechat_personal" },
+    { op: "remove", channel: "wechat_work" },
+    { op: "remove", channel: "feishu" },
+    { op: "remove", channel: "wechat_personal" },
+  ]);
 });

@@ -17,6 +17,8 @@ import asyncio
 import json
 import os
 import platform as platform_mod
+import signal
+import socket
 import subprocess
 import sys
 import time
@@ -125,7 +127,7 @@ HUD_DIR = _resolve_existing_override_path(
     "../vendor/hermes-hudui",
 )
 HUD_ENABLED = _cfg("hud", "enabled", True)
-HUD_PORT = _cfg("hud", "port", 8134)
+HUD_PORT = int(os.environ.get("QEECLAW_HUD_PORT", _cfg("hud", "port", 8134)))
 
 # ---------------------------------------------------------------------------
 # API Key 鉴权
@@ -2387,11 +2389,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
         _path = urllib.parse.urlparse(self.path).path
-        if self.path == "/invoke":
+        if _path == "/invoke":
             self._handle_invoke()
-        elif self.path == "/invoke/stream":
+        elif _path == "/api/platform/models/invoke":
+            self._handle_invoke(platform_response=True)
+        elif _path == "/invoke/stream":
             self._handle_invoke_stream()
-        elif self.path == "/knowledge/upload":
+        elif _path == "/knowledge/upload":
             self._handle_kb_upload()
         elif self.path == "/knowledge/search":
             self._handle_kb_search()
@@ -2474,7 +2478,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # --- Knowledge new paths ---
         elif self.path == "/api/platform/knowledge/config/update":
             self._handle_platform_knowledge_config_update()
-        elif self.path == "/api/platform/knowledge/upload":
+        elif _path == "/api/platform/knowledge/upload":
             self._handle_platform_knowledge_upload()
         elif self.path == "/api/platform/knowledge/delete":
             self._handle_platform_knowledge_delete()
@@ -2668,7 +2672,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "message": f"Failed to import hermes-agent: {e}",
             })
 
-    def _handle_invoke(self):
+    def _handle_invoke(self, platform_response: bool = False):
         """非流式模型调用端点。支持 session_id 实现多轮对话。
 
         使用 AgentPool 调用 AIAgent.run_conversation()，
@@ -2679,21 +2683,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             body = _read_json_body(self)
             started_at = time.perf_counter()
             prompt = body.get("prompt", "")
-            model = body.get("model")
+            model = body.get("model") or body.get("model_id") or body.get("modelId")
             provider = body.get("provider")
-            max_tokens = body.get("max_tokens")
+            max_tokens = body.get("max_tokens") or body.get("maxTokens")
             temperature = body.get("temperature")
-            system_prompt = body.get("system_prompt")
+            system_prompt = body.get("system_prompt") or body.get("systemPrompt")
             use_knowledge = body.get("use_knowledge", True)  # 默认启用 RAG
             kb_scope = body.get("kb_scope")
             # 多轮对话 + 多智体参数
-            session_id = body.get("session_id")
-            user_id = body.get("user_id", "anonymous")
-            agent_profile = body.get("agent_profile", "default")
-            max_history_turns = body.get("max_history_turns", 20)
+            session_id = body.get("session_id") or body.get("sessionId")
+            user_id = body.get("user_id") or body.get("userId") or "anonymous"
+            agent_profile = body.get("agent_profile") or body.get("agentProfile") or "default"
+            max_history_turns = body.get("max_history_turns") or body.get("maxHistoryTurns") or 20
 
             if not prompt:
-                _json_response(self, 400, {"error": "prompt is required"})
+                if platform_response:
+                    _platform_json_response(self, 400, None, "prompt is required")
+                else:
+                    _json_response(self, 400, {"error": "prompt is required"})
                 return
 
             # RAG: 自动检索知识库并注入上下文
@@ -2769,13 +2776,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 duration_seconds=time.perf_counter() - started_at,
             )
 
-            _json_response(self, 200, result)
+            if platform_response:
+                _platform_json_response(self, 200, result)
+            else:
+                _json_response(self, 200, result)
 
         except Exception as e:
             traceback.print_exc()
-            _json_response(self, 500, {
-                "error": f"Internal bridge error: {e}",
-            })
+            if platform_response:
+                _platform_json_response(self, 500, None, f"Internal bridge error: {e}")
+            else:
+                _json_response(self, 500, {
+                    "error": f"Internal bridge error: {e}",
+                })
 
     def _handle_wechat_webhook(self):
         """轻量个人微信网关集成回调"""
@@ -3700,7 +3713,84 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
     # ----- Knowledge Base Endpoints -----
 
-    def _handle_kb_upload(self):
+    def _decode_uploaded_text(self, raw_content: bytes) -> str:
+        """Decode plain-text-like uploads with common encodings."""
+        for encoding in ("utf-8-sig", "utf-8", "gb18030", "big5", "latin-1"):
+            try:
+                text = raw_content.decode(encoding)
+                if text.strip():
+                    return text
+            except UnicodeDecodeError:
+                continue
+        return raw_content.decode("utf-8", errors="ignore")
+
+    def _extract_pdf_text(self, raw_content: bytes) -> str:
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise ValueError("当前环境缺少 PDF 解析依赖 pypdf，请安装后重试：pip install pypdf") from exc
+
+        import io
+
+        reader = PdfReader(io.BytesIO(raw_content))
+        pages = []
+        for index, page in enumerate(reader.pages, start=1):
+            try:
+                page_text = page.extract_text() or ""
+            except Exception as exc:
+                page_text = f"\n[第 {index} 页解析失败：{exc}]\n"
+            if page_text.strip():
+                pages.append(page_text.strip())
+        return "\n\n".join(pages)
+
+    def _extract_docx_text(self, raw_content: bytes) -> str:
+        import io
+        import zipfile
+        import xml.etree.ElementTree as ET
+
+        paragraphs = []
+        namespace = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+        with zipfile.ZipFile(io.BytesIO(raw_content)) as archive:
+            xml_bytes = archive.read("word/document.xml")
+        root = ET.fromstring(xml_bytes)
+        for paragraph in root.findall(".//w:p", namespace):
+            runs = [
+                node.text or ""
+                for node in paragraph.findall(".//w:t", namespace)
+            ]
+            text = "".join(runs).strip()
+            if text:
+                paragraphs.append(text)
+        return "\n\n".join(paragraphs)
+
+    def _extract_uploaded_text(self, raw_content: bytes, filename: str, content_type: str = "") -> str:
+        ext = os.path.splitext(filename or "")[1].lower()
+        ctype = (content_type or "").lower()
+
+        if ext == ".pdf" or "pdf" in ctype:
+            text = self._extract_pdf_text(raw_content)
+        elif ext == ".docx" or "wordprocessingml" in ctype:
+            text = self._extract_docx_text(raw_content)
+        else:
+            text = self._decode_uploaded_text(raw_content)
+
+        text = text.replace("\x00", "").strip()
+        if not text:
+            if ext == ".pdf" or "pdf" in ctype:
+                raise ValueError("未能从 PDF 中提取到可索引文本；如果是扫描版 PDF，请先 OCR 后再上传。")
+            raise ValueError("文件内容为空或无法解析为文本。")
+        return text
+
+    def _send_kb_upload_response(self, status: int, payload: Dict[str, Any], platform_response: bool = False):
+        if platform_response:
+            if status >= 400:
+                _platform_json_response(self, status, None, str(payload.get("error") or "knowledge upload failed"))
+            else:
+                _platform_json_response(self, status, payload)
+        else:
+            _json_response(self, status, payload)
+
+    def _handle_kb_upload(self, platform_response: bool = False):
         """上传文档到知识库。"""
         try:
             ctype = self.headers.get("Content-Type", "")
@@ -3727,7 +3817,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     file_item = form["file"]
                     filename = file_item.filename
                     raw_content = file_item.file.read()
-                    content_str = raw_content.decode("utf-8", errors="ignore")
+                    content_type = getattr(file_item, "type", "") or ""
+                    content_str = self._extract_uploaded_text(raw_content, filename, content_type)
                 elif "content" in form:
                     raw_c = form.getvalue("content", b"")
                     content_str = raw_c.decode("utf-8", errors="ignore") if isinstance(raw_c, bytes) else str(raw_c)
@@ -3754,7 +3845,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 tags = body.get("tags", [])
 
             if not content_str:
-                _json_response(self, 400, {"error": "content or file is required"})
+                self._send_kb_upload_response(400, {"error": "content or file is required"}, platform_response)
                 return
 
             from knowledge_store import add_document
@@ -3766,14 +3857,23 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 tags=tags,
             )
 
+            if not result.get("success") and result.get("existing_doc_id"):
+                result = {
+                    **result,
+                    "success": True,
+                    "duplicate": True,
+                    "doc_id": result.get("existing_doc_id"),
+                    "message": "文档已存在，已复用现有索引。",
+                }
+
             status = 200 if result.get("success") else 400
-            _json_response(self, status, result)
+            self._send_kb_upload_response(status, result, platform_response)
 
         except ImportError:
-            _json_response(self, 503, {"error": "Knowledge base module not available. Install: pip install chromadb"})
+            self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Install: pip install chromadb"}, platform_response)
         except Exception as e:
             traceback.print_exc()
-            _json_response(self, 500, {"error": str(e)})
+            self._send_kb_upload_response(500, {"error": str(e)}, platform_response)
 
     def _handle_kb_list(self):
         """列出知识库中的所有文档。"""
@@ -6037,9 +6137,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 results = search_knowledge(query=query or "", top_k=limit)
                 if filename:
                     results = [r for r in results if filename.lower() in (r.get("filename") or "").lower()]
-                _platform_json_response(self, 200, results)
+                _platform_json_response(self, 200, {"results": results})
             except ImportError:
-                _platform_json_response(self, 200, [])
+                _platform_json_response(self, 200, {"results": []})
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
@@ -6047,7 +6147,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle_platform_knowledge_upload(self):
         """POST /api/platform/knowledge/upload — 代理到现有上传。"""
         try:
-            self._handle_kb_upload()
+            self._handle_kb_upload(platform_response=True)
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
@@ -6710,6 +6810,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
 _hud_process: Optional[subprocess.Popen] = None
 
+def _is_tcp_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
 def _start_hud():
     """后台启动 hermes-hudui。"""
     global _hud_process
@@ -6725,6 +6833,10 @@ def _start_hud():
     env["HERMES_HOME"] = os.path.abspath(HERMES_AGENT_DIR)
 
     _hud_host = os.environ.get("QEECLAW_HUD_HOST", _cfg("hud", "host", "127.0.0.1"))
+    if _is_tcp_port_open(_hud_host, HUD_PORT):
+        print(f"[hermes-bridge] ⚠️ HUD Dashboard already listening on http://{_hud_host}:{HUD_PORT}; reusing existing service.")
+        return
+
     print(f"[hermes-bridge] Starting HUD Dashboard on http://{_hud_host}:{HUD_PORT} ...")
     try:
         _hud_process = subprocess.Popen(
@@ -6829,6 +6941,14 @@ def main():
         allow_reuse_address = True
 
     server = ReusableThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), BridgeRequestHandler)
+
+    def _handle_shutdown_signal(signum, _frame):
+        print(f"\n[hermes-bridge] Received signal {signum}; shutting down.")
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
+    signal.signal(signal.SIGINT, _handle_shutdown_signal)
+
     print(f"[hermes-bridge] Listening at http://{_DISPLAY_HOST}:{BRIDGE_PORT}")
     print("[hermes-bridge] Endpoints:")
     print("  GET  /health                     - 健康检查 (免鉴权)")
@@ -6886,6 +7006,7 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         print("\n[hermes-bridge] Shutting down.")
+    finally:
         try:
             from cloud_tunnel import stop_tunnel
             stop_tunnel()

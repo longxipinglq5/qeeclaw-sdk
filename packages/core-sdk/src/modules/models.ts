@@ -37,6 +37,7 @@ export interface ModelInvokeRequest {
   prompt: string;
   modelId?: string;
   model?: string;
+  timeoutMs?: number;
 }
 
 export interface ModelInvokeResult {
@@ -483,6 +484,7 @@ export class ModelsModule {
     return this.http.request<ModelInvokeResult>({
       method: "POST",
       path: "/api/platform/models/invoke",
+      timeoutMs: payload.timeoutMs,
       body: {
         prompt: payload.prompt,
         model_id: payload.modelId,

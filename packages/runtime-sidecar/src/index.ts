@@ -9,6 +9,14 @@ import { SyncService } from "./sync/sync-service.js";
 import { access, mkdir, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type { SidecarConfig, SidecarSelfCheck } from "./types.js";
+import { ChannelAttachmentStore } from "./channels/attachment-store.js";
+import { ChannelManager } from "./channels/manager.js";
+import { EchoRuntimeInvoker, GatewayRuntimeInvoker } from "./channels/runtime-invoker.js";
+import { ChannelSecretStore } from "./channels/secret-store.js";
+import { FeishuLocalAdapter } from "./channels/feishu/adapter.js";
+import { FeishuWebSocketTransport } from "./channels/feishu/websocket-transport.js";
+import { WechatWorkLocalAdapter, WechatWorkRestTransport, type WechatWorkIncomingPayload } from "./channels/wechat-work/adapter.js";
+import { MemoryWechatPersonalTransport, WechatPersonalLocalAdapter } from "./channels/wechat-personal/adapter.js";
 import { KnowledgeWorker } from "./workers/knowledge-worker.js";
 import { MemoryWorker } from "./workers/memory-worker.js";
 
@@ -23,6 +31,7 @@ export * from "./agents/local-security-agent.js";
 export * from "./agents/approval-agent.js";
 export * from "./sync/sync-service.js";
 export * from "./server/http-sidecar-server.js";
+export * from "./channels/index.js";
 
 export class QeeClawRuntimeSidecar {
   readonly config: SidecarConfig;
@@ -34,6 +43,11 @@ export class QeeClawRuntimeSidecar {
   readonly securityAgent: LocalSecurityAgent;
   readonly approvalAgent: ApprovalAgent;
   readonly syncService: SyncService;
+  readonly channelAttachmentStore: ChannelAttachmentStore;
+  readonly channelSecretStore: ChannelSecretStore;
+  readonly channelManager: ChannelManager;
+  readonly wechatPersonalTransport: MemoryWechatPersonalTransport;
+  private wechatWorkTransport?: WechatWorkRestTransport;
   readonly server: HttpSidecarServer;
 
   constructor(config: SidecarConfig = loadSidecarConfig()) {
@@ -53,6 +67,26 @@ export class QeeClawRuntimeSidecar {
     this.securityAgent = new LocalSecurityAgent();
     this.approvalAgent = new ApprovalAgent(config.approvalsCacheFilePath, this.stateStore, this.controlPlane);
     this.syncService = new SyncService(config, this.stateStore, this.controlPlane);
+    this.channelAttachmentStore = new ChannelAttachmentStore(config.channelAttachmentDirPath);
+    this.channelSecretStore = new ChannelSecretStore(config.channelSecretsFilePath);
+    this.wechatPersonalTransport = new MemoryWechatPersonalTransport();
+    this.channelManager = new ChannelManager({
+      invoker:
+        config.channelRuntimeMode === "echo"
+          ? new EchoRuntimeInvoker()
+          : new GatewayRuntimeInvoker({
+              wsUrl: config.localGatewayWsUrl,
+              authToken: config.gatewayAuthToken,
+              authPassword: config.gatewayAuthPassword,
+              authTokenProvider: async () => (await this.stateStore.read()).deviceKey,
+            }),
+      attachmentStore: this.channelAttachmentStore,
+      adapters: [],
+      logger: {
+        log: (message) => process.stdout.write(`[qeeclaw-runtime-sidecar] ${message}\n`),
+        error: (message) => process.stderr.write(`[qeeclaw-runtime-sidecar] ${message}\n`),
+      },
+    });
     this.server = new HttpSidecarServer({
       config,
       stateStore: this.stateStore,
@@ -62,6 +96,11 @@ export class QeeClawRuntimeSidecar {
       knowledgeWorker: this.knowledgeWorker,
       securityAgent: this.securityAgent,
       approvalAgent: this.approvalAgent,
+      channelManager: this.channelManager,
+      channelSecretStore: this.channelSecretStore,
+      reloadChannels: () => this.configureLocalChannelsFromSecrets(),
+      emitWechatWorkMessage: (payload: WechatWorkIncomingPayload) => this.emitWechatWorkMessage(payload),
+      wechatPersonalTransport: this.wechatPersonalTransport,
     });
   }
 
@@ -72,6 +111,7 @@ export class QeeClawRuntimeSidecar {
   async start(): Promise<void> {
     await this.stateStore.ensureInstallationId();
     await this.stateStore.ensureSidecarAuthToken(this.config.sidecarAuthToken);
+    await this.configureLocalChannelsFromSecrets();
     if (this.config.autoBootstrapDevice) {
       try {
         await this.syncService.sync();
@@ -84,11 +124,68 @@ export class QeeClawRuntimeSidecar {
     if (this.config.startGatewayOnBoot || this.config.startBridgeOnBoot) {
       await this.gatewayAdapter.start();
     }
+    await this.channelManager.start();
     await this.server.start();
+  }
+
+  async configureLocalChannelsFromSecrets(): Promise<void> {
+    const wechatWork = await this.channelSecretStore.get("wechat_work");
+    const wechatWorkCredentials = wechatWork?.credentials || {};
+    if (
+      !wechatWork?.enabled ||
+      !wechatWorkCredentials.corpId?.trim() ||
+      !wechatWorkCredentials.corpSecret?.trim() ||
+      !wechatWorkCredentials.agentId?.trim()
+    ) {
+      this.wechatWorkTransport = undefined;
+      await this.channelManager.removeAdapter("wechat_work");
+    } else {
+      this.wechatWorkTransport = new WechatWorkRestTransport({
+        corpId: wechatWorkCredentials.corpId,
+        corpSecret: wechatWorkCredentials.corpSecret,
+        agentId: wechatWorkCredentials.agentId,
+        apiBaseUrl: wechatWorkCredentials.apiBaseUrl,
+      });
+      await this.channelManager.replaceAdapter(new WechatWorkLocalAdapter(this.wechatWorkTransport));
+    }
+
+    const feishu = await this.channelSecretStore.get("feishu");
+    const credentials = feishu?.credentials || {};
+    if (!feishu?.enabled || !credentials.appId?.trim() || !credentials.appSecret?.trim()) {
+      await this.channelManager.removeAdapter("feishu");
+    } else {
+      await this.channelManager.replaceAdapter(
+        new FeishuLocalAdapter({
+          transport: new FeishuWebSocketTransport({
+            appId: credentials.appId,
+            appSecret: credentials.appSecret,
+            domain: credentials.domain,
+            encryptKey: credentials.encryptKey,
+            verificationToken: credentials.verificationToken,
+          }),
+        }),
+      );
+    }
+
+    const wechatPersonal = await this.channelSecretStore.get("wechat_personal");
+    if (!wechatPersonal?.enabled) {
+      await this.channelManager.removeAdapter("wechat_personal");
+      return;
+    }
+
+    await this.channelManager.replaceAdapter(new WechatPersonalLocalAdapter(this.wechatPersonalTransport));
+  }
+
+  async emitWechatWorkMessage(payload: WechatWorkIncomingPayload): Promise<void> {
+    if (!this.wechatWorkTransport) {
+      throw new Error("WeChat Work local bridge is not configured");
+    }
+    await this.wechatWorkTransport.emit(payload);
   }
 
   async stop(): Promise<void> {
     await this.server.stop();
+    await this.channelManager.stop();
   }
 
   async selfCheck(): Promise<SidecarSelfCheck> {
@@ -138,6 +235,8 @@ export class QeeClawRuntimeSidecar {
         stateDirWritableHint,
         knowledgeConfigPath: this.config.knowledgeConfigFilePath,
         approvalsCachePath: this.config.approvalsCacheFilePath,
+        channelSecretsPath: this.config.channelSecretsFilePath,
+        channelAttachmentDirPath: this.config.channelAttachmentDirPath,
       },
       auth: {
         ...toPublicAuthState(authState, {
@@ -146,6 +245,7 @@ export class QeeClawRuntimeSidecar {
       },
       gateway,
       knowledge,
+      channels: this.channelManager.getStatus(),
     };
   }
 }

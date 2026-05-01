@@ -50,6 +50,10 @@
   "engines": {
     "node": ">=18"
   },
+  "optionalDependencies": {
+    "@larksuiteoapi/node-sdk": "^1.59.0",
+    "ws": "^8.16.0"
+  },
   "devDependencies": {
     "@types/node": "^25.2.1",
     "typescript": "^5.9.3"

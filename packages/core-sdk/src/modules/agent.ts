@@ -23,6 +23,15 @@ export interface MyAgent {
   runtimeType?: string | null;
   runtimeLabel?: string | null;
   model?: string | null;
+  lastActiveTime?: string | null;
+  activeTaskId?: number | null;
+  activeTaskStatus?: string | null;
+  activeTaskProgress?: number | null;
+  activeTaskType?: string | null;
+  activeTaskBrief?: string | null;
+  runtimeStatus?: string | null;
+  runtimeStage?: string | null;
+  runtimeSummary?: string | null;
 }
 
 interface RawMyAgent {
@@ -35,6 +44,15 @@ interface RawMyAgent {
   runtime_type?: string | null;
   runtime_label?: string | null;
   model?: string | null;
+  last_active_time?: string | null;
+  active_task_id?: number | null;
+  active_task_status?: string | null;
+  active_task_progress?: number | null;
+  active_task_type?: string | null;
+  active_task_brief?: string | null;
+  runtime_status?: string | null;
+  runtime_stage?: string | null;
+  runtime_summary?: string | null;
 }
 
 export interface AgentCreateRequest {
@@ -42,6 +60,7 @@ export interface AgentCreateRequest {
   description?: string;
   model?: string;
   runtimeType?: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface AgentCreateResult {
@@ -85,6 +104,15 @@ function mapAgent(value: RawMyAgent): MyAgent {
     runtimeType: value.runtime_type,
     runtimeLabel: value.runtime_label,
     model: value.model,
+    lastActiveTime: value.last_active_time,
+    activeTaskId: value.active_task_id,
+    activeTaskStatus: value.active_task_status,
+    activeTaskProgress: value.active_task_progress,
+    activeTaskType: value.active_task_type,
+    activeTaskBrief: value.active_task_brief,
+    runtimeStatus: value.runtime_status,
+    runtimeStage: value.runtime_stage,
+    runtimeSummary: value.runtime_summary,
   };
 }
 
@@ -126,6 +154,7 @@ export class AgentModule {
         description: payload.description ?? "",
         model: payload.model ?? "gpt-4o",
         runtime_type: payload.runtimeType ?? "openclaw",
+        metadata: payload.metadata,
       },
     });
     return {
@@ -144,6 +173,7 @@ export class AgentModule {
         description: payload.description ?? "",
         model: payload.model ?? "gpt-4o",
         runtime_type: payload.runtimeType ?? "openclaw",
+        metadata: payload.metadata,
       },
     });
   }
