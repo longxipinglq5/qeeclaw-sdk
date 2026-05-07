@@ -28,7 +28,8 @@ export interface KnowledgeSearchRequest extends KnowledgeContext {
 }
 
 export interface KnowledgeDeleteRequest extends KnowledgeContext {
-  sourceName: string;
+  docId?: string;
+  sourceName?: string;
 }
 
 export interface KnowledgeDownloadRequest extends KnowledgeContext {
@@ -119,11 +120,13 @@ export class KnowledgeModule {
   }
 
   async delete(payload: KnowledgeDeleteRequest): Promise<Record<string, unknown>> {
+    const documentId = payload.docId ?? payload.sourceName;
     return this.http.request<Record<string, unknown>>({
       method: "POST",
       path: "/api/platform/knowledge/delete",
       query: {
         team_id: payload.teamId,
+        doc_id: documentId,
         source_name: payload.sourceName,
         device_id: payload.deviceId,
         runtime_type: payload.runtimeType,

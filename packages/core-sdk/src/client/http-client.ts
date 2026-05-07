@@ -228,4 +228,19 @@ export class HttpClient {
     const response = await this.requestBinaryResponse(options);
     return response.data;
   }
+
+  async requestRaw(options: QeeClawRequestOptions): Promise<Response> {
+    const response = await this.fetchResponse(options);
+    if (!response.ok) {
+      const contentType = response.headers.get("content-type") ?? "";
+      const payload = contentType.includes("application/json")
+        ? await response.json()
+        : await response.text();
+      throw new QeeClawApiError(getMessage(payload, `HTTP ${response.status}`), {
+        status: response.status,
+        details: payload,
+      });
+    }
+    return response;
+  }
 }

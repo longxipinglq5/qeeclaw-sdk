@@ -6,6 +6,7 @@ export interface QeeClawModelInfo {
   providerName: string;
   modelName: string;
   providerModelId?: string;
+  modelType?: "chat" | "image" | string;
   label: string;
   isPreferred: boolean;
   availabilityStatus: string;
@@ -22,6 +23,7 @@ interface RawModelInfo {
   provider_name: string;
   model_name: string;
   provider_model_id?: string;
+  model_type?: "chat" | "image" | string;
   label: string;
   is_preferred: boolean;
   availability_status: string;
@@ -43,6 +45,60 @@ export interface ModelInvokeRequest {
 export interface ModelInvokeResult {
   text: string;
   model?: string;
+}
+
+export interface ModelImageGenerationRequest {
+  prompt: string;
+  model?: string;
+  n?: number;
+  size?: string;
+  quality?: string;
+  responseFormat?: string;
+  response_format?: string;
+  background?: string;
+  outputFormat?: string;
+  output_format?: string;
+  moderation?: string;
+  stream?: boolean;
+  partialImages?: number;
+  partial_images?: number;
+  user?: string;
+  timeoutMs?: number;
+  [key: string]: unknown;
+}
+
+export type ModelImageGenerationStreamRequest = ModelImageGenerationRequest & {
+  stream: true;
+};
+
+export interface ModelImageData {
+  url?: string;
+  b64Json?: string;
+  b64_json?: string;
+  revisedPrompt?: string;
+  revised_prompt?: string;
+  [key: string]: unknown;
+}
+
+interface RawModelImageData {
+  url?: string;
+  b64_json?: string;
+  revised_prompt?: string;
+  [key: string]: unknown;
+}
+
+export interface ModelImageGenerationResult {
+  created?: number;
+  data: ModelImageData[];
+  usage?: unknown;
+  [key: string]: unknown;
+}
+
+interface RawModelImageGenerationResult {
+  created?: number;
+  data?: RawModelImageData[];
+  usage?: unknown;
+  [key: string]: unknown;
 }
 
 export interface ModelProviderSummary {
@@ -299,6 +355,7 @@ function mapModelInfo(item: RawModelInfo): QeeClawModelInfo {
     providerName: item.provider_name,
     modelName: item.model_name,
     providerModelId: item.provider_model_id,
+    modelType: item.model_type,
     label: item.label,
     isPreferred: item.is_preferred,
     availabilityStatus: item.availability_status,
@@ -352,10 +409,11 @@ function mapCostBreakdown(item: RawModelCostBreakdownItem): ModelCostBreakdownIt
 export class ModelsModule {
   constructor(private readonly http: HttpClient) {}
 
-  async listAvailable(): Promise<QeeClawModelInfo[]> {
+  async listAvailable(options: { modelType?: "chat" | "image" | string } = {}): Promise<QeeClawModelInfo[]> {
     const items = await this.http.request<RawModelInfo[]>({
       method: "GET",
       path: "/api/platform/models",
+      query: options.modelType ? { model_type: options.modelType } : undefined,
     });
 
     return items.map(mapModelInfo);
@@ -421,12 +479,16 @@ export class ModelsModule {
     }));
   }
 
-  async resolve(modelName: string): Promise<ModelResolution> {
+  async resolve(
+    modelName: string,
+    options: { modelType?: "chat" | "image" | string } = {},
+  ): Promise<ModelResolution> {
     const result = await this.http.request<RawModelResolution>({
       method: "GET",
       path: "/api/platform/models/resolve",
       query: {
         model_name: modelName,
+        model_type: options.modelType,
       },
     });
     return {
@@ -489,6 +551,55 @@ export class ModelsModule {
         prompt: payload.prompt,
         model_id: payload.modelId,
         model: payload.model,
+      },
+    });
+  }
+
+  async generateImage(payload: ModelImageGenerationRequest): Promise<ModelImageGenerationResult> {
+    const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    const result = await this.http.request<RawModelImageGenerationResult>({
+      method: "POST",
+      path: "/api/llm/images/generations",
+      timeoutMs,
+      body: {
+        ...body,
+        model: payload.model ?? "gpt-image-2",
+        response_format: payload.response_format ?? responseFormat,
+        output_format: payload.output_format ?? outputFormat,
+        partial_images: payload.partial_images ?? partialImages,
+      },
+    });
+
+    return {
+      ...result,
+      created: result.created,
+      data: (result.data ?? []).map((item) => ({
+        ...item,
+        url: item.url,
+        b64Json: item.b64_json,
+        b64_json: item.b64_json,
+        revisedPrompt: item.revised_prompt,
+        revised_prompt: item.revised_prompt,
+      })),
+    };
+  }
+
+  async generateImageStream(payload: ModelImageGenerationStreamRequest): Promise<Response> {
+    const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    return this.http.requestRaw({
+      method: "POST",
+      path: "/api/llm/images/generations",
+      timeoutMs,
+      headers: {
+        Accept: "text/event-stream",
+      },
+      body: {
+        ...body,
+        stream: true,
+        model: payload.model ?? "gpt-image-2",
+        response_format: payload.response_format ?? responseFormat,
+        output_format: payload.output_format ?? outputFormat,
+        partial_images: payload.partial_images ?? partialImages,
       },
     });
   }

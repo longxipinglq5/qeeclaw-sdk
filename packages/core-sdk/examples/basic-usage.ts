@@ -18,6 +18,17 @@ async function main(): Promise<void> {
   const models = await client.models.listAvailable();
   console.log("models", models.slice(0, 3));
 
+  const imageModels = await client.models.listAvailable({ modelType: "image" });
+  console.log("imageModels", imageModels.map((item) => item.modelName));
+
+  const generatedImage = await client.models.generateImage({
+    model: "gpt-image-2",
+    prompt: "A QeeClaw robot helping a developer ship a local-first AI app",
+    size: "1024x1024",
+    output_format: "png",
+  });
+  console.log("generatedImage", generatedImage.data[0]?.url ?? generatedImage.data[0]?.b64Json);
+
   const runtimes = await client.models.listRuntimes();
   console.log("runtimes", runtimes.map((item) => ({
     runtimeType: item.runtimeType,

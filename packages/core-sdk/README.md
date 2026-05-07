@@ -50,10 +50,19 @@ const client = createQeeClawClient({
 const wallet = await client.billing.getWallet();
 const me = await client.iam.getProfile();
 const models = await client.models.listAvailable();
+const imageModels = await client.models.listAvailable({ modelType: "image" });
 const routeProfile = await client.models.getRouteProfile();
 const usage = await client.models.getUsage({ days: 30 });
 const cost = await client.models.getCost({ days: 30 });
 const quota = await client.models.getQuota();
+
+const image = await client.models.generateImage({
+  model: "gpt-image-2",
+  prompt: "一只在办公室写代码的猫",
+  size: "1024x1024",
+  output_format: "png",
+});
+console.log(image.data[0]?.url ?? image.data[0]?.b64Json);
 
 const stored = await client.memory.store({
   teamId: 1,
@@ -104,6 +113,7 @@ console.log({
   wallet,
   username: me.username,
   defaultRoutedModel: routeProfile.resolvedModel,
+  imageModelCount: imageModels.length,
   appKeyCount: appKeys.total,
   llmKeyCount: llmKeys.length,
   teams: tenantContext.teams.map((item) => item.name),
@@ -295,6 +305,11 @@ const client = createQeeClawClient({
 - `PUT /api/platform/models/route`
 - `GET /api/platform/models/resolve`
 - `POST /api/platform/models/invoke`
+- `POST /api/llm/images/generations`
+
+`/api/llm/images/generations` 按 OpenAI Images API 兼容设计：请求字段优先使用 OpenAI 原始 snake_case，例如 `response_format`、`output_format`、`partial_images`；SDK 同时保留 `responseFormat`、`outputFormat`、`partialImages` 作为 TypeScript 便利别名。非流式响应原样返回 OpenAI 风格 JSON，图片内容通常在 `data[0].b64_json`。
+
+如果需要消费 OpenAI 图片生成 SSE，可以使用 `client.models.generateImageStream({ model: "gpt-image-2", prompt: "...", stream: true })`，返回值是原始 `Response`，调用方可自行读取 `response.body`。
 
 ### channels
 

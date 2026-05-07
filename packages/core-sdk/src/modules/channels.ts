@@ -39,6 +39,8 @@ export interface WechatWorkChannelConfig extends ChannelConfigItem {
   secretConfigured: boolean;
   verifyToken: string;
   aesKey: string;
+  botWebhookUrl: string;
+  botWebhookConfigured: boolean;
 }
 
 export interface FeishuChannelConfig extends ChannelConfigItem {
@@ -47,6 +49,8 @@ export interface FeishuChannelConfig extends ChannelConfigItem {
   verificationToken: string;
   encryptKey: string;
   secretConfigured: boolean;
+  botWebhookUrl: string;
+  botWebhookConfigured: boolean;
 }
 
 export interface WechatPersonalPluginChannelConfig extends ChannelConfigItem {
@@ -118,6 +122,10 @@ export interface UpdateWechatWorkChannelInput {
   corpId: string;
   agentId: string;
   secret?: string;
+  verifyToken?: string;
+  aesKey?: string;
+  botWebhookUrl?: string;
+  enabled?: boolean;
 }
 
 export interface UpdateFeishuChannelInput {
@@ -126,6 +134,8 @@ export interface UpdateFeishuChannelInput {
   appSecret?: string;
   verificationToken?: string;
   encryptKey?: string;
+  botWebhookUrl?: string;
+  enabled?: boolean;
 }
 
 export interface UpdateWechatPersonalPluginChannelInput {
@@ -157,12 +167,14 @@ export interface StartWechatPersonalOpenClawQrInput {
   forceRefresh?: boolean;
   timeoutMs?: number;
   accountId?: string;
+  bindingId?: number;
 }
 
 export interface GetWechatPersonalOpenClawQrStatusInput {
   teamId: number;
   sessionId?: string;
   accountId?: string;
+  bindingId?: number;
 }
 
 export interface WechatPersonalOpenClawQrSession {
@@ -205,6 +217,8 @@ interface RawWechatWorkChannelConfig extends RawChannelConfigItem {
   secret_configured: boolean;
   verify_token: string;
   aes_key: string;
+  bot_webhook_url?: string;
+  bot_webhook_configured?: boolean;
 }
 
 interface RawFeishuChannelConfig extends RawChannelConfigItem {
@@ -213,6 +227,8 @@ interface RawFeishuChannelConfig extends RawChannelConfigItem {
   verification_token: string;
   encrypt_key: string;
   secret_configured: boolean;
+  bot_webhook_url?: string;
+  bot_webhook_configured?: boolean;
 }
 
 interface RawWechatPersonalPluginChannelConfig extends RawChannelConfigItem {
@@ -321,6 +337,8 @@ function mapWechatWorkConfig(value: RawWechatWorkChannelConfig): WechatWorkChann
     secretConfigured: value.secret_configured,
     verifyToken: value.verify_token,
     aesKey: value.aes_key,
+    botWebhookUrl: value.bot_webhook_url ?? "",
+    botWebhookConfigured: Boolean(value.bot_webhook_configured),
   };
 }
 
@@ -332,6 +350,8 @@ function mapFeishuConfig(value: RawFeishuChannelConfig): FeishuChannelConfig {
     verificationToken: value.verification_token,
     encryptKey: value.encrypt_key,
     secretConfigured: value.secret_configured,
+    botWebhookUrl: value.bot_webhook_url ?? "",
+    botWebhookConfigured: Boolean(value.bot_webhook_configured),
   };
 }
 
@@ -476,6 +496,10 @@ export class ChannelsModule {
         corp_id: payload.corpId,
         agent_id: payload.agentId,
         secret: payload.secret,
+        verify_token: payload.verifyToken,
+        aes_key: payload.aesKey,
+        bot_webhook_url: payload.botWebhookUrl,
+        enabled: payload.enabled,
       },
     });
     return mapWechatWorkConfig(result);
@@ -502,6 +526,8 @@ export class ChannelsModule {
         app_secret: payload.appSecret,
         verification_token: payload.verificationToken,
         encrypt_key: payload.encryptKey,
+        bot_webhook_url: payload.botWebhookUrl,
+        enabled: payload.enabled,
       },
     });
     return mapFeishuConfig(result);
@@ -565,6 +591,7 @@ export class ChannelsModule {
         force_refresh: payload.forceRefresh,
         timeout_ms: payload.timeoutMs,
         account_id: payload.accountId,
+        binding_id: payload.bindingId,
       },
     });
     return mapWechatPersonalOpenClawQrSession(result);
@@ -580,6 +607,7 @@ export class ChannelsModule {
         team_id: payload.teamId,
         session_id: payload.sessionId,
         account_id: payload.accountId,
+        binding_id: payload.bindingId,
       },
     });
     return mapWechatPersonalOpenClawQrSession(result);

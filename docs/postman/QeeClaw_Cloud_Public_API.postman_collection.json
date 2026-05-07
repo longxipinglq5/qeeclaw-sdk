@@ -2,7 +2,7 @@
   "info": {
     "name": "QeeClaw Cloud Public API",
     "_postman_id": "c8c362cb-9c1b-4a2a-b2fe-ec967a8b1a61",
-    "description": "Public cloud API collection for customer-facing integration. Recommended for Ruisi and other local-first products.",
+    "description": "Public cloud API collection for customer-facing and local-first integrations.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "auth": {
@@ -98,6 +98,23 @@
               "raw": "{\n  \"prompt\": \"请总结今天的客户诉求\",\n  \"model\": \"{{modelName}}\"\n}"
             },
             "url": "{{baseUrl}}/api/platform/models/invoke"
+          }
+        },
+        {
+          "name": "Generate Image",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"model\": \"gpt-image-2\",\n  \"prompt\": \"一只在办公室写代码的猫\",\n  \"n\": 1,\n  \"size\": \"1024x1024\",\n  \"output_format\": \"png\"\n}"
+            },
+            "url": "{{baseUrl}}/api/llm/images/generations"
           }
         },
         {

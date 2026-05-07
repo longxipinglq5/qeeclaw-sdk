@@ -79,6 +79,14 @@ BRIDGE_PORT = int(os.environ.get(
     "QEECLAW_HERMES_BRIDGE_PORT",
     _cfg("server", "port", 21747),
 ))
+MEMORY_INVOKE_ENABLED = str(os.environ.get(
+    "QEECLAW_MEMORY_INVOKE_ENABLED",
+    _cfg("memory", "invoke_enabled", True),
+)).lower() not in ("0", "false", "no", "off")
+MEMORY_INVOKE_LIMIT = int(os.environ.get(
+    "QEECLAW_MEMORY_INVOKE_LIMIT",
+    _cfg("memory", "invoke_limit", 5),
+))
 
 # 日志显示地址：0.0.0.0/:: 不可在浏览器中访问，替换为 127.0.0.1
 _DISPLAY_HOST = "127.0.0.1" if BRIDGE_HOST in ("0.0.0.0", "::") else BRIDGE_HOST
@@ -250,6 +258,91 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> dict:
     return json.loads(raw.decode("utf-8"))
 
 
+def _body_value(body: Dict[str, Any], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        if key in body and body.get(key) is not None:
+            return body.get(key)
+    return default
+
+
+def _truthy_body_flag(body: Dict[str, Any], *keys: str, default: bool = True) -> bool:
+    value = _body_value(body, *keys, default=default)
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).lower() not in ("0", "false", "no", "off")
+
+
+def _memory_scope_from_body(body: Dict[str, Any], agent_profile: str = "default") -> Dict[str, Any]:
+    scope: Dict[str, Any] = {}
+    agent_id = _body_value(body, "agent_id", "agentId", "agent_profile", "agentProfile", default=agent_profile)
+    if agent_id:
+        scope["agent_id"] = agent_id
+    for snake, camel in (("team_id", "teamId"), ("runtime_type", "runtimeType"), ("device_id", "deviceId")):
+        value = _body_value(body, snake, camel)
+        if value is not None:
+            scope[snake] = value
+    return scope
+
+
+def _build_memory_context(prompt: str, body: Dict[str, Any], agent_profile: str = "default") -> str:
+    if not MEMORY_INVOKE_ENABLED:
+        return ""
+    if not _truthy_body_flag(body, "use_memory", "useMemory", default=True):
+        return ""
+    try:
+        from memory_store import search_memory
+        limit = int(_body_value(body, "memory_limit", "memoryLimit", default=MEMORY_INVOKE_LIMIT) or MEMORY_INVOKE_LIMIT)
+        threshold = float(_body_value(body, "memory_threshold", "memoryThreshold", default=0.0) or 0.0)
+        scope = _memory_scope_from_body(body, agent_profile=agent_profile)
+        memories = search_memory(
+            query=prompt,
+            limit=max(1, limit),
+            threshold=threshold,
+            scope=scope,
+        )
+        has_isolated_scope = bool(
+            scope.get("team_id") is not None
+            or scope.get("device_id") is not None
+            or (scope.get("agent_id") is not None and str(scope.get("agent_id")) != "default")
+        )
+        if not memories and has_isolated_scope:
+            memories = search_memory(
+                query="",
+                limit=max(1, limit),
+                threshold=threshold,
+                scope=scope,
+            )
+    except ImportError:
+        return ""
+    except Exception as e:
+        print(f"[hermes-bridge] Memory retrieval warning: {e}")
+        return ""
+
+    if not memories:
+        return ""
+
+    lines = ["【本地记忆】"]
+    for i, memory in enumerate(memories, 1):
+        category = memory.get("category") or "other"
+        importance = memory.get("importance", 0.5)
+        content = str(memory.get("content") or "").strip()
+        if not content:
+            continue
+        lines.append(f"{i}. ({category}, importance={importance}) {content}")
+    if len(lines) == 1:
+        return ""
+    lines.append("请优先参考以上本地记忆，但如果用户明确更正或要求忽略，请以当前用户输入为准。")
+    return "\n".join(lines)
+
+
+def _append_context(system_prompt: Optional[str], *contexts: str) -> str:
+    parts = [system_prompt or ""]
+    parts.extend(ctx for ctx in contexts if ctx)
+    return "\n\n".join(part for part in parts if part)
+
+
 # ---------------------------------------------------------------------------
 # SDK 兼容层：/api/agent/* 路径映射 + 平台响应格式
 # ---------------------------------------------------------------------------
@@ -315,9 +408,8 @@ def _url_to_qr_data_url(url: str) -> str:
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
         return f"data:image/png;base64,{b64}"
     except Exception as exc:
-        print(f"[hermes-bridge] _url_to_qr_data_url failed: {exc}")
-        traceback.print_exc()
-        return url
+        print(f"[hermes-bridge] _url_to_qr_data_url skipped: {exc}")
+        return ""
 
 
 # ---------------------------------------------------------------------------
@@ -481,10 +573,6 @@ class AgentPool:
             agent_kwargs["enabled_toolsets"] = enabled_ts
         if disabled_ts is not None:
             agent_kwargs["disabled_toolsets"] = disabled_ts
-        if stream_callback is not None:
-            # stream_delta_callback is used by gateway for token-level events
-            agent_kwargs["stream_delta_callback"] = stream_callback
-
         # 确定 per-profile HERMES_HOME
         profile_name = profile.name if profile else "default"
         profile_home = (
@@ -854,6 +942,14 @@ def _resolve_runtime_provider(provider_name: Optional[str], model_name: Optional
     if normalized_provider:
         return normalized_provider
 
+    env_provider = _normalize_provider_name(
+        os.environ.get("HERMES_PROVIDER")
+        or os.environ.get("QEECLAW_MODEL_PROVIDER")
+        or os.environ.get("QEECLAW_LLM_PROVIDER")
+    )
+    if env_provider:
+        return env_provider
+
     auth_pools = _load_auth_credential_pools()
     if len(auth_pools) == 1:
         sole_provider = next(iter(auth_pools.keys()))
@@ -984,7 +1080,7 @@ def _raise_missing_runtime_credentials(runtime_client: Dict[str, Any]) -> None:
     raise RuntimeError(
         f"No local runtime credentials configured for provider '{provider}' and model '{model}'. "
         "Configure a real LLM credential in ~/.qeeclaw_hermes/auth.json credential_pool, "
-        "or set a provider API key such as DASHSCOPE_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY."
+        "or set a provider API key such as DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY."
     )
 
 
@@ -1064,9 +1160,16 @@ def _discover_models() -> List[Dict[str, Any]]:
             return list(models.values())
 
     env_model = os.environ.get("HERMES_MODEL", "").strip()
-    env_provider = _normalize_provider_name(_infer_provider_from_url(
-        os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-    ))
+    env_provider = _resolve_runtime_provider(
+        os.environ.get("HERMES_PROVIDER")
+        or os.environ.get("QEECLAW_MODEL_PROVIDER")
+        or os.environ.get("QEECLAW_LLM_PROVIDER"),
+        env_model,
+    )
+    if not env_provider:
+        env_provider = _normalize_provider_name(_infer_provider_from_url(
+            os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
+        ))
     env_runtime = _resolve_runtime_client_config(env_provider, env_model)
     if not _runtime_client_is_configured(env_runtime):
         return []
@@ -1385,6 +1488,8 @@ _CHANNELS_PLUGIN_CONFIG_FILE = os.path.join(_HERMES_HOME, "channel_wechat_person
 _CHANNELS_BINDINGS_FILE = os.path.join(_HERMES_HOME, "channel_bindings.json")
 _CHANNELS_WECHAT_WORK_CONFIG_FILE = os.path.join(_HERMES_HOME, "channel_wechat_work.json")
 _CHANNELS_FEISHU_CONFIG_FILE = os.path.join(_HERMES_HOME, "channel_feishu.json")
+_CHANNELS_BINDINGS_LOCK = threading.RLock()
+_CHANNELS_BINDINGS_VALIDATE_PROBE_TARGET = "__bindings_validate_probe__"
 
 
 def _load_json_file(path: str, default: Any) -> Any:
@@ -1468,23 +1573,25 @@ def _save_wechat_personal_plugin_channel_config(config: Dict[str, Any]):
 
 
 def _load_channel_bindings() -> List[Dict[str, Any]]:
-    if os.path.isfile(_CHANNELS_BINDINGS_FILE):
-        try:
-            with open(_CHANNELS_BINDINGS_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return data if isinstance(data, list) else []
-        except Exception:
-            pass
-    return []
+    with _CHANNELS_BINDINGS_LOCK:
+        if os.path.isfile(_CHANNELS_BINDINGS_FILE):
+            try:
+                with open(_CHANNELS_BINDINGS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    return data if isinstance(data, list) else []
+            except Exception:
+                pass
+        return []
 
 
 def _save_channel_bindings(items: List[Dict[str, Any]]):
-    try:
-        os.makedirs(os.path.dirname(_CHANNELS_BINDINGS_FILE), exist_ok=True)
-        with open(_CHANNELS_BINDINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(items, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"[bridge] WARNING: Failed to save channel bindings: {e}")
+    with _CHANNELS_BINDINGS_LOCK:
+        try:
+            os.makedirs(os.path.dirname(_CHANNELS_BINDINGS_FILE), exist_ok=True)
+            with open(_CHANNELS_BINDINGS_FILE, "w", encoding="utf-8") as f:
+                json.dump(items, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[bridge] WARNING: Failed to save channel bindings: {e}")
 
 
 def _restore_channel_bindings_snapshot(items: List[Dict[str, Any]], file_existed: bool):
@@ -1500,82 +1607,121 @@ def _restore_channel_bindings_snapshot(items: List[Dict[str, Any]], file_existed
 
 
 def _create_channel_binding_record(body: Dict[str, Any]) -> Dict[str, Any]:
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    expires_hours = int(body.get("expires_in_hours") or 72)
-    binding = {
-        "id": int(time.time() * 1000),
-        "team_id": body.get("team_id", 1),
-        "channel_key": body.get("channel_key", "wechat_personal_plugin"),
-        "binding_type": body.get("binding_type", ""),
-        "binding_target_id": body.get("binding_target_id", ""),
-        "binding_target_name": body.get("binding_target_name"),
-        "binding_code": f"bind_{uuid.uuid4().hex[:10]}",
-        "code_expires_at": time.strftime(
-            "%Y-%m-%dT%H:%M:%SZ",
-            time.gmtime(time.time() + expires_hours * 3600),
-        ),
-        "status": "pending",
-        "created_by_user_id": int(body.get("created_by_user_id", 1) or 1),
-        "bound_by_user_id": body.get("bound_by_user_id"),
-        "binding_enabled_snapshot": bool(_load_wechat_personal_plugin_channel_config().get("binding_enabled", True)),
-        "notes": body.get("notes"),
-        "bound_at": body.get("bound_at"),
-        "created_time": now,
-        "updated_time": now,
-        "identity": body.get("identity"),
-    }
-    items = _load_channel_bindings()
-    items.append(binding)
-    _save_channel_bindings(items)
-    return binding
+    with _CHANNELS_BINDINGS_LOCK:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        expires_hours = int(body.get("expires_in_hours") or 72)
+        binding = {
+            "id": int(time.time() * 1000),
+            "team_id": body.get("team_id", 1),
+            "channel_key": body.get("channel_key", "wechat_personal_plugin"),
+            "binding_type": body.get("binding_type", ""),
+            "binding_target_id": body.get("binding_target_id", ""),
+            "binding_target_name": body.get("binding_target_name"),
+            "binding_code": f"bind_{uuid.uuid4().hex[:10]}",
+            "code_expires_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ",
+                time.gmtime(time.time() + expires_hours * 3600),
+            ),
+            "status": "pending",
+            "created_by_user_id": int(body.get("created_by_user_id", 1) or 1),
+            "bound_by_user_id": body.get("bound_by_user_id"),
+            "binding_enabled_snapshot": bool(_load_wechat_personal_plugin_channel_config().get("binding_enabled", True)),
+            "notes": body.get("notes"),
+            "bound_at": body.get("bound_at"),
+            "created_time": now,
+            "updated_time": now,
+            "identity": body.get("identity"),
+        }
+        items = _load_channel_bindings()
+        items.append(binding)
+        _save_channel_bindings(items)
+        return binding
 
 
 def _disable_channel_binding_record(binding_id: int) -> Optional[Dict[str, Any]]:
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    items = _load_channel_bindings()
-    binding = None
-    for item in items:
-        if int(item.get("id", 0)) == binding_id:
-            item["status"] = "disabled"
-            item["binding_enabled_snapshot"] = False
-            item["updated_time"] = now
-            binding = item
-            break
-    if binding is not None:
-        _save_channel_bindings(items)
-    return binding
+    with _CHANNELS_BINDINGS_LOCK:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        items = _load_channel_bindings()
+        binding = None
+        for item in items:
+            if int(item.get("id", 0)) == binding_id:
+                item["status"] = "disabled"
+                item["binding_enabled_snapshot"] = False
+                item["updated_time"] = now
+                binding = item
+                break
+        if binding is not None:
+            _save_channel_bindings(items)
+        return binding
 
 
 def _regenerate_channel_binding_code_record(binding_id: int, expires_hours: int = 72) -> Optional[Dict[str, Any]]:
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    items = _load_channel_bindings()
-    binding = None
-    for item in items:
-        if int(item.get("id", 0)) == binding_id:
-            item["binding_code"] = f"bind_{uuid.uuid4().hex[:12]}"
-            item["code_expires_at"] = time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ",
-                time.gmtime(time.time() + expires_hours * 3600),
-            )
-            item["status"] = "pending"
-            item["updated_time"] = now
-            binding = item
-            break
-    if binding is not None:
-        _save_channel_bindings(items)
-    return binding
+    with _CHANNELS_BINDINGS_LOCK:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        items = _load_channel_bindings()
+        binding = None
+        for item in items:
+            if int(item.get("id", 0)) == binding_id:
+                item["binding_code"] = f"bind_{uuid.uuid4().hex[:12]}"
+                item["code_expires_at"] = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ",
+                    time.gmtime(time.time() + expires_hours * 3600),
+                )
+                item["status"] = "pending"
+                item["updated_time"] = now
+                binding = item
+                break
+        if binding is not None:
+            _save_channel_bindings(items)
+        return binding
+
+
+def _claim_channel_binding_record(binding_id: int, credentials: Dict[str, Any], binding_context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    with _CHANNELS_BINDINGS_LOCK:
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        items = _load_channel_bindings()
+        binding = None
+        account_id = str(credentials.get("account_id") or "").strip()
+        user_id = str(credentials.get("user_id") or "").strip()
+        for item in items:
+            if int(item.get("id", 0)) == binding_id:
+                item["status"] = "bound"
+                item["bound_at"] = now
+                item["updated_time"] = now
+                item["bound_by_user_id"] = item.get("bound_by_user_id") or 1
+                item["identity"] = {
+                    "id": item.get("identity", {}).get("id") if isinstance(item.get("identity"), dict) else binding_id,
+                    "external_user_id": account_id or user_id or "wechat_local",
+                    "external_union_id": user_id or None,
+                    "nickname": (binding_context or {}).get("binding_target_name") or item.get("binding_target_name"),
+                    "avatar_url": None,
+                    "status": "active",
+                    "last_seen_at": now,
+                }
+                binding = item
+                break
+        if binding is not None:
+            _save_channel_bindings(items)
+        return binding
+
+
+def _remove_channel_binding_records(predicate) -> int:
+    with _CHANNELS_BINDINGS_LOCK:
+        items = _load_channel_bindings()
+        kept_items = [item for item in items if not predicate(item)]
+        removed_count = len(items) - len(kept_items)
+        if removed_count > 0:
+            _save_channel_bindings(kept_items)
+        return removed_count
 
 
 def _probe_channel_bindings_write_path(team_id: int, channel_key: str) -> Dict[str, Any]:
-    original_file_existed = os.path.isfile(_CHANNELS_BINDINGS_FILE)
-    original_items = _load_channel_bindings()
-
     try:
         created_binding = _create_channel_binding_record({
             "team_id": team_id,
             "channel_key": channel_key,
             "binding_type": "probe",
-            "binding_target_id": "__bindings_validate_probe__",
+            "binding_target_id": _CHANNELS_BINDINGS_VALIDATE_PROBE_TARGET,
             "binding_target_name": "绑定链路校验探针",
             "notes": "startup validate probe",
             "created_by_user_id": 0,
@@ -1597,7 +1743,7 @@ def _probe_channel_bindings_write_path(team_id: int, channel_key: str) -> Dict[s
         if disabled_probe is None or disabled_probe.get("status") != "disabled":
             raise RuntimeError("probe binding disable validation failed")
 
-        _restore_channel_bindings_snapshot(original_items, original_file_existed)
+        _remove_channel_binding_records(lambda item: int(item.get("id", 0)) == probe_id)
         return {
             "ok": True,
             "operations": ["create", "list", "regenerate-code", "disable", "cleanup"],
@@ -1605,7 +1751,8 @@ def _probe_channel_bindings_write_path(team_id: int, channel_key: str) -> Dict[s
     except Exception as e:
         cleanup_error = None
         try:
-            _restore_channel_bindings_snapshot(original_items, original_file_existed)
+            if "probe_id" in locals():
+                _remove_channel_binding_records(lambda item: int(item.get("id", 0)) == probe_id)
         except Exception as restore_exc:
             cleanup_error = str(restore_exc)
         return {
@@ -2187,7 +2334,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
     def _check_auth(self) -> bool:
         """检查 API Key。返回 True 表示通过/继续，False 表示已拒绝。"""
         # /health 端点免鉴权
-        if self.path == "/health":
+        if urllib.parse.urlparse(self.path).path == "/health":
             return True
         err = _check_api_key(self)
         if err:
@@ -2202,25 +2349,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         _path = urllib.parse.urlparse(self.path).path
         if _path == "/health":
             self._handle_health()
-        elif self.path == "/knowledge/list" or self.path == "/knowledge/documents":
+        elif _path == "/knowledge/list" or _path == "/knowledge/documents":
             self._handle_kb_list()
-        elif self.path.startswith("/knowledge/document/"):
+        elif _path.startswith("/knowledge/document/"):
             self._handle_kb_get_document()
-        elif self.path == "/knowledge/stats":
+        elif _path == "/knowledge/stats":
             self._handle_kb_stats()
-        elif self.path == "/gateway/status":
+        elif _path == "/gateway/status":
             self._handle_gateway_status()
-        elif self.path == "/gateway/platforms":
+        elif _path == "/gateway/platforms":
             self._handle_gateway_platforms()
-        elif self.path == "/gateway/supported-platforms":
+        elif _path == "/gateway/supported-platforms":
             self._handle_supported_platforms()
-        elif self.path == "/wechat/status":
+        elif _path == "/wechat/status":
             self._handle_wechat_status()
-        elif self.path == "/wechat/credentials":
+        elif _path == "/wechat/credentials":
             self._handle_wechat_credentials()
-        elif self.path == "/wechat/check":
+        elif _path == "/wechat/check":
             self._handle_wechat_check()
-        elif self.path == "/cloud/status":
+        elif _path == "/cloud/status":
             self._handle_cloud_status()
         # --- Session & Agent ---
         elif _path == "/sessions" or _path == "/sessions/":
@@ -2397,40 +2544,40 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_invoke_stream()
         elif _path == "/knowledge/upload":
             self._handle_kb_upload()
-        elif self.path == "/knowledge/search":
+        elif _path == "/knowledge/search":
             self._handle_kb_search()
-        elif self.path.startswith("/knowledge/delete/"):
+        elif _path.startswith("/knowledge/delete/"):
             self._handle_kb_delete()
-        elif self.path == "/gateway/start":
+        elif _path == "/gateway/start":
             self._handle_gateway_start()
-        elif self.path == "/gateway/stop":
+        elif _path == "/gateway/stop":
             self._handle_gateway_stop()
-        elif self.path == "/gateway/configure":
+        elif _path == "/gateway/configure":
             self._handle_gateway_configure()
-        elif self.path == "/wechat/webhook":
+        elif _path == "/wechat/webhook":
             self._handle_wechat_webhook()
-        elif self.path == "/wechat/qr-login":
+        elif _path == "/wechat/qr-login":
             self._handle_wechat_qr_login()
-        elif self.path == "/wechat/qr-cancel":
+        elif _path == "/wechat/qr-cancel":
             self._handle_wechat_qr_cancel()
-        elif self.path == "/wechat/configure":
+        elif _path == "/wechat/configure":
             self._handle_wechat_configure()
-        elif self.path == "/wechat/send":
+        elif _path == "/wechat/send":
             self._handle_wechat_send()
-        elif self.path == "/wechat/adapter/start":
+        elif _path == "/wechat/adapter/start":
             self._handle_wechat_adapter_start()
-        elif self.path == "/wechat/adapter/stop":
+        elif _path == "/wechat/adapter/stop":
             self._handle_wechat_adapter_stop()
         # --- Session & Agent ---
-        elif self.path == "/sessions":
+        elif _path == "/sessions":
             self._handle_session_create()
-        elif self.path.startswith("/sessions/") and self.path.endswith("/clear"):
+        elif _path.startswith("/sessions/") and _path.endswith("/clear"):
             self._handle_session_clear()
-        elif self.path.startswith("/sessions/") and self.path.endswith("/delete"):
+        elif _path.startswith("/sessions/") and _path.endswith("/delete"):
             self._handle_session_delete()
-        elif self.path == "/agents":
+        elif _path == "/agents":
             self._handle_agent_create()
-        elif self.path.startswith("/agents/") and self.path.endswith("/delete"):
+        elif _path.startswith("/agents/") and _path.endswith("/delete"):
             self._handle_agent_delete()
         # --- Builder ---
         elif _path.startswith("/api/builder/projects/") and _path.endswith("/test-runs") and _path.count("/") == 5:
@@ -2438,104 +2585,104 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         elif _path == "/api/builder/projects" or _path == "/api/builder/projects/":
             self._handle_builder_project_create()
         # --- SDK 兼容路径 (/api/agent/*) ---
-        elif self.path == "/api/agent/create":
+        elif _path == "/api/agent/create":
             self._handle_api_agent_create()
-        elif self.path == "/api/platform/memory/store":
+        elif _path == "/api/platform/memory/store":
             self._handle_memory_store()
-        elif self.path == "/api/platform/memory/search":
+        elif _path == "/api/platform/memory/search":
             self._handle_memory_search()
         # --- Phase 2: Memory / Skills / Cron ---
-        elif self.path == "/memory/store":
+        elif _path == "/memory/store":
             self._handle_memory_store_v2()
-        elif self.path == "/memory/search":
+        elif _path == "/memory/search":
             self._handle_memory_search_v2()
-        elif self.path == "/memory/clear":
+        elif _path == "/memory/clear":
             self._handle_memory_clear_v2()
-        elif self.path == "/skills/install":
+        elif _path == "/skills/install":
             self._handle_skill_install()
-        elif self.path == "/skills/uninstall":
+        elif _path == "/skills/uninstall":
             self._handle_skill_uninstall()
-        elif self.path == "/cron":
+        elif _path == "/cron":
             self._handle_cron_create()
         # --- Conversations ---
-        elif self.path == "/api/platform/conversations/messages":
+        elif _path == "/api/platform/conversations/messages":
             self._handle_conversations_send()
         # --- Channels ---
-        elif self.path == "/api/platform/channels/wechat-work/config":
+        elif _path == "/api/platform/channels/wechat-work/config":
             self._handle_channel_wechat_work_config_update()
-        elif self.path == "/api/platform/channels/feishu/config":
+        elif _path == "/api/platform/channels/feishu/config":
             self._handle_channel_feishu_config_update()
-        elif self.path == "/api/platform/channels/wechat-personal-plugin/config":
+        elif _path == "/api/platform/channels/wechat-personal-plugin/config":
             self._handle_channel_wechat_personal_plugin_config_update()
-        elif self.path == "/api/platform/channels/bindings/create":
+        elif _path == "/api/platform/channels/bindings/create":
             self._handle_channel_binding_create()
-        elif self.path == "/api/platform/channels/bindings/disable":
+        elif _path == "/api/platform/channels/bindings/disable":
             self._handle_channel_binding_disable()
-        elif self.path == "/api/platform/channels/bindings/regenerate-code":
+        elif _path == "/api/platform/channels/bindings/regenerate-code":
             self._handle_channel_binding_regenerate_code()
-        elif self.path == "/api/platform/channels/wechat-personal-openclaw/qr/start":
+        elif _path == "/api/platform/channels/wechat-personal-openclaw/qr/start":
             self._handle_channel_openclaw_qr_start()
         # --- Knowledge new paths ---
-        elif self.path == "/api/platform/knowledge/config/update":
+        elif _path == "/api/platform/knowledge/config/update":
             self._handle_platform_knowledge_config_update()
         elif _path == "/api/platform/knowledge/upload":
             self._handle_platform_knowledge_upload()
-        elif self.path == "/api/platform/knowledge/delete":
+        elif _path == "/api/platform/knowledge/delete":
             self._handle_platform_knowledge_delete()
         # --- Approval ---
-        elif self.path.startswith("/api/platform/approvals/") and self.path.endswith("/resolve"):
+        elif _path.startswith("/api/platform/approvals/") and _path.endswith("/resolve"):
             self._handle_approval_resolve()
-        elif self.path == "/api/platform/approvals/request":
+        elif _path == "/api/platform/approvals/request":
             self._handle_approval_request()
         # --- Audit ---
-        elif self.path == "/api/platform/audit/events":
+        elif _path == "/api/platform/audit/events":
             self._handle_audit_record()
         # --- Company ---
-        elif self.path == "/api/company/verification/approve":
+        elif _path == "/api/company/verification/approve":
             self._handle_company_verification_approve()
-        elif self.path == "/api/company/verification":
+        elif _path == "/api/company/verification":
             self._handle_company_verification_submit()
         # --- Devices ---
-        elif self.path == "/api/platform/devices/bootstrap":
+        elif _path == "/api/platform/devices/bootstrap":
             self._handle_devices_bootstrap()
-        elif self.path == "/api/platform/devices/pair-code":
+        elif _path == "/api/platform/devices/pair-code":
             self._handle_devices_pair_code()
-        elif self.path == "/api/platform/devices/claim":
+        elif _path == "/api/platform/devices/claim":
             self._handle_devices_claim()
         # --- Workflow ---
-        elif self.path.startswith("/api/workflows/") and self.path.endswith("/run"):
+        elif _path.startswith("/api/workflows/") and _path.endswith("/run"):
             self._handle_workflow_run()
-        elif self.path == "/api/workflows":
+        elif _path == "/api/workflows":
             self._handle_workflow_save()
         # --- ApiKey ---
-        elif self.path == "/api/users/app-keys/default/token":
+        elif _path == "/api/users/app-keys/default/token":
             self._handle_app_key_issue_token()
-        elif self.path == "/api/users/app-keys":
+        elif _path == "/api/users/app-keys":
             self._handle_app_key_create()
-        elif self.path == "/api/llm/keys":
+        elif _path == "/api/llm/keys":
             self._handle_llm_key_create()
         # --- Platform Products ---
-        elif self.path == "/api/platform/workflows" or self.path == "/api/platform/workflows/":
+        elif _path == "/api/platform/workflows" or _path == "/api/platform/workflows/":
             self._handle_platform_workflow_create()
-        elif self.path == "/api/platform/policy" or self.path == "/api/platform/policy/":
+        elif _path == "/api/platform/policy" or _path == "/api/platform/policy/":
             self._handle_platform_policy_create()
-        elif self.path == "/api/platform/files" or self.path == "/api/platform/files/":
+        elif _path == "/api/platform/files" or _path == "/api/platform/files/":
             self._handle_platform_file_upload()
-        elif self.path == "/api/platform/voice" or self.path == "/api/platform/voice/":
+        elif _path == "/api/platform/voice" or _path == "/api/platform/voice/":
             self._handle_platform_voice_update()
         # --- Policy ---
-        elif self.path == "/api/platform/policy/tool-access/check":
+        elif _path == "/api/platform/policy/tool-access/check":
             self._handle_policy_check()
-        elif self.path == "/api/platform/policy/data-access/check":
+        elif _path == "/api/platform/policy/data-access/check":
             self._handle_policy_check()
-        elif self.path == "/api/platform/policy/exec-access/check":
+        elif _path == "/api/platform/policy/exec-access/check":
             self._handle_policy_check()
         # --- Voice ---
-        elif self.path == "/api/asr":
+        elif _path == "/api/asr":
             self._handle_voice_not_implemented()
-        elif self.path == "/api/tts":
+        elif _path == "/api/tts":
             self._handle_voice_not_implemented()
-        elif self.path == "/api/audio/speech":
+        elif _path == "/api/audio/speech":
             self._handle_voice_not_implemented()
         else:
             _json_response(self, 404, {"error": "Not found"})
@@ -2589,6 +2736,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # DELETE /api/platform/memory/{entryId}
         elif _path.startswith("/api/platform/memory/"):
             self._handle_memory_delete()
+        elif _path.startswith("/memory/") and _path.count("/") == 2:
+            self._handle_memory_delete_v2()
         # --- Phase 2: Cron ---
         elif _path.startswith("/cron/") and _path.count("/") == 2:
             self._handle_cron_delete()
@@ -2643,7 +2792,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 from knowledge_store import get_kb_stats
                 kb_info = get_kb_stats()
             except ImportError:
-                kb_info = {"available": False, "error": "chromadb not installed"}
+                kb_info = {"available": False, "error": "local vector store unavailable"}
             except Exception:
                 pass
 
@@ -2703,26 +2852,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     _json_response(self, 400, {"error": "prompt is required"})
                 return
 
-            # RAG: 自动检索知识库并注入上下文
-            rag_context = ""
-            if use_knowledge:
-                try:
-                    from knowledge_store import build_rag_context, is_kb_available
-                    if is_kb_available():
-                        rag_context = build_rag_context(prompt, scope=kb_scope)
-                except ImportError:
-                    pass
-                except Exception as e:
-                    print(f"[hermes-bridge] KB retrieval warning: {e}")
-
-            # 将 RAG 上下文注入到 system prompt
-            effective_system_prompt = system_prompt or ""
-            if rag_context:
-                effective_system_prompt = (
-                    (effective_system_prompt + "\n\n" if effective_system_prompt else "")
-                    + rag_context
-                )
-
             # 获取/创建 session（支持多轮对话）
             from session_manager import get_session_manager
             sm = get_session_manager()
@@ -2736,10 +2865,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             # 获取 agent profile 的默认参数
             profile = sm.get_profile(session.agent_profile)
             if profile:
-                if not effective_system_prompt and profile.system_prompt:
-                    effective_system_prompt = profile.system_prompt
+                if not system_prompt and profile.system_prompt:
+                    system_prompt = profile.system_prompt
                 if temperature is None and profile.temperature is not None:
                     temperature = profile.temperature
+
+            # RAG: 自动检索知识库并注入上下文
+            rag_context = ""
+            if use_knowledge:
+                try:
+                    from knowledge_store import build_rag_context, is_kb_available
+                    if is_kb_available():
+                        rag_context = build_rag_context(prompt, scope=kb_scope)
+                except ImportError:
+                    pass
+                except Exception as e:
+                    print(f"[hermes-bridge] KB retrieval warning: {e}")
+
+            memory_context = _build_memory_context(prompt, body, agent_profile=session.agent_profile)
+            effective_system_prompt = _append_context(system_prompt, memory_context, rag_context)
 
             # 通过 AgentPool 调用（AIAgent 或 fallback）
             pool = get_agent_pool()
@@ -2766,6 +2910,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             result["turn_count"] = session.turn_count
             if rag_context:
                 result["_rag_used"] = True
+            if memory_context:
+                result["_memory_used"] = True
 
             _record_finance_usage(
                 prompt=prompt,
@@ -2863,7 +3009,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             from session_manager import get_session_manager
             sm = get_session_manager()
-            parts = self.path.strip("/").split("/")
+            parts = urllib.parse.urlparse(self.path).path.strip("/").split("/")
             # /sessions/{id}
             session_id = parts[1] if len(parts) >= 2 else None
             if not session_id:
@@ -2901,7 +3047,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             from session_manager import get_session_manager
             sm = get_session_manager()
-            parts = self.path.strip("/").split("/")
+            parts = urllib.parse.urlparse(self.path).path.strip("/").split("/")
             session_id = parts[1] if len(parts) >= 2 else None
             if not session_id:
                 _json_response(self, 400, {"error": "session_id is required"})
@@ -2921,7 +3067,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             from session_manager import get_session_manager
             sm = get_session_manager()
-            parts = self.path.strip("/").split("/")
+            parts = urllib.parse.urlparse(self.path).path.strip("/").split("/")
             session_id = parts[1] if len(parts) >= 2 else None
             if not session_id:
                 _json_response(self, 400, {"error": "session_id is required"})
@@ -2951,7 +3097,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             from session_manager import get_session_manager
             sm = get_session_manager()
-            parts = self.path.strip("/").split("/")
+            parts = urllib.parse.urlparse(self.path).path.strip("/").split("/")
             agent_name = parts[1] if len(parts) >= 2 else None
             if not agent_name:
                 _json_response(self, 400, {"error": "agent name is required"})
@@ -2986,7 +3132,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             from session_manager import get_session_manager
             sm = get_session_manager()
-            parts = self.path.strip("/").split("/")
+            parts = urllib.parse.urlparse(self.path).path.strip("/").split("/")
             agent_name = parts[1] if len(parts) >= 2 else None
             if not agent_name:
                 _json_response(self, 400, {"error": "agent name is required"})
@@ -3545,6 +3691,17 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             _json_response(self, 500, {"error": str(e)})
 
+    @staticmethod
+    def _truthy_body_value(body: Dict[str, Any], snake_key: str, camel_key: str, default: bool = False) -> bool:
+        value = body.get(snake_key, body.get(camel_key, default))
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        if isinstance(value, (int, float)):
+            return value != 0
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
     def _handle_invoke_stream(self):
         """流式模型调用端点 (SSE)。支持 session_id 实现多轮对话。
 
@@ -3561,10 +3718,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 return
 
             # 多轮对话 + 多智体参数
-            session_id = body.get("session_id")
-            user_id = body.get("user_id", "anonymous")
-            agent_profile = body.get("agent_profile", "default")
-            max_history_turns = body.get("max_history_turns", 20)
+            session_id = body.get("session_id") or body.get("sessionId")
+            user_id = body.get("user_id") or body.get("userId") or "anonymous"
+            agent_profile = body.get("agent_profile") or body.get("agentProfile") or "default"
+            max_history_turns = body.get("max_history_turns") or body.get("maxHistoryTurns") or 20
 
             # 设置 SSE 响应头
             self.send_response(200)
@@ -3574,13 +3731,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
-            model_name = body.get("model")
+            model_name = body.get("model") or body.get("model_id") or body.get("modelId")
             provider_name = body.get("provider")
-            system_prompt = body.get("system_prompt")
-            max_tokens = body.get("max_tokens")
+            system_prompt = body.get("system_prompt") or body.get("systemPrompt")
+            max_tokens = body.get("max_tokens") or body.get("maxTokens")
             temperature = body.get("temperature")
-            use_knowledge = body.get("use_knowledge", True)
-            kb_scope = body.get("kb_scope")
+            use_knowledge = body.get("use_knowledge", body.get("useKnowledge", True))
+            use_agent = self._truthy_body_value(body, "use_agent", "useAgent", True)
+            kb_scope = body.get("kb_scope") or body.get("kbScope")
 
             # 获取/创建 session
             from session_manager import get_session_manager
@@ -3601,26 +3759,29 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     temperature = profile.temperature
 
             # RAG: 自动检索知识库并注入上下文
+            rag_context = ""
             if use_knowledge:
                 try:
                     from knowledge_store import build_rag_context, is_kb_available
                     if is_kb_available():
                         rag_context = build_rag_context(prompt, scope=kb_scope)
-                        if rag_context:
-                            system_prompt = (
-                                (system_prompt + "\n\n" if system_prompt else "")
-                                + rag_context
-                            )
                 except ImportError:
                     pass
                 except Exception as e:
                     print(f"[hermes-bridge] KB stream retrieval warning: {e}")
+            memory_context = _build_memory_context(prompt, body, agent_profile=session.agent_profile)
+            system_prompt = _append_context(system_prompt, memory_context, rag_context)
+
+            if not model_name:
+                model_name = _get_preferred_model()
 
             # 发送 session 元信息（首个 SSE 事件）
             meta_event = json.dumps({
                 "type": "session",
                 "session_id": actual_session_id,
                 "agent_profile": session.agent_profile,
+                "memory_used": bool(memory_context),
+                "rag_used": bool(rag_context),
             }, ensure_ascii=False)
             self.wfile.write(f"data: {meta_event}\n\n".encode("utf-8"))
             self.wfile.flush()
@@ -3640,7 +3801,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     wfile.write(f"data: {sse_data}\n\n".encode("utf-8"))
                     wfile.flush()
 
-            if pool.available:
+            if pool.available and use_agent:
                 # --- AIAgent 流式模式 ---
                 result = pool.invoke(
                     prompt=prompt,
@@ -3656,7 +3817,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 )
                 full_response = result.get("text", "")
             else:
-                # --- Fallback 流式模式（裸 OpenAI streaming）---
+                # --- 轻量流式模式（裸 OpenAI-compatible streaming）---
                 history = session.get_messages(max_turns=max_history_turns)
                 stream = pool.invoke_stream_fallback(
                     prompt=prompt,
@@ -3870,7 +4031,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_kb_upload_response(status, result, platform_response)
 
         except ImportError:
-            self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Install: pip install chromadb"}, platform_response)
+            self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Build runtime with lancedb, onnxruntime, tokenizers, numpy, and local bge-base-zh-v1.5 model"}, platform_response)
         except Exception as e:
             traceback.print_exc()
             self._send_kb_upload_response(500, {"error": str(e)}, platform_response)
@@ -3898,7 +4059,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """获取单个文档的元数据。"""
         try:
             # 从 URL 中提取 doc_id: /knowledge/document/<doc_id>
-            doc_id = self.path.split("/knowledge/document/")[-1].strip("/")
+            _path = urllib.parse.urlparse(self.path).path
+            doc_id = _path.split("/knowledge/document/")[-1].strip("/")
             if not doc_id:
                 _json_response(self, 400, {"error": "doc_id is required"})
                 return
@@ -3919,7 +4081,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """删除知识库中的文档。"""
         try:
             # /knowledge/delete/<doc_id>
-            doc_id = self.path.split("/knowledge/delete/")[-1].strip("/")
+            _path = urllib.parse.urlparse(self.path).path
+            doc_id = _path.split("/knowledge/delete/")[-1].strip("/")
             if not doc_id:
                 _json_response(self, 400, {"error": "doc_id is required"})
                 return
@@ -3957,7 +4120,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _json_response(self, 200, {"results": results, "count": len(results)})
 
         except ImportError:
-            _json_response(self, 503, {"error": "Knowledge base module not available. Install: pip install chromadb"})
+            _json_response(self, 503, {"error": "Knowledge base module not available. Build runtime with lancedb, onnxruntime, tokenizers, numpy, and local bge-base-zh-v1.5 model"})
         except Exception as e:
             traceback.print_exc()
             _json_response(self, 500, {"error": str(e)})
@@ -3971,7 +4134,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except ImportError:
             _json_response(self, 200, {
                 "available": False,
-                "error": "Knowledge base module not available. Install: pip install chromadb",
+                "error": "Knowledge base module not available. Build runtime with lancedb, onnxruntime, tokenizers, numpy, and local bge-base-zh-v1.5 model",
                 "document_count": 0,
             })
         except Exception as e:
@@ -4258,7 +4421,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 importance=body.get("importance", 0.5),
                 agent_id=body.get("agent_profile") or body.get("agent_id"),
                 runtime_type=body.get("runtime_type", "openclaw"),
+                team_id=body.get("team_id"),
+                device_id=body.get("device_id"),
                 source_session=body.get("source_session"),
+                skip_duplicate_check=body.get("skip_duplicate_check", False),
             )
             _json_response(self, 200, {"success": True, "entry": entry})
         except Exception as e:
@@ -4271,9 +4437,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             from memory_store import search_memory
             body = _read_json_body(self)
             scope = {}
-            agent_profile = body.get("agent_profile")
-            if agent_profile:
-                scope["agent_id"] = agent_profile
+            agent_id = body.get("agent_id") or body.get("agent_profile")
+            if agent_id:
+                scope["agent_id"] = agent_id
             for key in ("team_id", "runtime_type", "device_id"):
                 val = body.get(key)
                 if val is not None:
@@ -4296,9 +4462,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
             scope = {}
-            agent_profile = params.get("agent_profile")
-            if agent_profile:
-                scope["agent_id"] = agent_profile[0]
+            agent_id = params.get("agent_id") or params.get("agent_profile")
+            if agent_id:
+                scope["agent_id"] = agent_id[0]
+            for key in ("team_id", "runtime_type", "device_id"):
+                val = params.get(key)
+                if val:
+                    scope[key] = val[0]
             stats = get_memory_stats(scope=scope)
             _json_response(self, 200, {"success": True, **stats})
         except Exception as e:
@@ -4310,12 +4480,36 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             from memory_store import clear_agent_memory
             body = _read_json_body(self)
-            agent_profile = body.get("agent_profile")
-            if not agent_profile:
-                _json_response(self, 400, {"error": "agent_profile is required"})
+            agent_id = body.get("agent_id") or body.get("agent_profile")
+            if not agent_id:
+                _json_response(self, 400, {"error": "agent_id is required"})
                 return
-            cleared = clear_agent_memory(agent_profile)
+            scope = {}
+            for key in ("team_id", "runtime_type", "device_id"):
+                val = body.get(key)
+                if val is not None:
+                    scope[key] = val
+            cleared = clear_agent_memory(agent_id, scope=scope)
             _json_response(self, 200, {"success": True, "cleared_count": cleared})
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {"error": str(e)})
+
+    def _handle_memory_delete_v2(self):
+        """DELETE /memory/{entryId} — 删除单条记忆。"""
+        try:
+            from memory_store import delete_memory
+            _path = urllib.parse.urlparse(self.path).path
+            entry_id = _path.replace("/memory/", "").strip("/")
+            qs = urllib.parse.urlparse(self.path).query
+            params = urllib.parse.parse_qs(qs)
+            scope = {}
+            for key in ("team_id", "runtime_type", "device_id", "agent_id"):
+                val = params.get(key)
+                if val:
+                    scope[key] = val[0]
+            deleted = delete_memory(entry_id, scope=scope)
+            _json_response(self, 200, {"success": deleted, "deleted": deleted})
         except Exception as e:
             traceback.print_exc()
             _json_response(self, 500, {"error": str(e)})
@@ -4840,24 +5034,28 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             models = _discover_models()
             preferred = _get_preferred_model()
 
-            selected = None
+            preferred_selected = None
             for m in models:
                 if m["model_name"] == preferred:
-                    selected = m
+                    preferred_selected = m
                     break
-            if not selected and models:
-                selected = models[0]
+
+            selected = preferred_selected or (models[0] if models else None)
 
             _platform_json_response(self, 200, {
                 "preferred_model": preferred,
-                "preferred_model_available": selected is not None,
+                "preferred_model_available": preferred_selected is not None,
                 "resolved_model": selected["model_name"] if selected else None,
                 "resolved_provider_name": selected["provider_name"] if selected else None,
                 "resolved_provider_model_id": selected["provider_model_id"] if selected else None,
                 "candidate_count": len(models),
                 "configured_provider_count": len(_summarize_providers(models)),
                 "available_model_count": len(models),
-                "resolution_reason": "preferred_model_match" if selected else "fallback",
+                "resolution_reason": (
+                    "preferred_model_match"
+                    if preferred_selected
+                    else ("fallback" if selected else "no_models")
+                ),
                 "selected": selected,
             })
         except Exception as e:
@@ -4882,24 +5080,28 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
             # 返回更新后的路由 profile
             models = _discover_models()
-            selected = None
+            preferred_selected = None
             for m in models:
                 if m["model_name"] == preferred_model:
-                    selected = m
+                    preferred_selected = m
                     break
-            if not selected and models:
-                selected = models[0]
+
+            selected = preferred_selected or (models[0] if models else None)
 
             _platform_json_response(self, 200, {
                 "preferred_model": preferred_model,
-                "preferred_model_available": selected is not None,
+                "preferred_model_available": preferred_selected is not None,
                 "resolved_model": selected["model_name"] if selected else None,
                 "resolved_provider_name": selected["provider_name"] if selected else None,
                 "resolved_provider_model_id": selected["provider_model_id"] if selected else None,
                 "candidate_count": len(models),
                 "configured_provider_count": len(_summarize_providers(models)),
                 "available_model_count": len(models),
-                "resolution_reason": "preferred_model_match" if selected else "fallback",
+                "resolution_reason": (
+                    "preferred_model_match"
+                    if preferred_selected
+                    else ("fallback" if selected else "no_models")
+                ),
                 "selected": selected,
             })
         except Exception as e:
@@ -5614,6 +5816,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             bindings = [
                 item for item in _load_channel_bindings()
                 if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
+                and item.get("binding_target_id") != _CHANNELS_BINDINGS_VALIDATE_PROBE_TARGET
             ]
             _platform_json_response(self, 200, {
                 "items": bindings,
@@ -5645,6 +5848,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             bindings = [
                 item for item in _load_channel_bindings()
                 if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
+                and item.get("binding_target_id") != _CHANNELS_BINDINGS_VALIDATE_PROBE_TARGET
             ]
             probe_result = _probe_channel_bindings_write_path(team_id, channel_key) if storage_writable else {
                 "ok": False,
@@ -5736,7 +5940,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             _ensure_hermes_on_path()
             from wechat_gateway import start_qr_login
-            result = start_qr_login()
+            body = _read_json_body(self)
+            binding_id = int(body.get("binding_id") or body.get("bindingId") or 0)
+            binding_context = None
+            if binding_id > 0:
+                binding_context = {
+                    "binding_id": binding_id,
+                    "team_id": int(body.get("team_id") or body.get("teamId") or 1),
+                    "channel_key": "wechat_personal_openclaw",
+                }
+
+            def _on_qr_success(credentials: Dict[str, Any], context: Dict[str, Any]):
+                target_binding_id = int(context.get("binding_id") or 0)
+                if target_binding_id > 0:
+                    _claim_channel_binding_record(target_binding_id, credentials, context)
+
+            result = start_qr_login(
+                binding_context=binding_context,
+                on_success=_on_qr_success if binding_context else None,
+            )
             status = str(result.get("status") or "unknown")
             qr_url = result.get("qr_url", "") or ""
             _platform_json_response(self, 200, {
@@ -5751,7 +5973,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     time.gmtime(time.time() + 300),
                 ) if status in {"started", "already_in_progress"} else None,
                 "connected": False,
-                "binding": None,
+                "binding": _claim_channel_binding_record(binding_id, result.get("credentials") or {}, binding_context)
+                    if binding_id > 0 and status in {"success", "bound"} and isinstance(result.get("credentials"), dict)
+                    else None,
                 "raw": result,
             })
         except Exception as e:
@@ -5767,16 +5991,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             state = str(result.get("status") or result.get("state") or "none")
             credentials = result.get("credentials") or {}
             qr_url = result.get("qr_url", "") or ""
+            binding_context = result.get("binding_context") if isinstance(result.get("binding_context"), dict) else {}
+            params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            binding_id = int((params.get("binding_id") or params.get("bindingId") or [binding_context.get("binding_id") or 0])[0] or 0)
+            if binding_id > 0 and "binding_id" not in binding_context:
+                binding_context["binding_id"] = binding_id
+            binding = None
+            if binding_id > 0 and state == "success" and isinstance(credentials, dict):
+                binding = _claim_channel_binding_record(binding_id, credentials, binding_context)
             _platform_json_response(self, 200, {
-                "status": "waiting_scan" if state == "pending" else state,
+                "status": "bound" if binding and state == "success" else "waiting_scan" if state == "pending" else state,
                 "message": result.get("message") or "等待扫码",
                 "qr_data_url": _url_to_qr_data_url(qr_url) if qr_url else "",
                 "qr_url": qr_url,
                 "session_id": result.get("session_id", "") or "",
                 "account_id": credentials.get("account_id", "") if isinstance(credentials, dict) else "",
                 "expires_at": None,
-                "connected": bool(result.get("connected")),
-                "binding": None,
+                "connected": bool(result.get("connected")) or binding is not None,
+                "binding": binding,
                 "raw": result,
             })
         except Exception as e:
@@ -6153,23 +6385,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_platform_knowledge_delete(self):
-        """POST /api/platform/knowledge/delete — 从 query params 删除。"""
+        """POST /api/platform/knowledge/delete — 从 query params/body 删除文档。"""
         try:
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            source_name = (params.get("source_name") or [""])[0]
-            if not source_name:
+            doc_id = (params.get("doc_id") or params.get("source_name") or [""])[0]
+            if not doc_id:
                 body = _read_json_body(self)
-                source_name = body.get("source_name", "")
-            if not source_name:
-                _platform_json_response(self, 400, None, "source_name is required")
+                doc_id = body.get("doc_id") or body.get("docId") or body.get("source_name") or body.get("sourceName") or ""
+            if not doc_id:
+                _platform_json_response(self, 400, None, "doc_id is required")
                 return
             try:
                 from knowledge_store import delete_document
-                ok = delete_document(source_name)
-                _platform_json_response(self, 200, {"deleted": ok})
+                result = delete_document(doc_id)
+                status = 200 if result.get("success") else 404
+                _platform_json_response(self, status, {"deleted": result}, result.get("error") or "success")
             except ImportError:
-                _platform_json_response(self, 200, {"deleted": False})
+                _platform_json_response(self, 503, None, "Knowledge base module not available")
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
@@ -6917,7 +7150,7 @@ def main():
             print(f"[hermes-bridge] Knowledge base: OK ({stats['document_count']} docs, {stats['chunk_count']} chunks)")
             print(f"[hermes-bridge] KB storage: {stats['storage_dir']}")
     except ImportError:
-        print("[hermes-bridge] Knowledge base: UNAVAILABLE (chromadb not installed)")
+        print("[hermes-bridge] Knowledge base: UNAVAILABLE (local vector dependencies not installed)")
     except Exception as e:
         print(f"[hermes-bridge] Knowledge base: ERROR ({e})")
 
@@ -6995,12 +7228,14 @@ def main():
     print("  GET  /api/agent/tools              - 列出系统工具")
     print("  POST /api/agent/create             - 创建智体 (SDK 格式)")
     print("  PUT  /api/agent/{id}               - 更新智体 (SDK 格式)")
-    print("  --- SDK 兼容 (/api/platform/memory/*) ---")
-    print("  POST /api/platform/memory/store      - 存入记忆")
-    print("  POST /api/platform/memory/search     - 搜索记忆")
-    print("  GET  /api/platform/memory/stats      - 记忆统计")
-    print("  DELETE /api/platform/memory/{id}      - 删除单条记忆")
-    print("  DELETE /api/platform/memory/agent/{id} - 清除 agent 全部记忆")
+    print("  --- Memory (/memory/* 本地记忆) ---")
+    print("  POST /memory/store                   - 存入记忆")
+    print("  POST /memory/search                  - 搜索记忆")
+    print("  GET  /memory/stats                   - 记忆统计")
+    print("  DELETE /memory/{id}                  - 删除单条记忆")
+    print("  POST /memory/clear                   - 清除 agent 全部记忆")
+    print("  --- Legacy SDK 兼容 (/api/platform/memory/*) ---")
+    print("  /api/platform/memory/*               - 旧平台命名空间兼容入口")
 
     try:
         server.serve_forever()

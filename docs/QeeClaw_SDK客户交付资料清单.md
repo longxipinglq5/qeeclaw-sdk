@@ -140,6 +140,7 @@ bash scripts/build-server.sh --standalone --target darwin-arm64
 | Models | `GET /api/platform/models/route` |
 | Models | `GET /api/platform/models/resolve` |
 | Models | `POST /api/platform/models/invoke` |
+| Models | `POST /api/llm/images/generations` |
 | Models | `GET /api/platform/models/usage` |
 | Models | `GET /api/platform/models/cost` |
 | Models | `GET /api/platform/models/quota` |
@@ -156,7 +157,7 @@ bash scripts/build-server.sh --standalone --target darwin-arm64
 | 模块 | 说明 | Bridge 本地覆盖 |
 | --- | --- | --- |
 | `billing` | 钱包 / 账单 / 摘要 | ✅ 已覆盖（3 端点） |
-| `models` | 模型列表 / 路由 / 推理调用 / 配额 | ✅ 已覆盖（9 端点） |
+| `models` | 模型列表 / 路由 / 推理调用 / 图片生成 / 配额 | ✅ 已覆盖（10 端点） |
 | `iam` | 用户身份 | ✅ 已覆盖（5 端点） |
 | `apikey` | API Key 管理 | ✅ 已覆盖（10 端点） |
 | `tenant` | 工作空间 / 上下文 | ✅ 已覆盖（4 端点） |
@@ -295,8 +296,9 @@ const home = await product.salesCockpit.loadHome(teamId, { runtimeType: "hermes"
 2. GET  /api/platform/models           → 确认可用模型列表
 3. GET  /api/platform/models/route     → 确认模型路由规则
 4. POST /api/platform/models/invoke    → 跑通第一次模型推理
-5. GET  /api/platform/models/quota     → 确认配额
-6. GET  /api/billing/wallet            → 确认计费账户
+5. POST /api/llm/images/generations    → 跑通 gpt-image-2 图片生成
+6. GET  /api/platform/models/quota     → 确认配额
+7. GET  /api/billing/wallet            → 确认计费账户
 ```
 
 ---

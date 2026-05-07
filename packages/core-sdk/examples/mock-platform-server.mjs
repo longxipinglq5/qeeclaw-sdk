@@ -29,6 +29,7 @@ const models = [
     provider_name: "openai",
     model_name: "gpt-5.4",
     provider_model_id: "gpt-5.4",
+    model_type: "chat",
     label: "GPT-5.4",
     is_preferred: true,
     availability_status: "active",
@@ -44,6 +45,7 @@ const models = [
     provider_name: "anthropic",
     model_name: "claude-sonnet-4-6",
     provider_model_id: "claude-sonnet-4-6",
+    model_type: "chat",
     label: "Claude Sonnet 4.6",
     is_preferred: false,
     availability_status: "active",
@@ -51,6 +53,22 @@ const models = [
     output_unit_price: 0.015,
     currency: "USD",
     billing_mode: "token",
+    text_unit_chars: 1000,
+    text_min_amount: 1,
+  },
+  {
+    id: 3,
+    provider_name: "openai",
+    model_name: "gpt-image-2",
+    provider_model_id: "gpt-image-2",
+    model_type: "image",
+    label: "GPT Image 2",
+    is_preferred: false,
+    availability_status: "active",
+    unit_price: 0,
+    output_unit_price: 0,
+    currency: "USD",
+    billing_mode: "text_in_out",
     text_unit_chars: 1000,
     text_min_amount: 1,
   },
@@ -1514,7 +1532,9 @@ const server = http.createServer(async (request, response) => {
   }
 
   if (method === "GET" && pathname === "/api/platform/models") {
-    sendJson(response, 200, buildPlatformModels());
+    const modelType = url.searchParams.get("model_type");
+    const items = buildPlatformModels().filter((item) => !modelType || item.model_type === modelType);
+    sendJson(response, 200, items);
     return;
   }
 
@@ -1554,7 +1574,10 @@ const server = http.createServer(async (request, response) => {
 
   if (method === "GET" && pathname === "/api/platform/models/resolve") {
     const modelName = url.searchParams.get("model_name") || "";
-    const selected = pickModelByName(modelName);
+    const modelType = url.searchParams.get("model_type");
+    const selected = modelType
+      ? buildPlatformModels().find((item) => item.model_name === modelName && item.model_type === modelType) ?? pickModelByName(modelName)
+      : pickModelByName(modelName);
     sendJson(response, 200, {
       requested_model: modelName,
       resolved_model: selected.model_name,
@@ -1562,6 +1585,42 @@ const server = http.createServer(async (request, response) => {
       provider_model_id: selected.provider_model_id,
       candidate_count: buildPlatformModels().filter((item) => item.model_name === selected.model_name).length,
       selected,
+    });
+    return;
+  }
+
+  if (method === "POST" && pathname === "/api/llm/images/generations") {
+    const { json } = await readBody(request);
+    const model = String(json?.model || "gpt-image-2");
+    if (json?.stream === true) {
+      response.statusCode = 200;
+      response.setHeader("Content-Type", "text/event-stream");
+      response.write(`event: image_generation.partial_image\ndata: ${JSON.stringify({
+        type: "image_generation.partial_image",
+        b64_json: "mock-partial-image-base64",
+        partial_image_index: 0,
+      })}\n\n`);
+      response.end(`event: image_generation.completed\ndata: ${JSON.stringify({
+        type: "image_generation.completed",
+        b64_json: "mock-final-image-base64",
+        usage: { total_tokens: 1, input_tokens: 1, output_tokens: 0 },
+      })}\n\n`);
+      return;
+    }
+    sendJson(response, 200, {
+      created: Math.floor(Date.now() / 1000),
+      data: [
+        {
+          b64_json: "mock-image-base64",
+          url: json?.response_format === "url" ? `https://example.com/mock-${model}.png` : undefined,
+          revised_prompt: String(json?.prompt || "").slice(0, 200),
+        },
+      ],
+      usage: {
+        total_tokens: 1,
+        input_tokens: 1,
+        output_tokens: 0,
+      },
     });
     return;
   }

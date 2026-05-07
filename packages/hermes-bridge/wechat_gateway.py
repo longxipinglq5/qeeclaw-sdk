@@ -79,7 +79,7 @@ def check_wechat_available() -> Dict[str, Any]:
 # QR 登录流程
 # ---------------------------------------------------------------------------
 
-def start_qr_login() -> Dict[str, Any]:
+def start_qr_login(binding_context: Optional[Dict[str, Any]] = None, on_success=None) -> Dict[str, Any]:
     """
     发起微信 QR 扫码登录。
 
@@ -90,12 +90,16 @@ def start_qr_login() -> Dict[str, Any]:
     global _qr_session
 
     with _qr_lock:
-        # 如果有进行中的会话且未完成，拒绝
-        if _qr_session and _qr_session.get("state") == "pending":
+        # pending/scanned 都属于同一轮扫码流程，不能在用户确认前开启新会话。
+        if _qr_session and _qr_session.get("state") in {"pending", "scanned"}:
+            if binding_context and not _qr_session.get("binding_context"):
+                _qr_session["binding_context"] = binding_context
             return {
                 "status": "already_in_progress",
                 "message": "已有正在进行的微信登录流程，请等待完成或取消。",
                 "qr_url": _qr_session.get("qr_url", ""),
+                "session_id": _qr_session.get("session_id", ""),
+                "binding_context": _qr_session.get("binding_context"),
             }
 
         # 初始化新会话
@@ -105,6 +109,7 @@ def start_qr_login() -> Dict[str, Any]:
             "session_id": None,
             "started_at": time.time(),
             "credentials": None,
+            "binding_context": binding_context,
             "error": None,
         }
 
@@ -155,6 +160,7 @@ def start_qr_login() -> Dict[str, Any]:
 
     # 第二步：后台线程轮询扫码状态
     def _poll_qr_status():
+        nonlocal qrcode_value
         global _qr_session
         try:
             import urllib.request
@@ -166,7 +172,7 @@ def start_qr_login() -> Dict[str, Any]:
 
             while time.time() < deadline:
                 with _qr_lock:
-                    if not _qr_session or _qr_session.get("state") != "pending":
+                    if not _qr_session or _qr_session.get("state") not in {"pending", "scanned"}:
                         return
 
                 try:
@@ -216,6 +222,7 @@ def start_qr_login() -> Dict[str, Any]:
                                 if _qr_session:
                                     _qr_session["qr_url"] = new_qrcode_url or _qr_session.get("qr_url", "")
                                     _qr_session["state"] = "pending"
+                                    qrcode_value = new_qrcode_value
                     except Exception as exc:
                         logger.warning(f"QR refresh error: {exc}")
 
@@ -253,6 +260,11 @@ def start_qr_login() -> Dict[str, Any]:
                     }
                     with _qr_lock:
                         started = _qr_session["started_at"] if _qr_session else time.time()
+                        active_binding_context = (
+                            _qr_session.get("binding_context")
+                            if _qr_session and isinstance(_qr_session.get("binding_context"), dict)
+                            else binding_context
+                        )
                         _qr_session = {
                             "state": "success",
                             "credentials": {
@@ -264,10 +276,16 @@ def start_qr_login() -> Dict[str, Any]:
                             "session_id": session_id,
                             "started_at": started,
                             "completed_at": time.time(),
+                            "binding_context": active_binding_context,
                             "qr_url": None,
                             "error": None,
                         }
                     _save_credentials_to_env(credentials)
+                    if active_binding_context and callable(on_success):
+                        try:
+                            on_success(credentials, active_binding_context)
+                        except Exception as exc:
+                            logger.warning(f"WeChat binding callback failed: {exc}")
                     logger.info(f"WeChat login success, account_id={account_id}")
 
                     # 自动启动 adapter 开始接收消息
@@ -542,6 +560,66 @@ def _get_agent_pool():
 
 
 # 消息处理回调（需要在 start_adapter 中注册）
+def _build_wechat_date_context() -> str:
+    current_time = time.localtime()
+    weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+    return (
+        f"当前系统时间是 {current_time.tm_year}年{current_time.tm_mon:02d}月{current_time.tm_mday:02d}日 "
+        f"{weekday_names[current_time.tm_wday]}。回答涉及今天、当前日期、星期几、现在时间等问题时，"
+        f"必须以这个时间为准，不要使用训练数据中的过期日期。"
+    )
+
+
+def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:
+    import json as json_module
+    import urllib.request
+
+    bridge_url = os.environ.get(
+        "WEIXIN_AI_INVOKE_URL",
+        "http://127.0.0.1:21747/api/platform/models/invoke",
+    )
+    agent_profile = os.environ.get("WEIXIN_AGENT_PROFILE", "default")
+    request_data = {
+        "prompt": text,
+        "system_prompt": (
+            "你是 qeeshu-centaurai-edge 的 AI 老板秘书，运行在用户本地 QeeClaw Server。"
+            "请用简洁、可靠、可执行的方式回复微信消息。\n\n"
+            f"{_build_wechat_date_context()}"
+        ),
+        "session_id": f"wechat:{chat_id}",
+        "user_id": sender_id,
+        "agent_profile": agent_profile,
+        "use_knowledge": True,
+        "use_memory": True,
+    }
+
+    model = os.environ.get("WEIXIN_AI_MODEL") or os.environ.get("HERMES_MODEL")
+    provider = os.environ.get("WEIXIN_AI_PROVIDER") or os.environ.get("HERMES_PROVIDER") or os.environ.get("QEECLAW_MODEL_PROVIDER")
+    if model:
+        request_data["model"] = model
+    if provider:
+        request_data["provider"] = provider
+
+    req = urllib.request.Request(
+        bridge_url,
+        data=json_module.dumps(request_data).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=float(os.environ.get("WEIXIN_AI_TIMEOUT", "60"))) as response:
+        result = json_module.loads(response.read().decode("utf-8"))
+
+    if result.get("code") == 0:
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return str(data.get("text") or "抱歉，我暂时没有生成有效回复。")
+
+    if "text" in result:
+        return str(result.get("text") or "抱歉，我暂时没有生成有效回复。")
+
+    raise RuntimeError(result.get("message") or result.get("error") or "本地模型调用失败")
+
+
 async def _handle_incoming_message(event):
     """
     处理从 WeixinAdapter 接收到的微信消息。
@@ -556,51 +634,14 @@ async def _handle_incoming_message(event):
 
         logger.info(f"[wechat] Received message from {sender_id}: {text[:50]}")
 
-        # 直接调用 paas.qeeshu.com 的模型 API
         try:
-            import urllib.request
-            import json as json_module
-
-            api_url = "https://paas.qeeshu.com/api/platform/models/invoke"
-            api_key = "mJXR0OavZjP8-unrkrDUNw"
-            current_time = time.localtime()
-            weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-            current_date_context = (
-                f"当前系统时间是 {current_time.tm_year}年{current_time.tm_mon:02d}月{current_time.tm_mday:02d}日 "
-                f"{weekday_names[current_time.tm_wday]}。回答涉及今天、当前日期、星期几、现在时间等问题时，"
-                f"必须以这个时间为准，不要使用训练数据中的过期日期。"
-            )
-
-            request_data = {
-                "prompt": f"{current_date_context}\n\n用户消息：{text}",
-                # 不指定 model，让平台根据用户选择的模型自动处理
-            }
-
-            req = urllib.request.Request(
-                api_url,
-                data=json_module.dumps(request_data).encode('utf-8'),
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {api_key}",
-                },
-                method="POST"
-            )
-
-            with urllib.request.urlopen(req, timeout=30) as response:
-                result = json_module.loads(response.read().decode('utf-8'))
-
-            # 提取回复文本
-            if result.get("code") == 0:
-                reply = result.get("data", {}).get("text", "抱歉，我无法处理您的消息。")
-            else:
-                reply = f"抱歉，处理您的消息时出错了：{result.get('message', '未知错误')}"
-
+            reply = _invoke_wechat_ai(text, sender_id, chat_id)
             logger.info(f"[wechat] AI reply: {reply[:100]}")
 
         except Exception as e:
             logger.error(f"[wechat] AI invocation error: {e}")
             traceback.print_exc()
-            reply = f"抱歉，处理您的消息时出错了：{str(e)}"
+            reply = "抱歉，AI 老板秘书暂时无法处理这条消息。本地模型服务正在恢复中，请稍后再试。"
 
         # 发送回复
         account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")

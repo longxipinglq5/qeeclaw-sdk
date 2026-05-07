@@ -9,7 +9,7 @@
 如果你只想知道：
 
 - 客户应该拿哪些资料
-- `Ruisi` 这类产品到底接本地还是接云端
+- 本地优先产品到底接本地还是接云端
 - 客户真正可用的云端 API 有哪些
 - Web / 桌面 / 移动端应该怎么接
 - 销售驾驶仓联调时到底要给哪些参数
@@ -31,7 +31,7 @@
 - `runtimeType`：固定为 `hermes`，此时将无缝跳过云端业务数据的校验
 - **本地 Hermes Bridge Server 已实现 core-sdk 全部 17 个模块（145+ 端点）**，包括智体管理、知识库、会话、记忆、审批、审计、工作流、设备管理等。本地客户可使用与云端完全一致的 SDK 接口，无需依赖云端服务
 
-### 对 `Ruisi` 这类本地优先产品
+### 对本地优先产品
 
 统一原则：
 
@@ -88,6 +88,7 @@
 - `GET /api/platform/models/route`
 - `GET /api/platform/models/resolve`
 - `POST /api/platform/models/invoke`
+- `POST /api/llm/images/generations`
 - `GET /api/platform/models/usage`
 - `GET /api/platform/models/cost`
 - `GET /api/platform/models/quota`
@@ -107,7 +108,7 @@
 - `knowledge`、`conversations`、`devices`、`channels`
 - `audit`、`approvals`、`workflows`、`memory`、`policy`
 
-云端客户公开 API 仅保留 context + models + billing 三个域（共 15 个端点）。
+云端客户公开 API 仅保留 context + models + billing 三个域（共 16 个端点）。
 
 ### 本地 Hermes Server 模式
 
@@ -118,7 +119,7 @@
 | 模块 | 端点数 | 路径前缀 | 说明 |
 |------|--------|---------|------|
 | agent | 11 | `/api/agent/*` | 智体 Profile 管理 |
-| models | 9 | `/api/platform/models/*` | 模型列表、路由、用量 |
+| models | 10 | `/api/platform/models/*`, `/api/llm/images/generations` | 模型列表、路由、用量、图片生成 |
 | iam | 5 | `/api/users/*` | 用户身份 |
 | tenant | 4 | `/api/users/me/context` | 工作空间上下文 |
 | billing | 3 | `/api/billing/*` | 计费（本地返回默认值） |
@@ -212,8 +213,26 @@ const teamId = Number(context.defaultTeamId ?? fallbackTeam?.id);
 2. `GET /api/platform/models`
 3. `GET /api/platform/models/route`
 4. `POST /api/platform/models/invoke`
-5. `GET /api/platform/models/quota`
-6. `GET /api/billing/wallet`
+5. `POST /api/llm/images/generations`
+6. `GET /api/platform/models/quota`
+7. `GET /api/billing/wallet`
+
+图片生成示例：
+
+```bash
+curl -X POST "$BASE_URL/api/llm/images/generations" \
+  -H "Authorization: Bearer $QEECLAW_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-image-2",
+    "prompt": "一只在办公室写代码的猫",
+    "n": 1,
+    "size": "1024x1024",
+    "output_format": "png"
+  }'
+```
+
+该接口按 OpenAI Images API 兼容设计：路径为 `/api/llm/images/generations`，请求体使用 OpenAI 原始字段（如 `response_format`、`output_format`、`partial_images`、`stream`），非流式响应原样返回上游 JSON，图片内容通常在 `data[0].b64_json`。
 
 ## 9. 在线文档入口
 

@@ -10,7 +10,7 @@ QeeClaw TypeScript SDK 与 [hermes-agent](https://github.com/NousResearch/hermes
 
 - Python 3.11+
 - `pip install openai` (最小依赖)
-- 可选：`pip install chromadb sentence-transformers`（知识库向量检索）
+- 可选：`pip install lancedb onnxruntime tokenizers numpy`（本地知识库向量检索）
 
 ### 启动
 
@@ -42,7 +42,7 @@ python bridge_server.py
 ## 架构
 
 ```
-业务应用层 (qeeshu-spark / qeeshu-ruisi / Web)
+业务应用层 (qeeshu-spark / HubOS / Web)
       │  HTTP / SSE
       ▼
 bridge_server.py (本服务)  ← 145+ API 端点
@@ -332,7 +332,7 @@ Bridge Server 暴露两类路径：
 | `sessions/` | 会话数据（JSON） |
 | `sessions/_profiles.json` | 自定义智体 Profile |
 | `memory/entries.json` | 记忆条目 |
-| `knowledge/` | ChromaDB 向量库 |
+| `knowledge/` | LanceDB 本地向量库 |
 | `workflows.json` | 工作流定义 |
 | `device_info.json` | 设备信息 |
 | `approvals.json` | 审批记录 |

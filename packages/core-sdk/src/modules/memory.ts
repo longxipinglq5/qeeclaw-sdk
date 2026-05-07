@@ -39,9 +39,9 @@ export class MemoryModule {
   constructor(private readonly http: HttpClient) {}
 
   async store(payload: MemoryStoreRequest): Promise<Record<string, unknown>> {
-    return this.http.request<Record<string, unknown>>({
+    const result = await this.http.request<Record<string, unknown>>({
       method: "POST",
-      path: "/api/platform/memory/store",
+      path: "/memory/store",
       body: {
         content: payload.content,
         category: payload.category,
@@ -54,12 +54,16 @@ export class MemoryModule {
         skip_duplicate_check: payload.skipDuplicateCheck,
       },
     });
+
+    return result.entry && typeof result.entry === "object"
+      ? result.entry as Record<string, unknown>
+      : result;
   }
 
   async search(payload: MemorySearchRequest): Promise<Record<string, unknown>[]> {
-    return this.http.request<Record<string, unknown>[]>({
+    const result = await this.http.request<Record<string, unknown>[] | { results?: unknown }>({
       method: "POST",
-      path: "/api/platform/memory/search",
+      path: "/memory/search",
       body: {
         query: payload.query,
         limit: payload.limit,
@@ -70,6 +74,14 @@ export class MemoryModule {
         agent_id: payload.agentId,
       },
     });
+
+    if (Array.isArray(result)) {
+      return result;
+    }
+
+    return Array.isArray(result.results)
+      ? result.results.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
+      : [];
   }
 
   async delete(
@@ -78,7 +90,7 @@ export class MemoryModule {
   ): Promise<MemoryDeleteResult> {
     const result = await this.http.request<{ deleted?: boolean }>({
       method: "DELETE",
-      path: `/api/platform/memory/${encodeURIComponent(entryId)}`,
+      path: `/memory/${encodeURIComponent(entryId)}`,
       query: {
         team_id: scope?.teamId,
         agent_id: scope?.agentId,
@@ -94,9 +106,10 @@ export class MemoryModule {
     scope?: Pick<MemoryTargetScope, "teamId" | "runtimeType">,
   ): Promise<MemoryClearResult> {
     const result = await this.http.request<{ cleared_count?: number }>({
-      method: "DELETE",
-      path: `/api/platform/memory/agent/${encodeURIComponent(agentId)}`,
-      query: {
+      method: "POST",
+      path: "/memory/clear",
+      body: {
+        agent_id: agentId,
         team_id: scope?.teamId,
         runtime_type: scope?.runtimeType,
       },
@@ -108,7 +121,7 @@ export class MemoryModule {
   async stats(payload: MemoryStatsRequest = {}): Promise<MemoryStats> {
     return this.http.request<MemoryStats>({
       method: "GET",
-      path: "/api/platform/memory/stats",
+      path: "/memory/stats",
       query: {
         team_id: payload.teamId,
         agent_id: payload.agentId,

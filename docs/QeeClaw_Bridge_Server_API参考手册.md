@@ -189,7 +189,7 @@ data: {"type": "done", "session_id": "ses_abc123"}
 
 ### 4.4 模型 (Models)
 
-所有路径均为 `/api/platform/models/*`。
+模型目录、路由和用量路径为 `/api/platform/models/*`；图片生成使用 OpenAI 兼容路径 `/api/llm/images/generations`。
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -202,8 +202,9 @@ data: {"type": "done", "session_id": "ses_abc123"}
 | GET | `/api/platform/models/usage` | 调用量统计 |
 | GET | `/api/platform/models/cost` | 成本统计 |
 | GET | `/api/platform/models/quota` | 配额查询 |
+| POST | `/api/llm/images/generations` | 图片生成 |
 
-**响应均使用信封格式。**
+`/api/platform/models/*` 响应使用信封格式。`/api/llm/images/generations` 为 OpenAI Images API 兼容接口，非流式响应原样返回上游 JSON，`stream=true` 时返回 `text/event-stream`。
 
 ---
 
@@ -631,7 +632,7 @@ Query 参数：`?page=1&page_size=20&category=operation&scope=all`
 | core-sdk 模块 | Bridge 路径前缀 | 端点数 | 状态 |
 |---------------|----------------|--------|------|
 | `agent` | `/api/agent/*`, `/agents/*` | 11 | 已实现 |
-| `models` | `/api/platform/models/*` | 9 | 已实现 |
+| `models` | `/api/platform/models/*`, `/api/llm/images/generations` | 10 | 已实现 |
 | `iam` | `/api/users/*` | 5 | 已实现 |
 | `tenant` | `/api/users/me/context`, `/api/company/*` | 4 | 已实现 |
 | `billing` | `/api/billing/*` | 3 | 已实现 |

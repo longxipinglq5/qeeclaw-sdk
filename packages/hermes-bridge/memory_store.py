@@ -1,7 +1,7 @@
 """
 QeeClaw Memory Store — Bridge 层轻量记忆存储
 
-为 SDK 的 MemoryModule 提供后端实现，匹配 /api/platform/memory/* 接口。
+为 SDK 的 MemoryModule 提供本地后端实现，匹配 /memory/* 接口。
 数据以 JSON 文件持久化，支持按 agent_id / team_id / runtime_type 过滤。
 
 后续可升级为：
@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -100,7 +101,7 @@ def store_memory(
                     return e  # 已存在，直接返回
 
         entry = {
-            "id": f"mem-{int(time.time() * 1000)}",
+            "id": f"mem-{int(time.time() * 1000)}-{uuid.uuid4().hex[:12]}",
             "content": content,
             "category": category,
             "importance": importance,

@@ -5,7 +5,7 @@ info:
   description: |
     Public cloud API subset intended for customer-facing integration.
 
-    Recommended for local-first products such as Ruisi.
+    Recommended for local-first and customer-facing integrations.
 
     Exposed domains:
     - Workspace Context
@@ -40,6 +40,14 @@ paths:
       tags: [Models]
       summary: List models
       operationId: listModels
+      parameters:
+        - name: model_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [chat, image]
+          example: image
       responses:
         '200':
           description: Success
@@ -103,6 +111,13 @@ paths:
           schema:
             type: string
           example: gpt-4.1-mini
+        - name: model_type
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [chat, image]
+          example: image
       responses:
         '200':
           description: Success
@@ -130,6 +145,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ModelInvokeResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /api/llm/images/generations:
+    post:
+      tags: [Models]
+      summary: Generate image
+      operationId: generateImage
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImageGenerationRequest'
+      responses:
+        '200':
+          description: Success
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImageGenerationResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -331,6 +368,10 @@ components:
         provider_model_id:
           type: string
           nullable: true
+        model_type:
+          type: string
+          enum: [chat, image]
+          example: image
         label:
           type: string
         is_preferred:
@@ -464,6 +505,81 @@ components:
         model:
           type: string
           nullable: true
+    ImageGenerationRequest:
+      type: object
+      required: [model, prompt]
+      properties:
+        model:
+          type: string
+          example: gpt-image-2
+        prompt:
+          type: string
+          example: 一只在办公室写代码的猫
+        n:
+          type: integer
+          nullable: true
+          default: 1
+        size:
+          type: string
+          nullable: true
+          example: 1024x1024
+        quality:
+          type: string
+          nullable: true
+          example: auto
+        background:
+          type: string
+          nullable: true
+          example: auto
+        output_format:
+          type: string
+          nullable: true
+          example: png
+        response_format:
+          type: string
+          nullable: true
+          example: b64_json
+        moderation:
+          type: string
+          nullable: true
+          example: auto
+        stream:
+          type: boolean
+          nullable: true
+          default: false
+        partial_images:
+          type: integer
+          nullable: true
+        user:
+          type: string
+          nullable: true
+      additionalProperties: true
+    ImageGenerationData:
+      type: object
+      properties:
+        url:
+          type: string
+          nullable: true
+        b64_json:
+          type: string
+          nullable: true
+        revised_prompt:
+          type: string
+          nullable: true
+    ImageGenerationResponse:
+      type: object
+      properties:
+        created:
+          type: integer
+          nullable: true
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImageGenerationData'
+        usage:
+          type: object
+          nullable: true
+      additionalProperties: true
     ModelUsageSummary:
       type: object
       properties:
