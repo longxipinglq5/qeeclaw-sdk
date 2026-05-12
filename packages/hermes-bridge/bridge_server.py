@@ -14,6 +14,7 @@ SDK 侧的 HermesAdapter 通过 HTTP 调用此服务，此服务再调用 hermes
 """
 
 import asyncio
+import ipaddress
 import json
 import os
 import platform as platform_mod
@@ -836,7 +837,7 @@ def _infer_provider_from_url(base_url: str) -> str:
         return "deepseek"
     if "dashscope" in base_url or "aliyun" in base_url:
         return "dashscope"
-    if "localhost" in base_url or "127.0.0.1" in base_url:
+    if _is_local_runtime_base_url(base_url):
         return "local"
     if "openai" in base_url:
         return "openai"
@@ -855,6 +856,27 @@ def _normalize_provider_name(provider_name: Optional[str]) -> str:
     if not raw_name:
         return ""
     return _PROVIDER_ALIASES.get(raw_name, raw_name)
+
+
+def _runtime_base_hostname(base_url: str) -> str:
+    try:
+        parsed = urllib.parse.urlparse(str(base_url or "").strip())
+        return str(parsed.hostname or "").strip().lower()
+    except Exception:
+        return ""
+
+
+def _is_local_runtime_base_url(base_url: str) -> bool:
+    host = _runtime_base_hostname(base_url)
+    if not host:
+        return False
+    if host in ("localhost", "0.0.0.0", "::", "::1") or host.endswith(".local"):
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
 def _get_runtime_hermes_home() -> str:
@@ -924,7 +946,9 @@ def _infer_provider_from_model_name(model_name: str) -> str:
     if not model_name:
         return ""
     normalized_model = str(model_name).strip()
-    prefix = _normalize_provider_name(normalized_model.split("/", 1)[0])
+    prefix = ""
+    if "/" in normalized_model:
+        prefix = _normalize_provider_name(normalized_model.split("/", 1)[0])
     auth_pools = _load_auth_credential_pools()
     if prefix and prefix in auth_pools:
         return prefix
@@ -982,8 +1006,7 @@ def _resolve_runtime_provider(provider_name: Optional[str], model_name: Optional
     inferred_from_env = _normalize_provider_name(_infer_provider_from_url(base_url))
     if not inferred_from_env:
         return ""
-    lowered_base_url = str(base_url).lower()
-    if "localhost" in lowered_base_url or "127.0.0.1" in lowered_base_url:
+    if _is_local_runtime_base_url(base_url):
         return inferred_from_env
     required_env_keys = {
         "alibaba": ("DASHSCOPE_API_KEY", "ALIBABA_API_KEY"),
@@ -1074,6 +1097,9 @@ def _resolve_runtime_client_config(provider_name: Optional[str], model_name: Opt
         else:
             runtime_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
 
+    if not runtime_api_key and _is_local_runtime_base_url(str(runtime_base_url or "")):
+        runtime_api_key = os.environ.get("QEECLAW_LOCAL_OPENAI_API_KEY", "local-bridge-key")
+
     return {
         "provider": resolved_provider or _normalize_provider_name(_infer_provider_from_url(str(runtime_base_url))) or "",
         "model": resolved_model,
@@ -1088,8 +1114,8 @@ def _runtime_client_is_configured(runtime_client: Dict[str, Any]) -> bool:
         return True
     if runtime_client.get("api_key"):
         return True
-    base_url = str(runtime_client.get("base_url") or "").lower()
-    return "localhost" in base_url or "127.0.0.1" in base_url
+    base_url = str(runtime_client.get("base_url") or "")
+    return _is_local_runtime_base_url(base_url)
 
 
 def _raise_missing_runtime_credentials(runtime_client: Dict[str, Any]) -> None:
