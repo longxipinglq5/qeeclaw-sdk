@@ -1,10 +1,11 @@
 """
-QeeClaw Knowledge Store — local LanceDB + local embedding model.
+QeeClaw Knowledge Store - local ChromaDB + llama-server embedding API.
 
-This module is intentionally offline-only: it never calls cloud embedding APIs
-and it refuses to download models at runtime. Package bge-base-zh-v1.5 with the
-runtime and point QEECLAW_KB_EMBEDDING_MODEL_DIR at that local directory.
+The embedding model is a local GGUF file served by llama.cpp/llama-server.
+This module does not download models and does not call cloud embedding APIs.
 
+Default model: Qwen3-Embedding-0.6B-Q4_0.gguf
+Default embedding API: http://127.0.0.1:8080/embedding
 Data storage path: ~/.qeeclaw/knowledge/ by default. Override with QEECLAW_KB_DIR.
 """
 
@@ -15,37 +16,48 @@ import os
 import re
 import shutil
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
-_lancedb = None
+_chromadb = None
 _embedding_model = None
 _embedding_backend = ""
 _db = None
-_table = None
+_collection = None
 _kb_ready = False
 _kb_error: Optional[str] = None
 _MODULE_DIR = os.path.abspath(os.path.dirname(__file__))
 _CONFIG_DIR = _MODULE_DIR
 
+_DEFAULT_MODEL_FILE_NAME = "Qwen3-Embedding-0.6B-Q4_0.gguf"
+_DEFAULT_MODEL_NAME = "Qwen3-Embedding-0.6B-Q4_0"
+
 KB_DIR = os.environ.get(
     "QEECLAW_KB_DIR",
     str(Path.home() / ".qeeclaw" / "knowledge"),
 )
-KB_VECTOR_BACKEND = os.environ.get("QEECLAW_KB_VECTOR_BACKEND", "lancedb").lower()
+KB_VECTOR_BACKEND = os.environ.get("QEECLAW_KB_VECTOR_BACKEND", "chromadb").lower()
 KB_TABLE_NAME = os.environ.get("QEECLAW_KB_TABLE", "qeeclaw_knowledge")
-KB_EMBEDDING_MODEL = os.environ.get("QEECLAW_KB_EMBEDDING_MODEL", "BAAI/bge-base-zh-v1.5")
+KB_EMBEDDING_MODEL = os.environ.get("QEECLAW_KB_EMBEDDING_MODEL", _DEFAULT_MODEL_NAME)
+KB_EMBEDDING_MODEL_FILE = os.environ.get("QEECLAW_KB_EMBEDDING_MODEL_FILE", "")
 KB_EMBEDDING_MODEL_DIR = os.environ.get("QEECLAW_KB_EMBEDDING_MODEL_DIR", "")
-KB_EMBEDDING_ENGINE = os.environ.get("QEECLAW_KB_EMBEDDING_ENGINE", "auto").lower()
-KB_DEVICE = os.environ.get("QEECLAW_KB_EMBEDDING_DEVICE", "cpu")
-KB_BATCH_SIZE = int(os.environ.get("QEECLAW_KB_EMBEDDING_BATCH_SIZE", "16"))
+KB_EMBEDDING_ENGINE = os.environ.get("QEECLAW_KB_EMBEDDING_ENGINE", "llama-server").lower()
+KB_EMBEDDING_API_URL = os.environ.get("QEECLAW_KB_EMBEDDING_API_URL", "http://127.0.0.1:8080/embedding")
+KB_EMBEDDING_API_TIMEOUT = float(os.environ.get("QEECLAW_KB_EMBEDDING_API_TIMEOUT", "30"))
+KB_CHROMA_DIR = os.environ.get("QEECLAW_KB_CHROMA_DIR", "")
+KB_BATCH_SIZE = int(os.environ.get("QEECLAW_KB_EMBEDDING_BATCH_SIZE", "1"))
+KB_INDEX_BATCH_SIZE = int(os.environ.get("QEECLAW_KB_INDEX_BATCH_SIZE", str(KB_BATCH_SIZE)))
 KB_TOP_K = int(os.environ.get("QEECLAW_KB_TOP_K", "5"))
 CHUNK_SIZE = int(os.environ.get("QEECLAW_KB_CHUNK_SIZE", "512"))
 CHUNK_OVERLAP = int(os.environ.get("QEECLAW_KB_CHUNK_OVERLAP", "64"))
 EMBEDDING_DIMENSION = int(os.environ.get("QEECLAW_KB_EMBEDDING_DIMENSION", "768"))
 MIN_SCORE_DEFAULT = float(os.environ.get("QEECLAW_KB_MIN_SCORE", "0.3"))
+MAX_DOCUMENT_CHARS = int(os.environ.get("QEECLAW_KB_MAX_DOCUMENT_CHARS", "200000"))
+MAX_CHUNKS = int(os.environ.get("QEECLAW_KB_MAX_CHUNKS", "400"))
 
 
 def _resolve_path(value: str, base_dir: str) -> str:
@@ -53,11 +65,13 @@ def _resolve_path(value: str, base_dir: str) -> str:
         return value
     expanded = os.path.expanduser(value)
     if os.path.isabs(expanded):
-        return expanded
+        return os.path.abspath(expanded)
     return os.path.abspath(os.path.join(base_dir, expanded))
+
 
 try:
     import yaml as _yaml
+
     _kb_config_path = os.environ.get(
         "QEECLAW_CONFIG_FILE",
         os.path.join(_MODULE_DIR, "config.yaml"),
@@ -72,18 +86,29 @@ try:
             KB_VECTOR_BACKEND = str(_kb_cfg.get("vector_backend") or KB_VECTOR_BACKEND).lower()
             KB_TABLE_NAME = str(_kb_cfg.get("table_name") or KB_TABLE_NAME)
             KB_EMBEDDING_MODEL = str(_kb_cfg.get("embedding_model") or KB_EMBEDDING_MODEL)
+            KB_EMBEDDING_MODEL_FILE = _resolve_path(
+                str(_kb_cfg.get("embedding_model_file") or KB_EMBEDDING_MODEL_FILE),
+                _CONFIG_DIR,
+            )
             KB_EMBEDDING_MODEL_DIR = _resolve_path(
                 str(_kb_cfg.get("embedding_model_dir") or KB_EMBEDDING_MODEL_DIR),
                 _CONFIG_DIR,
             )
             KB_EMBEDDING_ENGINE = str(_kb_cfg.get("embedding_engine") or KB_EMBEDDING_ENGINE).lower()
-            KB_DEVICE = str(_kb_cfg.get("embedding_device") or KB_DEVICE)
+            KB_EMBEDDING_API_URL = str(_kb_cfg.get("embedding_api_url") or KB_EMBEDDING_API_URL)
+            KB_EMBEDDING_API_TIMEOUT = float(
+                _kb_cfg.get("embedding_api_timeout") or KB_EMBEDDING_API_TIMEOUT
+            )
+            KB_CHROMA_DIR = _resolve_path(str(_kb_cfg.get("chroma_dir") or KB_CHROMA_DIR), _CONFIG_DIR)
             KB_BATCH_SIZE = int(_kb_cfg.get("embedding_batch_size") or KB_BATCH_SIZE)
+            KB_INDEX_BATCH_SIZE = int(_kb_cfg.get("index_batch_size") or KB_INDEX_BATCH_SIZE)
             KB_TOP_K = int(_kb_cfg.get("top_k") or KB_TOP_K)
             CHUNK_SIZE = int(_kb_cfg.get("chunk_size") or CHUNK_SIZE)
             CHUNK_OVERLAP = int(_kb_cfg.get("chunk_overlap") or CHUNK_OVERLAP)
             EMBEDDING_DIMENSION = int(_kb_cfg.get("embedding_dimension") or EMBEDDING_DIMENSION)
             MIN_SCORE_DEFAULT = float(_kb_cfg.get("min_score") or MIN_SCORE_DEFAULT)
+            MAX_DOCUMENT_CHARS = int(_kb_cfg.get("max_document_chars") or MAX_DOCUMENT_CHARS)
+            MAX_CHUNKS = int(_kb_cfg.get("max_chunks") or MAX_CHUNKS)
 except Exception:
     pass
 
@@ -97,14 +122,22 @@ if "QEECLAW_KB_TABLE" in os.environ:
     KB_TABLE_NAME = os.environ["QEECLAW_KB_TABLE"]
 if "QEECLAW_KB_EMBEDDING_MODEL" in os.environ:
     KB_EMBEDDING_MODEL = os.environ["QEECLAW_KB_EMBEDDING_MODEL"]
+if "QEECLAW_KB_EMBEDDING_MODEL_FILE" in os.environ:
+    KB_EMBEDDING_MODEL_FILE = _resolve_path(os.environ["QEECLAW_KB_EMBEDDING_MODEL_FILE"], _CONFIG_DIR)
 if "QEECLAW_KB_EMBEDDING_MODEL_DIR" in os.environ:
     KB_EMBEDDING_MODEL_DIR = _resolve_path(os.environ["QEECLAW_KB_EMBEDDING_MODEL_DIR"], _CONFIG_DIR)
 if "QEECLAW_KB_EMBEDDING_ENGINE" in os.environ:
     KB_EMBEDDING_ENGINE = os.environ["QEECLAW_KB_EMBEDDING_ENGINE"].lower()
-if "QEECLAW_KB_EMBEDDING_DEVICE" in os.environ:
-    KB_DEVICE = os.environ["QEECLAW_KB_EMBEDDING_DEVICE"]
+if "QEECLAW_KB_EMBEDDING_API_URL" in os.environ:
+    KB_EMBEDDING_API_URL = os.environ["QEECLAW_KB_EMBEDDING_API_URL"]
+if "QEECLAW_KB_EMBEDDING_API_TIMEOUT" in os.environ:
+    KB_EMBEDDING_API_TIMEOUT = float(os.environ["QEECLAW_KB_EMBEDDING_API_TIMEOUT"])
+if "QEECLAW_KB_CHROMA_DIR" in os.environ:
+    KB_CHROMA_DIR = _resolve_path(os.environ["QEECLAW_KB_CHROMA_DIR"], _CONFIG_DIR)
 if "QEECLAW_KB_EMBEDDING_BATCH_SIZE" in os.environ:
     KB_BATCH_SIZE = int(os.environ["QEECLAW_KB_EMBEDDING_BATCH_SIZE"])
+if "QEECLAW_KB_INDEX_BATCH_SIZE" in os.environ:
+    KB_INDEX_BATCH_SIZE = int(os.environ["QEECLAW_KB_INDEX_BATCH_SIZE"])
 if "QEECLAW_KB_TOP_K" in os.environ:
     KB_TOP_K = int(os.environ["QEECLAW_KB_TOP_K"])
 if "QEECLAW_KB_CHUNK_SIZE" in os.environ:
@@ -115,6 +148,17 @@ if "QEECLAW_KB_EMBEDDING_DIMENSION" in os.environ:
     EMBEDDING_DIMENSION = int(os.environ["QEECLAW_KB_EMBEDDING_DIMENSION"])
 if "QEECLAW_KB_MIN_SCORE" in os.environ:
     MIN_SCORE_DEFAULT = float(os.environ["QEECLAW_KB_MIN_SCORE"])
+if "QEECLAW_KB_MAX_DOCUMENT_CHARS" in os.environ:
+    MAX_DOCUMENT_CHARS = int(os.environ["QEECLAW_KB_MAX_DOCUMENT_CHARS"])
+if "QEECLAW_KB_MAX_CHUNKS" in os.environ:
+    MAX_CHUNKS = int(os.environ["QEECLAW_KB_MAX_CHUNKS"])
+
+if KB_VECTOR_BACKEND == "chroma":
+    KB_VECTOR_BACKEND = "chromadb"
+KB_BATCH_SIZE = max(1, KB_BATCH_SIZE)
+KB_INDEX_BATCH_SIZE = max(1, KB_INDEX_BATCH_SIZE)
+CHUNK_SIZE = max(1, CHUNK_SIZE)
+CHUNK_OVERLAP = max(0, min(CHUNK_OVERLAP, CHUNK_SIZE - 1))
 
 _META_FILE = "documents_meta.json"
 
@@ -138,82 +182,148 @@ def _save_meta(meta: Dict[str, Any]):
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
-def _lance_dir() -> str:
-    return os.path.join(KB_DIR, "lancedb")
+def _chroma_dir() -> str:
+    if KB_CHROMA_DIR:
+        return KB_CHROMA_DIR
+    return os.path.join(KB_DIR, "chromadb")
 
 
-def _resolve_local_model_dir() -> str:
-    candidates = []
+def _is_gguf_file(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"GGUF"
+    except Exception:
+        return False
+
+
+def _resolve_local_model_file(require: bool = False) -> str:
+    candidates: List[str] = []
+
+    def add_candidate(path: str):
+        if path:
+            candidates.append(path)
+
+    add_candidate(KB_EMBEDDING_MODEL_FILE)
     if KB_EMBEDDING_MODEL_DIR:
-        candidates.append(KB_EMBEDDING_MODEL_DIR)
-    candidates.extend([
-        os.path.join(KB_DIR, "models", "bge-base-zh-v1.5"),
-        os.path.join(_CONFIG_DIR, "models", "bge-base-zh-v1.5"),
-        os.path.join(_MODULE_DIR, "models", "bge-base-zh-v1.5"),
-        os.path.join(_MODULE_DIR, "vendor", "models", "bge-base-zh-v1.5"),
-    ])
+        add_candidate(KB_EMBEDDING_MODEL_DIR)
+        add_candidate(os.path.join(KB_EMBEDDING_MODEL_DIR, _DEFAULT_MODEL_FILE_NAME))
+    add_candidate(os.path.join(_CONFIG_DIR, "models", _DEFAULT_MODEL_FILE_NAME))
+    add_candidate(os.path.join(_MODULE_DIR, "models", _DEFAULT_MODEL_FILE_NAME))
+    add_candidate(os.path.join(KB_DIR, "models", _DEFAULT_MODEL_FILE_NAME))
 
+    searched = []
     for candidate in candidates:
         expanded = os.path.abspath(os.path.expanduser(candidate))
-        if os.path.isdir(expanded) and os.path.isfile(os.path.join(expanded, "config.json")):
+        if os.path.isdir(expanded):
+            expanded = os.path.join(expanded, _DEFAULT_MODEL_FILE_NAME)
+        searched.append(expanded)
+        if os.path.isfile(expanded) and _is_gguf_file(expanded):
             return expanded
 
-    searched = ", ".join(os.path.abspath(os.path.expanduser(p)) for p in candidates)
-    raise RuntimeError(
-        "Local embedding model not found. Package bge-base-zh-v1.5 locally and set "
-        f"QEECLAW_KB_EMBEDDING_MODEL_DIR. Searched: {searched}"
-    )
+    if require:
+        raise RuntimeError(
+            "Local GGUF embedding model not found. Package "
+            f"{_DEFAULT_MODEL_FILE_NAME} locally and set QEECLAW_KB_EMBEDDING_MODEL_FILE. "
+            f"Searched: {', '.join(searched)}"
+        )
+    return searched[0] if searched else ""
 
 
-def _find_onnx_model_file(model_dir: str) -> str:
-    candidates = [
-        os.path.join(model_dir, "onnx", "model_quantized.onnx"),
-        os.path.join(model_dir, "onnx", "model.onnx"),
-        os.path.join(model_dir, "model_quantized.onnx"),
-        os.path.join(model_dir, "model.onnx"),
-    ]
-    for candidate in candidates:
-        if os.path.isfile(candidate):
-            return candidate
-    return ""
+def _is_number_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, (int, float)) for item in value)
 
 
-def _has_sentence_transformer_files(model_dir: str) -> bool:
-    return (
-        os.path.isfile(os.path.join(model_dir, "modules.json"))
-        or os.path.isfile(os.path.join(model_dir, "pytorch_model.bin"))
-        or os.path.isfile(os.path.join(model_dir, "model.safetensors"))
-    )
+def _extract_embedding_vector(value: Any) -> Optional[List[float]]:
+    if _is_number_list(value):
+        return [float(item) for item in value]
+
+    if isinstance(value, list):
+        if not value:
+            return None
+        # llama-server legacy endpoint may return [{"embedding": [[...]]}].
+        for item in value:
+            vector = _extract_embedding_vector(item)
+            if vector:
+                return vector
+        return None
+
+    if isinstance(value, dict):
+        for key in ("embedding", "embeddings", "data"):
+            if key in value:
+                vector = _extract_embedding_vector(value[key])
+                if vector:
+                    return vector
+    return None
 
 
-class _OnnxBgeEmbedder:
-    def __init__(self, model_dir: str):
+def _embedding_base_url() -> str:
+    api_url = KB_EMBEDDING_API_URL.rstrip("/")
+    for suffix in ("/v1/embeddings", "/embedding"):
+        if api_url.endswith(suffix):
+            return api_url[: -len(suffix)]
+    return api_url
+
+
+def _check_embedding_api_health():
+    base_url = _embedding_base_url()
+    if not base_url:
+        raise RuntimeError("QEECLAW_KB_EMBEDDING_API_URL is empty")
+    for path in ("/health", "/v1/health"):
         try:
-            import numpy as np
-            import onnxruntime as ort
-            from tokenizers import Tokenizer
-        except ImportError as exc:
-            raise RuntimeError(
-                "Local ONNX embedding dependencies not installed. Build qeeclaw-server runtime "
-                "with onnxruntime, tokenizers, and numpy."
-            ) from exc
+            with urllib.request.urlopen(base_url + path, timeout=min(KB_EMBEDDING_API_TIMEOUT, 5.0)) as response:
+                if 200 <= response.status < 300:
+                    return
+        except Exception:
+            continue
+    raise RuntimeError(
+        "Embedding API is not healthy. Start llama-server first, for example: "
+        f"llama-server -m {_resolve_local_model_file(require=False) or _DEFAULT_MODEL_FILE_NAME} "
+        "--port 8080 --embedding -t 8"
+    )
 
-        onnx_model = _find_onnx_model_file(model_dir)
-        if not onnx_model:
-            raise RuntimeError(f"ONNX embedding model file not found under: {model_dir}")
-        tokenizer_file = os.path.join(model_dir, "tokenizer.json")
-        if not os.path.isfile(tokenizer_file):
-            raise RuntimeError(f"tokenizer.json not found under: {model_dir}")
 
-        providers = ["CPUExecutionProvider"]
-        if KB_DEVICE == "cuda":
-            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+class _LlamaServerEmbedder:
+    def __init__(self, api_url: str, timeout: float):
+        if not api_url:
+            raise RuntimeError("QEECLAW_KB_EMBEDDING_API_URL is empty")
+        self.api_url = api_url
+        self.timeout = timeout
 
-        self._np = np
-        self._session = ort.InferenceSession(onnx_model, providers=providers)
-        self._input_names = {inp.name for inp in self._session.get_inputs()}
-        self._tokenizer = Tokenizer.from_file(tokenizer_file)
-        self._max_length = int(os.environ.get("QEECLAW_KB_EMBEDDING_MAX_LENGTH", "512"))
+    def _payload_for_text(self, text: str) -> Dict[str, Any]:
+        if self.api_url.rstrip("/").endswith("/v1/embeddings"):
+            return {"input": text, "model": KB_EMBEDDING_MODEL}
+        return {"content": text}
+
+    def _request_embedding(self, text: str) -> List[float]:
+        body = json.dumps(self._payload_for_text(text), ensure_ascii=False).encode("utf-8")
+        request = urllib.request.Request(
+            self.api_url,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "User-Agent": "qeeclaw-knowledge-store/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                payload = response.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="ignore") if exc.fp else str(exc)
+            raise RuntimeError(f"Embedding API returned HTTP {exc.code}: {detail}") from exc
+        except Exception as exc:
+            raise RuntimeError(f"Embedding API request failed: {self.api_url} ({exc})") from exc
+
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Embedding API returned invalid JSON: {payload[:200]}") from exc
+
+        vector = _extract_embedding_vector(data)
+        if not vector:
+            raise RuntimeError(f"Embedding API response does not contain an embedding vector: {payload[:200]}")
+        return vector
 
     def encode(
         self,
@@ -221,47 +331,12 @@ class _OnnxBgeEmbedder:
         batch_size: int = 16,
         normalize_embeddings: bool = True,
         show_progress_bar: bool = False,
-    ):
-        del show_progress_bar
-        all_vectors = []
-        for start in range(0, len(texts), batch_size):
-            batch = texts[start:start + batch_size]
-            encoded = self._tokenizer.encode_batch(batch)
-            max_len = min(self._max_length, max((len(item.ids) for item in encoded), default=0))
-            if max_len <= 0:
-                max_len = 1
-
-            input_ids = []
-            attention_mask = []
-            token_type_ids = []
-            for item in encoded:
-                ids = item.ids[:max_len]
-                mask = item.attention_mask[:max_len]
-                types = item.type_ids[:max_len] if item.type_ids else [0] * len(ids)
-                pad_len = max_len - len(ids)
-                input_ids.append(ids + [0] * pad_len)
-                attention_mask.append(mask + [0] * pad_len)
-                token_type_ids.append(types + [0] * pad_len)
-
-            np = self._np
-            feeds = {}
-            if "input_ids" in self._input_names:
-                feeds["input_ids"] = np.asarray(input_ids, dtype=np.int64)
-            if "attention_mask" in self._input_names:
-                feeds["attention_mask"] = np.asarray(attention_mask, dtype=np.int64)
-            if "token_type_ids" in self._input_names:
-                feeds["token_type_ids"] = np.asarray(token_type_ids, dtype=np.int64)
-
-            outputs = self._session.run(None, feeds)
-            vectors = outputs[0]
-            if len(vectors.shape) == 3:
-                vectors = vectors[:, 0, :]
-            if normalize_embeddings:
-                norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-                norms[norms == 0] = 1.0
-                vectors = vectors / norms
-            all_vectors.extend(vectors.astype("float32").tolist())
-        return all_vectors
+    ) -> List[List[float]]:
+        del batch_size, show_progress_bar
+        vectors = [self._request_embedding(text) for text in texts]
+        if normalize_embeddings:
+            return [_normalize_vector(vector) for vector in vectors]
+        return vectors
 
 
 def _load_embedding_model():
@@ -269,40 +344,16 @@ def _load_embedding_model():
     if _embedding_model is not None:
         return _embedding_model
 
-    model_dir = _resolve_local_model_dir()
     engine = KB_EMBEDDING_ENGINE
     if engine == "auto":
-        engine = "onnx" if _find_onnx_model_file(model_dir) else "sentence-transformers"
+        engine = "llama-server"
 
-    if engine == "onnx":
-        _embedding_model = _OnnxBgeEmbedder(model_dir)
-        _embedding_backend = "onnx"
+    if engine in ("llama-server", "llama_server", "llama.cpp", "llamacpp"):
+        _embedding_model = _LlamaServerEmbedder(KB_EMBEDDING_API_URL, KB_EMBEDDING_API_TIMEOUT)
+        _embedding_backend = "llama-server"
         return _embedding_model
 
-    if engine in ("sentence-transformers", "sentence_transformers", "st"):
-        if not _has_sentence_transformer_files(model_dir):
-            raise RuntimeError(
-                "Local sentence-transformers model files not found. Use a full local "
-                "sentence-transformers model directory, or package the ONNX model under "
-                "models/bge-base-zh-v1.5/onnx/model_quantized.onnx."
-            )
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise RuntimeError(
-                "sentence-transformers package not installed. Build qeeclaw-server runtime "
-                "with sentence-transformers, or use the packaged ONNX bge-base-zh-v1.5 model."
-            ) from exc
-        _embedding_model = SentenceTransformer(
-            model_dir,
-            device=KB_DEVICE,
-            local_files_only=True,
-        )
-        _embedding_backend = "sentence-transformers"
-        return _embedding_model
-
-    raise RuntimeError(f"Unsupported local embedding engine: {KB_EMBEDDING_ENGINE}")
-    return _embedding_model
+    raise RuntimeError(f"Unsupported local embedding engine: {KB_EMBEDDING_ENGINE}. Expected llama-server.")
 
 
 def _normalize_vector(vector: List[float]) -> List[float]:
@@ -329,82 +380,61 @@ def _embed_texts(texts: List[str]) -> List[List[float]]:
     return output
 
 
-def _empty_vector() -> List[float]:
-    return [0.0] * EMBEDDING_DIMENSION
-
-
-def _connect_lancedb():
-    global _lancedb, _db
+def _connect_chromadb():
+    global _chromadb, _db
     if _db is not None:
         return _db
     try:
-        import lancedb
-        _lancedb = lancedb
+        import chromadb
+
+        _chromadb = chromadb
     except ImportError as exc:
-        raise RuntimeError(
-            "lancedb package not installed. Build qeeclaw-server runtime with lancedb."
-        ) from exc
+        raise RuntimeError("chromadb package not installed. Build qeeclaw-server runtime with chromadb.") from exc
+
     _ensure_kb_dir()
-    os.makedirs(_lance_dir(), exist_ok=True)
-    _db = lancedb.connect(_lance_dir())
+    os.makedirs(_chroma_dir(), exist_ok=True)
+    _db = chromadb.PersistentClient(path=_chroma_dir())
     return _db
 
 
-def _table_exists(db, table_name: str) -> bool:
-    try:
-        return table_name in db.table_names()
-    except Exception:
-        return False
+def _open_or_create_collection():
+    global _collection
+    if _collection is not None:
+        return _collection
 
-
-def _open_or_create_table():
-    global _table
-    if _table is not None:
-        return _table
-    db = _connect_lancedb()
-    if _table_exists(db, KB_TABLE_NAME):
-        _table = db.open_table(KB_TABLE_NAME)
-        return _table
-    _table = db.create_table(
-        KB_TABLE_NAME,
-        data=[{
-            "id": "_schema",
-            "doc_id": "_schema",
-            "chunk_index": -1,
-            "text": "",
-            "filename": "",
-            "doc_type": "schema",
-            "scope": "_schema",
-            "timestamp": 0,
-            "vector": _empty_vector(),
-        }],
-        mode="overwrite",
-    )
+    db = _connect_chromadb()
     try:
-        _table.delete("id = '_schema'")
+        _collection = db.get_collection(KB_TABLE_NAME)
+        return _collection
     except Exception:
         pass
-    return _table
 
-
-def _lance_string_literal(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+    try:
+        _collection = db.create_collection(
+            KB_TABLE_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+    except Exception:
+        # Older Chroma versions may not accept hnsw metadata at creation time.
+        _collection = db.create_collection(KB_TABLE_NAME)
+    return _collection
 
 
 def init_knowledge_store() -> Optional[str]:
     global _kb_ready, _kb_error
-    if _kb_ready:
+    if _kb_ready and _kb_error is None:
         return _kb_error
 
-    if KB_VECTOR_BACKEND != "lancedb":
-        _kb_error = f"Unsupported local vector backend: {KB_VECTOR_BACKEND}. Expected lancedb."
+    if KB_VECTOR_BACKEND != "chromadb":
+        _kb_error = f"Unsupported local vector backend: {KB_VECTOR_BACKEND}. Expected chromadb."
         _kb_ready = True
         return _kb_error
 
     try:
         _ensure_kb_dir()
         _load_embedding_model()
-        _open_or_create_table()
+        _check_embedding_api_health()
+        _open_or_create_collection()
         _kb_error = None
     except Exception as e:
         _kb_error = str(e)
@@ -456,6 +486,10 @@ def _content_hash(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
 
 
+def _format_limit_count(value: int, unit: str) -> str:
+    return "unlimited" if value <= 0 else f"{value}{unit}"
+
+
 def add_document(
     content: str,
     filename: str = "",
@@ -479,27 +513,65 @@ def add_document(
                 "existing_doc_id": existing_id,
             }
 
+    if MAX_DOCUMENT_CHARS > 0 and len(content) > MAX_DOCUMENT_CHARS:
+        return {
+            "success": False,
+            "error": (
+                "Document is too large for this RISC-V runtime: "
+                f"{len(content)} chars > {_format_limit_count(MAX_DOCUMENT_CHARS, ' chars')}. "
+                "Split the file or increase QEECLAW_KB_MAX_DOCUMENT_CHARS."
+            ),
+        }
+
     chunks = _split_text(content)
     if not chunks:
         return {"success": False, "error": "Document is empty after processing"}
+    if MAX_CHUNKS > 0 and len(chunks) > MAX_CHUNKS:
+        return {
+            "success": False,
+            "error": (
+                "Document creates too many chunks for this RISC-V runtime: "
+                f"{len(chunks)} chunks > {_format_limit_count(MAX_CHUNKS, ' chunks')}. "
+                "Split the file, increase chunk_size, or increase QEECLAW_KB_MAX_CHUNKS."
+            ),
+        }
 
-    vectors = _embed_texts(chunks)
     now = int(time.time())
-    records = []
-    for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
-        records.append({
-            "id": f"{doc_id}_chunk_{i}",
-            "doc_id": doc_id,
-            "chunk_index": i,
-            "text": chunk,
-            "filename": filename,
-            "doc_type": doc_type,
-            "scope": scope,
-            "timestamp": now,
-            "vector": vector,
-        })
+    collection = _open_or_create_collection()
+    try:
+        for offset in range(0, len(chunks), KB_INDEX_BATCH_SIZE):
+            batch_chunks = chunks[offset: offset + KB_INDEX_BATCH_SIZE]
+            vectors = _embed_texts(batch_chunks)
+            ids = []
+            documents = []
+            embeddings = []
+            metadatas = []
+            for batch_index, (chunk, vector) in enumerate(zip(batch_chunks, vectors)):
+                chunk_index = offset + batch_index
+                ids.append(f"{doc_id}_chunk_{chunk_index}")
+                documents.append(chunk)
+                embeddings.append(vector)
+                metadatas.append({
+                    "doc_id": doc_id,
+                    "chunk_index": chunk_index,
+                    "filename": filename,
+                    "doc_type": doc_type,
+                    "scope": scope,
+                    "timestamp": now,
+                })
 
-    _open_or_create_table().add(records)
+            collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=documents,
+                metadatas=metadatas,
+            )
+    except Exception as exc:
+        try:
+            collection.delete(where={"doc_id": doc_id})
+        except Exception:
+            pass
+        return {"success": False, "error": f"Failed to index document: {exc}"}
 
     doc_meta = {
         "doc_id": doc_id,
@@ -534,7 +606,7 @@ def delete_document(doc_id: str) -> Dict[str, Any]:
         return {"success": False, "error": f"Document not found: {doc_id}"}
 
     try:
-        _open_or_create_table().delete(f"doc_id = {_lance_string_literal(doc_id)}")
+        _open_or_create_collection().delete(where={"doc_id": doc_id})
     except Exception:
         pass
 
@@ -557,6 +629,14 @@ def get_document(doc_id: str) -> Optional[Dict[str, Any]]:
     return meta.get("documents", {}).get(doc_id)
 
 
+def _score_from_distance(distance: Any) -> float:
+    try:
+        score = 1.0 - float(distance)
+    except Exception:
+        score = 0.0
+    return max(0.0, min(1.0, score))
+
+
 def search_knowledge(
     query: str,
     top_k: int = KB_TOP_K,
@@ -571,28 +651,36 @@ def search_knowledge(
 
     query_vector = _embed_texts([query])[0]
     try:
-        search = _open_or_create_table().search(query_vector, vector_column_name="vector").limit(top_k)
+        query_kwargs: Dict[str, Any] = {
+            "query_embeddings": [query_vector],
+            "n_results": max(1, int(top_k)),
+            "include": ["documents", "metadatas", "distances"],
+        }
         if scope:
-            search = search.where(f"scope = {_lance_string_literal(scope)}", prefilter=True)
-        rows = search.to_list()
+            query_kwargs["where"] = {"scope": scope}
+        rows = _open_or_create_collection().query(**query_kwargs)
     except Exception:
         return []
 
+    ids = (rows.get("ids") or [[]])[0] if isinstance(rows, dict) else []
+    documents = (rows.get("documents") or [[]])[0] if isinstance(rows, dict) else []
+    metadatas = (rows.get("metadatas") or [[]])[0] if isinstance(rows, dict) else []
+    distances = (rows.get("distances") or [[]])[0] if isinstance(rows, dict) else []
+
     output = []
-    for row in rows:
-        if "_score" in row:
-            score = float(row.get("_score") or 0.0)
-        else:
-            distance = float(row.get("_distance", 1.0))
-            score = max(0.0, 1.0 - (distance / 2.0))
+    for index, text in enumerate(documents):
+        metadata = metadatas[index] if index < len(metadatas) and metadatas[index] else {}
+        distance = distances[index] if index < len(distances) else 1.0
+        score = _score_from_distance(distance)
         if score < min_score:
             continue
         output.append({
-            "text": row.get("text", ""),
+            "text": text or "",
             "score": round(score, 4),
-            "doc_id": row.get("doc_id", ""),
-            "filename": row.get("filename", ""),
-            "chunk_index": row.get("chunk_index", 0),
+            "doc_id": metadata.get("doc_id", ""),
+            "filename": metadata.get("filename", ""),
+            "chunk_index": metadata.get("chunk_index", 0),
+            "id": ids[index] if index < len(ids) else "",
         })
     return output
 
@@ -614,15 +702,15 @@ def build_rag_context(query: str, scope: Optional[str] = None) -> str:
 
 
 def clear_knowledge_store() -> Dict[str, Any]:
-    global _db, _table, _kb_error, _kb_ready
+    global _db, _collection, _kb_error, _kb_ready
     _ensure_kb_dir()
-    if os.path.isdir(_lance_dir()):
-        shutil.rmtree(_lance_dir())
+    if os.path.isdir(_chroma_dir()):
+        shutil.rmtree(_chroma_dir())
     meta_path = os.path.join(KB_DIR, _META_FILE)
     if os.path.isfile(meta_path):
         os.remove(meta_path)
     _db = None
-    _table = None
+    _collection = None
     _kb_error = None
     _kb_ready = False
     init_knowledge_store()
@@ -634,21 +722,28 @@ def get_kb_stats() -> Dict[str, Any]:
     docs = meta.get("documents", {})
     total_chunks = sum(d.get("chunk_count", 0) for d in docs.values())
     total_chars = sum(d.get("char_count", 0) for d in docs.values())
+    model_file = _resolve_local_model_file(require=False)
 
     return {
         "available": is_kb_available(),
         "error": get_kb_error(),
         "storage_dir": KB_DIR,
         "vector_backend": KB_VECTOR_BACKEND,
-        "vector_store_dir": _lance_dir(),
+        "vector_store_dir": _chroma_dir(),
         "document_count": len(docs),
         "chunk_count": total_chunks,
         "total_chars": total_chars,
         "embedding_model": KB_EMBEDDING_MODEL,
-        "embedding_model_dir": _resolve_local_model_dir() if is_kb_available() else KB_EMBEDDING_MODEL_DIR,
+        "embedding_model_file": model_file,
+        "embedding_model_file_exists": bool(model_file and os.path.isfile(model_file) and _is_gguf_file(model_file)),
         "embedding_engine": _embedding_backend or KB_EMBEDDING_ENGINE,
+        "embedding_api_url": KB_EMBEDDING_API_URL,
         "embedding_dimension": EMBEDDING_DIMENSION,
-        "embedding_device": KB_DEVICE,
+        "embedding_batch_size": KB_BATCH_SIZE,
+        "index_batch_size": KB_INDEX_BATCH_SIZE,
         "top_k": KB_TOP_K,
         "chunk_size": CHUNK_SIZE,
+        "chunk_overlap": CHUNK_OVERLAP,
+        "max_document_chars": MAX_DOCUMENT_CHARS,
+        "max_chunks": MAX_CHUNKS,
     }

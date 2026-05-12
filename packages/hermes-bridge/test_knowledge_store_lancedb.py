@@ -4,7 +4,55 @@ import sys
 import types
 
 
-class FakeModel:
+class FakeCollection:
+    def __init__(self):
+        self.rows = []
+
+    def add(self, ids, embeddings, documents, metadatas):
+        for item_id, embedding, document, metadata in zip(ids, embeddings, documents, metadatas):
+            self.rows.append({
+                "id": item_id,
+                "embedding": embedding,
+                "document": document,
+                "metadata": metadata,
+            })
+
+    def delete(self, where):
+        doc_id = where.get("doc_id")
+        self.rows = [row for row in self.rows if row["metadata"].get("doc_id") != doc_id]
+
+    def query(self, query_embeddings, n_results, include, where=None):
+        del query_embeddings, include
+        rows = self.rows
+        if where and where.get("scope"):
+            rows = [row for row in rows if row["metadata"].get("scope") == where["scope"]]
+        rows = rows[:n_results]
+        return {
+            "ids": [[row["id"] for row in rows]],
+            "documents": [[row["document"] for row in rows]],
+            "metadatas": [[row["metadata"] for row in rows]],
+            "distances": [[0.05 for _row in rows]],
+        }
+
+
+class FakeClient:
+    def __init__(self, path):
+        self.path = path
+        self.collections = {}
+
+    def get_collection(self, name):
+        if name not in self.collections:
+            raise ValueError("missing collection")
+        return self.collections[name]
+
+    def create_collection(self, name, metadata=None):
+        del metadata
+        collection = FakeCollection()
+        self.collections[name] = collection
+        return collection
+
+
+class FakeEmbedder:
     def __init__(self, *_args, **_kwargs):
         pass
 
@@ -16,81 +64,18 @@ class FakeModel:
         return vectors
 
 
-class FakeSearch:
-    def __init__(self, rows):
-        self.rows = rows
-        self._limit = 5
-        self._scope = None
-
-    def limit(self, value):
-        self._limit = value
-        return self
-
-    def where(self, expr, prefilter=True):
-        if "scope = '" in expr:
-            self._scope = expr.split("scope = '", 1)[1].split("'", 1)[0]
-        return self
-
-    def to_list(self):
-        rows = self.rows
-        if self._scope:
-            rows = [r for r in rows if r.get("scope") == self._scope]
-        output = []
-        for row in rows[: self._limit]:
-            output.append({**row, "_distance": 0.05, "_score": 0.95})
-        return output
-
-
-class FakeTable:
-    def __init__(self):
-        self.rows = []
-
-    def add(self, rows):
-        self.rows.extend(rows)
-
-    def delete(self, expr):
-        if expr == "id = '_schema'":
-            self.rows = [r for r in self.rows if r.get("id") != "_schema"]
-            return
-        if "doc_id = '" in expr:
-            doc_id = expr.split("doc_id = '", 1)[1].split("'", 1)[0]
-            self.rows = [r for r in self.rows if r.get("doc_id") != doc_id]
-
-    def search(self, *_args, **_kwargs):
-        return FakeSearch(self.rows)
-
-
-class FakeDb:
-    def __init__(self):
-        self.tables = {}
-
-    def table_names(self):
-        return list(self.tables.keys())
-
-    def create_table(self, name, data, mode="create"):
-        table = FakeTable()
-        table.add(data)
-        self.tables[name] = table
-        return table
-
-    def open_table(self, name):
-        return self.tables[name]
-
-
 def load_module(tmp_path, monkeypatch):
-    fake_db = FakeDb()
-    fake_lancedb = types.SimpleNamespace(connect=lambda _path: fake_db)
-    fake_st = types.SimpleNamespace(SentenceTransformer=FakeModel)
-    monkeypatch.setitem(sys.modules, "lancedb", fake_lancedb)
-    monkeypatch.setitem(sys.modules, "sentence_transformers", fake_st)
+    fake_client = FakeClient
+    fake_chromadb = types.SimpleNamespace(PersistentClient=fake_client)
+    monkeypatch.setitem(sys.modules, "chromadb", fake_chromadb)
 
-    model_dir = tmp_path / "model"
-    model_dir.mkdir()
-    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    model_file = tmp_path / "Qwen3-Embedding-0.6B-Q4_0.gguf"
+    model_file.write_bytes(b"GGUF" + b"\0" * 16)
 
     monkeypatch.setenv("QEECLAW_KB_DIR", str(tmp_path / "kb"))
-    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_MODEL_DIR", str(model_dir))
-    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_DEVICE", "cpu")
+    monkeypatch.setenv("QEECLAW_KB_VECTOR_BACKEND", "chromadb")
+    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_MODEL_FILE", str(model_file))
+    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_API_URL", "http://127.0.0.1:8080/embedding")
 
     spec = importlib.util.spec_from_file_location(
         "knowledge_store_under_test",
@@ -99,10 +84,12 @@ def load_module(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
+    monkeypatch.setattr(module, "_LlamaServerEmbedder", FakeEmbedder)
+    monkeypatch.setattr(module, "_check_embedding_api_health", lambda: None)
     return module
 
 
-def test_lancedb_local_store_ingest_search_delete(tmp_path, monkeypatch):
+def test_chromadb_local_store_ingest_search_delete(tmp_path, monkeypatch):
     ks = load_module(tmp_path, monkeypatch)
 
     assert ks.init_knowledge_store() is None
@@ -120,9 +107,10 @@ def test_lancedb_local_store_ingest_search_delete(tmp_path, monkeypatch):
     assert hits[0]["score"] > 0
 
     stats = ks.get_kb_stats()
-    assert stats["vector_backend"] == "lancedb"
+    assert stats["vector_backend"] == "chromadb"
     assert stats["document_count"] == 1
-    assert stats["embedding_model"] == "BAAI/bge-base-zh-v1.5"
+    assert stats["embedding_model"] == "Qwen3-Embedding-0.6B-Q4_0"
+    assert stats["embedding_model_file_exists"] is True
 
     deleted = ks.delete_document(result["doc_id"])
     assert deleted["success"] is True

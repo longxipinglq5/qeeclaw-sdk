@@ -87,6 +87,11 @@ MEMORY_INVOKE_LIMIT = int(os.environ.get(
     "QEECLAW_MEMORY_INVOKE_LIMIT",
     _cfg("memory", "invoke_limit", 5),
 ))
+KB_MAX_UPLOAD_BYTES = int(os.environ.get(
+    "QEECLAW_KB_MAX_UPLOAD_BYTES",
+    _cfg("knowledge", "max_upload_bytes", 8 * 1024 * 1024),
+))
+_KB_UPLOAD_LOCK = threading.Lock()
 
 # 日志显示地址：0.0.0.0/:: 不可在浏览器中访问，替换为 127.0.0.1
 _DISPLAY_HOST = "127.0.0.1" if BRIDGE_HOST in ("0.0.0.0", "::") else BRIDGE_HOST
@@ -108,6 +113,20 @@ def _resolve_existing_override_path(override_path: Optional[str], *relative_cand
             return expanded
     return _resolve_repo_default_path(*relative_candidates)
 
+
+def _resolve_home_path(path_value: Optional[str], default_name: str = ".qeeclaw_hermes") -> str:
+    raw = str(path_value or "").strip()
+    if not raw:
+        raw = os.path.join("~", default_name)
+    if raw == "~":
+        return os.path.expanduser("~")
+    if raw.startswith("~/"):
+        return os.path.abspath(os.path.expanduser(raw))
+    marker = f"{os.sep}~{os.sep}"
+    if marker in raw:
+        raw = os.path.join(os.path.expanduser("~"), raw.split(marker, 1)[1])
+    return os.path.abspath(os.path.expanduser(raw))
+
 # hermes-agent 源码路径
 HERMES_AGENT_DIR = os.environ.get(
     "QEECLAW_HERMES_AGENT_DIR",
@@ -121,8 +140,7 @@ HERMES_AGENT_DIR = _resolve_existing_override_path(
 )
 
 # HERMES_HOME: 数据/配置目录，默认 ~/.qeeclaw_hermes（避免与独立安装的 hermes-agent 冲突）
-if "HERMES_HOME" not in os.environ:
-    os.environ["HERMES_HOME"] = os.path.join(os.path.expanduser("~"), ".qeeclaw_hermes")
+os.environ["HERMES_HOME"] = _resolve_home_path(os.environ.get("HERMES_HOME"), ".qeeclaw_hermes")
 
 # HUD 源码路径
 HUD_DIR = os.environ.get(
@@ -3955,6 +3973,20 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """上传文档到知识库。"""
         try:
             ctype = self.headers.get("Content-Type", "")
+            content_length = int(self.headers.get("Content-Length") or 0)
+            if KB_MAX_UPLOAD_BYTES > 0 and content_length > KB_MAX_UPLOAD_BYTES:
+                self._send_kb_upload_response(
+                    413,
+                    {
+                        "error": (
+                            f"uploaded file is too large: {content_length} bytes > "
+                            f"{KB_MAX_UPLOAD_BYTES} bytes. Split the file or increase "
+                            "QEECLAW_KB_MAX_UPLOAD_BYTES."
+                        )
+                    },
+                    platform_response,
+                )
+                return
             
             content_str = ""
             filename = ""
@@ -3978,6 +4010,19 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     file_item = form["file"]
                     filename = file_item.filename
                     raw_content = file_item.file.read()
+                    if KB_MAX_UPLOAD_BYTES > 0 and len(raw_content) > KB_MAX_UPLOAD_BYTES:
+                        self._send_kb_upload_response(
+                            413,
+                            {
+                                "error": (
+                                    f"uploaded file is too large: {len(raw_content)} bytes > "
+                                    f"{KB_MAX_UPLOAD_BYTES} bytes. Split the file or increase "
+                                    "QEECLAW_KB_MAX_UPLOAD_BYTES."
+                                )
+                            },
+                            platform_response,
+                        )
+                        return
                     content_type = getattr(file_item, "type", "") or ""
                     content_str = self._extract_uploaded_text(raw_content, filename, content_type)
                 elif "content" in form:
@@ -4010,13 +4055,23 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 return
 
             from knowledge_store import add_document
-            result = add_document(
-                content=content_str,
-                filename=filename,
-                doc_type=doc_type,
-                scope=scope,
-                tags=tags,
-            )
+            if not _KB_UPLOAD_LOCK.acquire(blocking=False):
+                self._send_kb_upload_response(
+                    429,
+                    {"error": "knowledge indexing is busy; please retry after the current upload finishes"},
+                    platform_response,
+                )
+                return
+            try:
+                result = add_document(
+                    content=content_str,
+                    filename=filename,
+                    doc_type=doc_type,
+                    scope=scope,
+                    tags=tags,
+                )
+            finally:
+                _KB_UPLOAD_LOCK.release()
 
             if not result.get("success") and result.get("existing_doc_id"):
                 result = {
@@ -4031,7 +4086,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_kb_upload_response(status, result, platform_response)
 
         except ImportError:
-            self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Build runtime with lancedb, onnxruntime, tokenizers, numpy, and local bge-base-zh-v1.5 model"}, platform_response)
+            self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Build runtime with chromadb and start the local llama-server embedding API for Qwen3-Embedding-0.6B-Q4_0.gguf."}, platform_response)
         except Exception as e:
             traceback.print_exc()
             self._send_kb_upload_response(500, {"error": str(e)}, platform_response)
@@ -4120,7 +4175,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _json_response(self, 200, {"results": results, "count": len(results)})
 
         except ImportError:
-            _json_response(self, 503, {"error": "Knowledge base module not available. Build runtime with lancedb, onnxruntime, tokenizers, numpy, and local bge-base-zh-v1.5 model"})
+            _json_response(self, 503, {"error": "Knowledge base module not available. Build runtime with chromadb and start the local llama-server embedding API for Qwen3-Embedding-0.6B-Q4_0.gguf."})
         except Exception as e:
             traceback.print_exc()
             _json_response(self, 500, {"error": str(e)})
@@ -4134,7 +4189,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except ImportError:
             _json_response(self, 200, {
                 "available": False,
-                "error": "Knowledge base module not available. Build runtime with lancedb, onnxruntime, tokenizers, numpy, and local bge-base-zh-v1.5 model",
+                "error": "Knowledge base module not available. Build runtime with chromadb and start the local llama-server embedding API for Qwen3-Embedding-0.6B-Q4_0.gguf.",
                 "document_count": 0,
             })
         except Exception as e:
@@ -4266,10 +4321,18 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 ),
             ]
 
+            gateway_env = {**os.environ}
+            existing_pythonpath = gateway_env.get("PYTHONPATH", "")
+            gateway_env["PYTHONPATH"] = (
+                f"{agent_dir}{os.pathsep}{existing_pythonpath}"
+                if existing_pythonpath
+                else agent_dir
+            )
+
             _gateway_process = subprocess.Popen(
                 gateway_cmd,
                 cwd=agent_dir,
-                env={**os.environ, "PYTHONPATH": agent_dir},
+                env=gateway_env,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -7150,7 +7213,7 @@ def main():
             print(f"[hermes-bridge] Knowledge base: OK ({stats['document_count']} docs, {stats['chunk_count']} chunks)")
             print(f"[hermes-bridge] KB storage: {stats['storage_dir']}")
     except ImportError:
-        print("[hermes-bridge] Knowledge base: UNAVAILABLE (local vector dependencies not installed)")
+        print("[hermes-bridge] Knowledge base: UNAVAILABLE (chromadb or local embedding runtime not installed)")
     except Exception as e:
         print(f"[hermes-bridge] Knowledge base: ERROR ({e})")
 
