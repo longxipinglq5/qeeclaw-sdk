@@ -8,6 +8,7 @@ Bailian/Wanxiang is the fallback provider.
 
 import json
 import os
+import socket
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Mapping, Optional
@@ -282,6 +283,12 @@ def post_image_generation(
         except json.JSONDecodeError:
             raw = {"message": raw_text}
         raise ImageProviderError(_build_error_message(exc.code, raw), provider="bailian", retryable=exc.code in (408, 409, 429) or exc.code >= 500) from exc
+    except (urllib.error.URLError, socket.error, OSError) as exc:
+        raise ImageProviderError(
+            f"DashScope image provider network error: {exc}",
+            provider="bailian",
+            retryable=True,
+        ) from exc
 
 
 def post_openai_image_generation(
@@ -319,6 +326,12 @@ def post_openai_image_generation(
             raw = {"message": raw_text}
         message = _build_error_message(exc.code, raw, provider_label="OpenAI")
         raise ImageProviderError(message, provider="openai", retryable=exc.code in (408, 409, 429) or exc.code >= 500) from exc
+    except (urllib.error.URLError, socket.error, OSError) as exc:
+        raise ImageProviderError(
+            f"OpenAI image provider network error: {exc}",
+            provider="openai",
+            retryable=True,
+        ) from exc
 
 
 def _with_provider_meta(
@@ -362,21 +375,34 @@ def generate_image(input_body: Dict[str, Any]) -> Dict[str, Any]:
             primary_error = exc
             if not exc.retryable:
                 raise
+        except (urllib.error.URLError, socket.error, OSError) as exc:
+            primary_error = ImageProviderError(
+                f"OpenAI image provider network error: {exc}",
+                provider="openai",
+                retryable=True,
+            )
 
     if bailian_key:
-        payload = build_image_payload(input_body, force_fallback_model=True)
-        raw = post_image_generation(
-            resolve_endpoint(),
-            bailian_key,
-            payload,
-            read_timeout_seconds(),
-        )
-        return _with_provider_meta(
-            normalize_image_response(raw),
-            provider="bailian",
-            fallback_used=primary_error is not None,
-            fallback_from=primary_error.provider if primary_error else None,
-        )
+        try:
+            payload = build_image_payload(input_body, force_fallback_model=True)
+            raw = post_image_generation(
+                resolve_endpoint(),
+                bailian_key,
+                payload,
+                read_timeout_seconds(),
+            )
+            return _with_provider_meta(
+                normalize_image_response(raw),
+                provider="bailian",
+                fallback_used=primary_error is not None,
+                fallback_from=primary_error.provider if primary_error else None,
+            )
+        except (urllib.error.URLError, socket.error, OSError) as exc:
+            raise ImageProviderError(
+                f"DashScope image provider network error: {exc}",
+                provider="bailian",
+                retryable=True,
+            ) from exc
 
     if primary_error:
         raise primary_error
