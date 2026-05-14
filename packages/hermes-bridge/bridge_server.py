@@ -24,7 +24,9 @@ import subprocess
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.parse
+import urllib.request
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
@@ -951,6 +953,19 @@ class AgentPool:
             agent_kwargs["api_key"] = runtime_client["api_key"]
         if runtime_client.get("base_url"):
             agent_kwargs["base_url"] = runtime_client["base_url"]
+        if (
+            runtime_client.get("runtime_scope") == "cloud"
+            and _is_platform_model_base_url(str(runtime_client.get("base_url") or ""))
+        ):
+            return _invoke_platform_model_api(
+                runtime_client,
+                prompt=prompt,
+                model=effective_model,
+                provider=effective_provider,
+                max_tokens=effective_max_tokens,
+                temperature=temperature,
+                system_prompt=system_prompt,
+            )
         if effective_max_tokens is not None:
             agent_kwargs["max_tokens"] = effective_max_tokens
         if enabled_ts is not None:
@@ -1089,14 +1104,28 @@ class AgentPool:
         base_url = runtime_client["base_url"]
         default_model = runtime_client["model"]
 
-        client = openai.OpenAI(api_key=api_key, base_url=base_url)
-
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
+
+        if (
+            runtime_client.get("runtime_scope") == "cloud"
+            and _is_platform_model_base_url(str(base_url or ""))
+        ):
+            return _invoke_platform_model_api(
+                runtime_client,
+                prompt=prompt,
+                model=model or default_model,
+                provider=provider,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system_prompt=system_prompt,
+            )
+
+        client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
         kwargs: Dict[str, Any] = {
             "model": model or default_model,
@@ -1316,6 +1345,22 @@ def _runtime_base_hostname(base_url: str) -> str:
         return str(parsed.hostname or "").strip().lower()
     except Exception:
         return ""
+
+
+def _is_openai_compatible_base_url(base_url: str) -> bool:
+    path = urllib.parse.urlparse(str(base_url or "").strip()).path.rstrip("/")
+    return path.endswith("/v1")
+
+
+def _is_platform_model_base_url(base_url: str) -> bool:
+    base = str(base_url or "").strip()
+    if not base:
+        return False
+    return not _is_openai_compatible_base_url(base)
+
+
+def _join_url(base_url: str, path: str) -> str:
+    return f"{str(base_url or '').rstrip('/')}/{path.lstrip('/')}"
 
 
 def _is_local_runtime_base_url(base_url: str) -> bool:
@@ -1709,6 +1754,102 @@ def _runtime_client_is_configured(runtime_client: Dict[str, Any]) -> bool:
         return True
     base_url = str(runtime_client.get("base_url") or "")
     return _is_local_runtime_base_url(base_url)
+
+
+def _extract_platform_text(payload: Any) -> str:
+    data = payload.get("data") if isinstance(payload, dict) else None
+    candidates = [data, payload] if isinstance(payload, dict) else []
+    for item in candidates:
+        if not isinstance(item, dict):
+            continue
+        for key in ("text", "content", "answer", "output", "message"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                return value
+        choices = item.get("choices")
+        if isinstance(choices, list) and choices:
+            choice = choices[0]
+            if isinstance(choice, dict):
+                message = choice.get("message")
+                if isinstance(message, dict) and isinstance(message.get("content"), str):
+                    return message["content"]
+                if isinstance(choice.get("text"), str):
+                    return choice["text"]
+    return ""
+
+
+def _invoke_platform_model_api(
+    runtime_client: Dict[str, Any],
+    *,
+    prompt: str,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    max_tokens: Optional[int] = None,
+    temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    api_url = _join_url(runtime_client["base_url"], "/api/platform/models/invoke")
+    body: Dict[str, Any] = {
+        "prompt": prompt,
+        "model": model or runtime_client.get("model") or None,
+        "model_id": model or runtime_client.get("model") or None,
+        "provider": provider or runtime_client.get("provider") or None,
+    }
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
+    if temperature is not None:
+        body["temperature"] = temperature
+    if system_prompt:
+        body["system_prompt"] = system_prompt
+    body = {k: v for k, v in body.items() if v not in (None, "")}
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {runtime_client['api_key']}",
+    }
+    request = urllib.request.Request(
+        api_url,
+        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    started_at = time.perf_counter()
+    _llm_debug_log("platform.request", "Platform model API request", {
+        "runtime_scope": runtime_client.get("runtime_scope"),
+        "provider": runtime_client.get("provider"),
+        "model": body.get("model") or body.get("model_id"),
+        "url": api_url,
+        "body": body,
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=180) as response:
+            raw_text = response.read().decode("utf-8")
+            payload = json.loads(raw_text) if raw_text else {}
+    except urllib.error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Platform model API returned HTTP {exc.code}: {error_text}") from exc
+
+    if isinstance(payload, dict) and payload.get("code") not in (None, 0):
+        raise RuntimeError(f"Platform model API returned code={payload.get('code')}: {payload.get('message')}")
+
+    data = payload.get("data") if isinstance(payload, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    text = _extract_platform_text(payload)
+    result = {
+        "text": text,
+        "model": data.get("model") or data.get("model_id") or body.get("model") or runtime_client.get("model"),
+        "provider": data.get("provider") or data.get("provider_name") or runtime_client.get("provider") or provider or "platform",
+        "runtime_scope": runtime_client.get("runtime_scope"),
+        "usage": data.get("usage"),
+        "_platform_api": True,
+    }
+    _llm_debug_log("platform.response", "Platform model API response", {
+        "runtime_scope": runtime_client.get("runtime_scope"),
+        "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        "result": result,
+        "raw": payload,
+    })
+    return result
 
 
 def _raise_missing_runtime_credentials(runtime_client: Dict[str, Any]) -> None:
