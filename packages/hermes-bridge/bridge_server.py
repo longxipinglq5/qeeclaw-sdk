@@ -1348,8 +1348,38 @@ def _runtime_base_hostname(base_url: str) -> str:
 
 
 def _is_openai_compatible_base_url(base_url: str) -> bool:
-    path = urllib.parse.urlparse(str(base_url or "").strip()).path.rstrip("/")
-    return path.endswith("/v1")
+    url = str(base_url or "").strip()
+    if not url:
+        return False
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        return True
+    host = (parsed.hostname or "").lower()
+    _known_compatible_hosts = {
+        "api.deepseek.com",
+        "api.openai.com",
+        "dashscope.aliyuncs.com",
+        "openrouter.ai",
+        "api.moonshot.cn",
+        "api.baichuan-ai.com",
+        "open.bigmodel.cn",
+        "api.minimax.chat",
+        "api.lingyiwanwu.com",
+        "api.stepfun.com",
+        "api.x.ai",
+        "api.anthropic.com",
+        "generativelanguage.googleapis.com",
+        "api-inference.modelscope.cn",
+        "api.siliconflow.cn",
+        "api.together.xyz",
+        "api.fireworks.ai",
+        "api.groq.com",
+        "api.deepinfra.com",
+        "api.cloudflare.com",
+        "ark.cn-beijing.volces.com",
+    }
+    return host in _known_compatible_hosts
 
 
 def _is_platform_model_base_url(base_url: str) -> bool:
@@ -1357,6 +1387,43 @@ def _is_platform_model_base_url(base_url: str) -> bool:
     if not base:
         return False
     return not _is_openai_compatible_base_url(base)
+
+
+def _normalize_openai_compatible_base_url(base_url: str) -> str:
+    url = str(base_url or "").strip()
+    if not url or _is_local_runtime_base_url(url):
+        return url
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/")
+    if path.endswith("/v1"):
+        return url
+    host = (parsed.hostname or "").lower()
+    _hosts_inferrable = {
+        "api.deepseek.com",
+        "api.openai.com",
+        "dashscope.aliyuncs.com",
+        "openrouter.ai",
+        "api.moonshot.cn",
+        "api.baichuan-ai.com",
+        "open.bigmodel.cn",
+        "api.minimax.chat",
+        "api.lingyiwanwu.com",
+        "api.stepfun.com",
+        "api.x.ai",
+        "api.anthropic.com",
+        "generativelanguage.googleapis.com",
+        "api-inference.modelscope.cn",
+        "api.siliconflow.cn",
+        "api.together.xyz",
+        "api.fireworks.ai",
+        "api.groq.com",
+        "api.deepinfra.com",
+        "api.cloudflare.com",
+        "ark.cn-beijing.volces.com",
+    }
+    if host in _hosts_inferrable or "api." in host:
+        return f"{parsed.scheme}://{parsed.hostname}{parsed.path.rstrip('/')}/v1"
+    return url
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -1736,6 +1803,8 @@ def _resolve_runtime_client_config(
 
     if not runtime_api_key and _is_local_runtime_base_url(str(runtime_base_url or "")):
         runtime_api_key = os.environ.get("QEECLAW_LOCAL_OPENAI_API_KEY", "local-bridge-key")
+
+    runtime_base_url = _normalize_openai_compatible_base_url(str(runtime_base_url or ""))
 
     return {
         "provider": resolved_provider or _normalize_provider_name(_infer_provider_from_url(str(runtime_base_url))) or "",
