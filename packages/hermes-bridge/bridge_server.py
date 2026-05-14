@@ -3453,7 +3453,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             return
         _path = urllib.parse.urlparse(self.path).path
-        if _path == "/invoke":
+        if _path == "/v1/chat/completions":
+            self._handle_openai_chat_completions()
+        elif _path == "/invoke":
             self._handle_invoke(runtime_scope="cloud")
         elif _path == "/invoke_local":
             self._handle_invoke(runtime_scope="local")
@@ -3742,6 +3744,141 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "version": BRIDGE_VERSION,
                 "hermes_available": False,
                 "message": f"Failed to import hermes-agent: {e}",
+            })
+
+    def _handle_openai_chat_completions(self):
+        """OpenAI-compatible POST /v1/chat/completions endpoint.
+
+        Accepts standard OpenAI chat completion requests and returns
+        OpenAI-format responses, without any platform wrapper layer.
+        Defaults to local runtime scope; pass X-Runtime-Scope: cloud header
+        or set model_id/provider/prompt in the request to route to cloud.
+        """
+        try:
+            body = _read_json_body(self)
+            started_at = time.perf_counter()
+
+            # Resolve scope: header > body field > default local
+            scope_hint = (self.headers.get("X-Runtime-Scope")
+                          or body.get("runtime_scope")
+                          or body.get("runtimeScope")
+                          or "local")
+            effective_runtime_scope = _normalize_runtime_scope(scope_hint)
+
+            # Extract OpenAI-format fields
+            request_model = body.get("model") or ""
+            messages = body.get("messages") or []
+            temperature = body.get("temperature", 1.0)
+            max_tokens = body.get("max_tokens") or body.get("maxTokens")
+            request_stream = body.get("stream", False)
+
+            # Convert messages to bridge internal format
+            system_prompt = ""
+            history = []
+            prompt = ""
+            for msg in messages:
+                role = str(msg.get("role", "")).strip().lower()
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    text_parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text_parts.append(str(part.get("text", "")))
+                    content = "\n".join(text_parts)
+                content = str(content or "")
+                if role == "system":
+                    system_prompt = content
+                elif role == "user":
+                    prompt = content
+                    if history:
+                        prompt = "\n".join(filter(None, [h.get("content", "") for h in history] + [prompt]))
+                        history = []
+                elif role == "assistant" and content:
+                    history.append({"role": "assistant", "content": content})
+
+            if not prompt:
+                _json_response(self, 400, {
+                    "error": {
+                        "message": "No user message found in messages array",
+                        "type": "invalid_request_error",
+                    }
+                })
+                return
+
+            if not request_model:
+                runtime_defaults = _runtime_scope_defaults(effective_runtime_scope)
+                request_model = runtime_defaults.get("model", "")
+
+            # Call bridge internal invoke (non-stream, no agent for local by default)
+            use_agent = _truthy_body_flag(body, "use_agent", "useAgent",
+                                          default=(effective_runtime_scope != "local"))
+
+            pool = get_agent_pool()
+            if use_agent:
+                result = pool.invoke(
+                    prompt=prompt,
+                    system_prompt=system_prompt or None,
+                    model=request_model,
+                    provider=body.get("provider"),
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    max_history_turns=0 if effective_runtime_scope == "local" else 20,
+                    runtime_scope=effective_runtime_scope,
+                )
+            else:
+                result = pool._invoke_fallback(
+                    prompt=prompt,
+                    model=request_model,
+                    provider=body.get("provider"),
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system_prompt=system_prompt or None,
+                    runtime_scope=effective_runtime_scope,
+                )
+
+            assistant_text = result.get("text", "")
+            response_model = result.get("model") or request_model
+            usage = result.get("usage") or {}
+
+            # Build OpenAI-compatible response
+            openai_response = {
+                "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": response_model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": assistant_text,
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": usage.get("prompt_tokens", 0),
+                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "total_tokens": usage.get("total_tokens", 0),
+                },
+            }
+
+            _llm_debug_log("openai.response", "OpenAI-compatible chat completion response", {
+                "runtime_scope": effective_runtime_scope,
+                "model": response_model,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "text_len": len(assistant_text),
+            })
+
+            _json_response(self, 200, openai_response)
+
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {
+                "error": {
+                    "message": str(e),
+                    "type": "server_error",
+                }
             })
 
     def _handle_invoke(self, platform_response: bool = False, runtime_scope: Optional[str] = None):
