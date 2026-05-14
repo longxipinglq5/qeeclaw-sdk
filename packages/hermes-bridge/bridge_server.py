@@ -5202,25 +5202,14 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     def _handle_llm_image_generation(self):
-        """POST /api/llm/images/generations — 百炼 DashScope 图片生成。"""
+        """POST /api/llm/images/generations — unified image generation route."""
         try:
             body = _read_json_body(self)
-            api_key = bailian_image.resolve_api_key()
-            if not api_key:
-                raise RuntimeError("Missing DASHSCOPE_API_KEY.")
-
-            payload = bailian_image.build_image_payload(body)
-            raw = bailian_image.post_image_generation(
-                bailian_image.resolve_endpoint(),
-                api_key,
-                payload,
-                bailian_image.read_timeout_seconds(),
-            )
-            _json_response(self, 200, bailian_image.normalize_image_response(raw))
+            _json_response(self, 200, bailian_image.generate_image(body))
         except Exception as e:
             traceback.print_exc()
             _json_response(self, 502, {
-                "code": "BAILIAN_IMAGE_FAILED",
+                "code": "IMAGE_GENERATION_FAILED",
                 "message": str(e),
             })
 

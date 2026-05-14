@@ -43,6 +43,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
+    "test:models-images": "npm run build && node tests/models-images-api.mjs",
     "mock:server": "node ./examples/mock-platform-server.mjs",
     "demo:mock": "node ./examples/mock-client.mjs"
   },

@@ -49,7 +49,7 @@ export interface ModelInvokeResult {
 
 export interface ModelImageGenerationRequest {
   prompt: string;
-  model?: string;
+  model: string;
   n?: number;
   size?: string;
   quality?: string;
@@ -99,6 +99,11 @@ interface RawModelImageGenerationResult {
   data?: RawModelImageData[];
   usage?: unknown;
   [key: string]: unknown;
+}
+
+export interface ModelImagesApi {
+  generate(payload: ModelImageGenerationRequest): Promise<ModelImageGenerationResult>;
+  stream(payload: ModelImageGenerationStreamRequest): Promise<Response>;
 }
 
 export interface ModelProviderSummary {
@@ -406,8 +411,68 @@ function mapCostBreakdown(item: RawModelCostBreakdownItem): ModelCostBreakdownIt
   };
 }
 
-export class ModelsModule {
+class ModelsImagesApi implements ModelImagesApi {
   constructor(private readonly http: HttpClient) {}
+
+  async generate(payload: ModelImageGenerationRequest): Promise<ModelImageGenerationResult> {
+    const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    const result = await this.http.request<RawModelImageGenerationResult>({
+      method: "POST",
+      path: "/api/llm/images/generations",
+      timeoutMs,
+      body: {
+        ...body,
+        model: payload.model ?? "gpt-image-2",
+        response_format: payload.response_format ?? responseFormat,
+        output_format: payload.output_format ?? outputFormat,
+        partial_images: payload.partial_images ?? partialImages,
+      },
+    });
+
+    return {
+      ...result,
+      created: result.created,
+      data: (result.data ?? []).map((item) => ({
+        ...item,
+        url: item.url,
+        b64Json: item.b64_json,
+        b64_json: item.b64_json,
+        revisedPrompt: item.revised_prompt,
+        revised_prompt: item.revised_prompt,
+      })),
+    };
+  }
+
+  async stream(payload: ModelImageGenerationStreamRequest): Promise<Response> {
+    const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    return this.http.requestRaw({
+      method: "POST",
+      path: "/api/llm/images/generations",
+      timeoutMs,
+      headers: {
+        Accept: "text/event-stream",
+      },
+      body: {
+        ...body,
+        stream: true,
+        model: payload.model ?? "gpt-image-2",
+        response_format: payload.response_format ?? responseFormat,
+        output_format: payload.output_format ?? outputFormat,
+        partial_images: payload.partial_images ?? partialImages,
+      },
+    });
+  }
+}
+
+export class ModelsModule {
+  readonly images: ModelImagesApi;
+
+  private readonly imagesApi: ModelsImagesApi;
+
+  constructor(private readonly http: HttpClient) {
+    this.imagesApi = new ModelsImagesApi(http);
+    this.images = this.imagesApi;
+  }
 
   async listAvailable(options: { modelType?: "chat" | "image" | string } = {}): Promise<QeeClawModelInfo[]> {
     const items = await this.http.request<RawModelInfo[]>({
@@ -556,52 +621,11 @@ export class ModelsModule {
   }
 
   async generateImage(payload: ModelImageGenerationRequest): Promise<ModelImageGenerationResult> {
-    const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
-    const result = await this.http.request<RawModelImageGenerationResult>({
-      method: "POST",
-      path: "/api/llm/images/generations",
-      timeoutMs,
-      body: {
-        ...body,
-        model: payload.model ?? "gpt-image-2",
-        response_format: payload.response_format ?? responseFormat,
-        output_format: payload.output_format ?? outputFormat,
-        partial_images: payload.partial_images ?? partialImages,
-      },
-    });
-
-    return {
-      ...result,
-      created: result.created,
-      data: (result.data ?? []).map((item) => ({
-        ...item,
-        url: item.url,
-        b64Json: item.b64_json,
-        b64_json: item.b64_json,
-        revisedPrompt: item.revised_prompt,
-        revised_prompt: item.revised_prompt,
-      })),
-    };
+    return this.images.generate(payload);
   }
 
   async generateImageStream(payload: ModelImageGenerationStreamRequest): Promise<Response> {
-    const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
-    return this.http.requestRaw({
-      method: "POST",
-      path: "/api/llm/images/generations",
-      timeoutMs,
-      headers: {
-        Accept: "text/event-stream",
-      },
-      body: {
-        ...body,
-        stream: true,
-        model: payload.model ?? "gpt-image-2",
-        response_format: payload.response_format ?? responseFormat,
-        output_format: payload.output_format ?? outputFormat,
-        partial_images: payload.partial_images ?? partialImages,
-      },
-    });
+    return this.images.stream(payload);
   }
 
   async testProvider(): Promise<never> {
