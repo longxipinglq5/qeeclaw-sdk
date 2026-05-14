@@ -39,6 +39,29 @@ python bridge_server.py
 | `OPENROUTER_API_KEY` | - | OpenRouter API Key (fallback) |
 | `OPENAI_API_KEY` | - | OpenAI API Key (fallback) |
 
+### 百炼图片生成
+
+`POST /api/llm/images/generations` 在 bridge 内调用 DashScope 百炼图片模型。配置应放在 bridge 运行环境，例如 `~/.hermes/.env` 或部署平台的 bridge 服务变量，不要放进 Edge `.env`，也不要使用 `VITE_*` 暴露到前端。
+
+```bash
+DASHSCOPE_API_KEY=
+BAILIAN_IMAGE_MODEL=wan2.7-image-pro
+BAILIAN_IMAGE_ENDPOINT=https://dashscope.aliyuncs.com
+BAILIAN_IMAGE_DEFAULT_SIZE=1024*1024
+BAILIAN_IMAGE_TIMEOUT_MS=300000
+BAILIAN_IMAGE_WATERMARK=false
+BAILIAN_IMAGE_THINKING_MODE=true
+```
+
+需要从 NexusAOS backend 统一转发时，backend 仅配置 bridge 地址和可选鉴权，不保存 DashScope Key：
+
+```bash
+HERMES_BRIDGE_URL=http://127.0.0.1:21747
+HERMES_BRIDGE_API_KEY=
+HERMES_BRIDGE_IMAGE_MODELS=wan2.7-image-pro
+HERMES_BRIDGE_IMAGE_TIMEOUT_SECONDS=300
+```
+
 ## 架构
 
 ```

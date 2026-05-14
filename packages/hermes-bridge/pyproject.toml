@@ -40,4 +40,4 @@ dev = [
 qeeclaw-hermes-bridge = "bridge_server:main"
 
 [tool.setuptools]
-py-modules = ["bridge_server", "wechat_gateway", "knowledge_store", "memory_store", "session_manager", "cloud_tunnel"]
+py-modules = ["bridge_server", "bailian_image", "wechat_gateway", "knowledge_store", "memory_store", "session_manager", "cloud_tunnel"]

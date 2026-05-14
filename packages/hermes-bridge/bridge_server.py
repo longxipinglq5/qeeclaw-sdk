@@ -31,6 +31,8 @@ import threading
 from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 
+import bailian_image
+
 try:
     import yaml
     _HAS_YAML = True
@@ -2584,6 +2586,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_invoke()
         elif _path == "/api/platform/models/invoke":
             self._handle_invoke(platform_response=True)
+        elif _path == "/api/llm/images/generations":
+            self._handle_llm_image_generation()
         elif _path == "/invoke/stream":
             self._handle_invoke_stream()
         elif _path == "/knowledge/upload":
@@ -5196,6 +5200,29 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
+
+    def _handle_llm_image_generation(self):
+        """POST /api/llm/images/generations — 百炼 DashScope 图片生成。"""
+        try:
+            body = _read_json_body(self)
+            api_key = bailian_image.resolve_api_key()
+            if not api_key:
+                raise RuntimeError("Missing DASHSCOPE_API_KEY.")
+
+            payload = bailian_image.build_image_payload(body)
+            raw = bailian_image.post_image_generation(
+                bailian_image.resolve_endpoint(),
+                api_key,
+                payload,
+                bailian_image.read_timeout_seconds(),
+            )
+            _json_response(self, 200, bailian_image.normalize_image_response(raw))
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 502, {
+                "code": "BAILIAN_IMAGE_FAILED",
+                "message": str(e),
+            })
 
     def _handle_models_usage(self):
         """GET /api/platform/models/usage — 用量统计（本地账本聚合）。"""
