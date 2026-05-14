@@ -3462,7 +3462,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         elif _path == "/api/platform/models/invoke":
             self._handle_invoke(platform_response=True, runtime_scope="cloud")
         elif _path == "/api/platform/models/invoke_local":
-            self._handle_invoke(platform_response=True, runtime_scope="local")
+            self._handle_invoke(platform_response=False, runtime_scope="local")
         elif _path == "/api/llm/images/generations":
             self._handle_llm_image_generation()
         elif _path == "/invoke/stream":
