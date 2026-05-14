@@ -33,6 +33,8 @@ import threading
 from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 
+import bailian_image
+
 try:
     import yaml
     _HAS_YAML = True
