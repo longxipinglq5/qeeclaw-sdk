@@ -60,7 +60,7 @@ class FakeEmbedder:
         vectors = []
         for text in texts:
             seed = sum(ord(ch) for ch in text) or 1
-            vectors.append([float((seed + i) % 17) for i in range(768)])
+            vectors.append([float((seed + i) % 17) for i in range(1024)])
         return vectors
 
 
@@ -75,7 +75,9 @@ def load_module(tmp_path, monkeypatch):
     monkeypatch.setenv("QEECLAW_KB_DIR", str(tmp_path / "kb"))
     monkeypatch.setenv("QEECLAW_KB_VECTOR_BACKEND", "chromadb")
     monkeypatch.setenv("QEECLAW_KB_EMBEDDING_MODEL_FILE", str(model_file))
-    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_API_URL", "http://127.0.0.1:8080/embedding")
+    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_ENGINE", "openai-compatible")
+    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_MODEL", "qwen3-embedding-0.6b-q4_0")
+    monkeypatch.setenv("QEECLAW_KB_EMBEDDING_API_URL", "http://127.0.0.1:8091/v1/embeddings")
 
     spec = importlib.util.spec_from_file_location(
         "knowledge_store_under_test",
@@ -84,7 +86,7 @@ def load_module(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
-    monkeypatch.setattr(module, "_LlamaServerEmbedder", FakeEmbedder)
+    monkeypatch.setattr(module, "_EmbeddingApiClient", FakeEmbedder)
     monkeypatch.setattr(module, "_check_embedding_api_health", lambda: None)
     return module
 
@@ -109,7 +111,7 @@ def test_chromadb_local_store_ingest_search_delete(tmp_path, monkeypatch):
     stats = ks.get_kb_stats()
     assert stats["vector_backend"] == "chromadb"
     assert stats["document_count"] == 1
-    assert stats["embedding_model"] == "Qwen3-Embedding-0.6B-Q4_0"
+    assert stats["embedding_model"] == "qwen3-embedding-0.6b-q4_0"
     assert stats["embedding_model_file_exists"] is True
 
     deleted = ks.delete_document(result["doc_id"])

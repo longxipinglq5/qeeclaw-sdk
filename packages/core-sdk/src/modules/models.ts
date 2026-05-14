@@ -7,6 +7,8 @@ export interface QeeClawModelInfo {
   modelName: string;
   providerModelId?: string;
   modelType?: "chat" | "image" | string;
+  runtimeScope?: "cloud" | "local" | string;
+  invokePath?: string;
   label: string;
   isPreferred: boolean;
   availabilityStatus: string;
@@ -24,6 +26,8 @@ interface RawModelInfo {
   model_name: string;
   provider_model_id?: string;
   model_type?: "chat" | "image" | string;
+  runtime_scope?: "cloud" | "local" | string;
+  invoke_path?: string;
   label: string;
   is_preferred: boolean;
   availability_status: string;
@@ -39,12 +43,25 @@ export interface ModelInvokeRequest {
   prompt: string;
   modelId?: string;
   model?: string;
+  provider?: string;
+  systemPrompt?: string;
+  useAgent?: boolean;
+  useKnowledge?: boolean;
+  useMemory?: boolean;
+  maxTokens?: number;
+  temperature?: number;
   timeoutMs?: number;
+  [key: string]: unknown;
 }
 
 export interface ModelInvokeResult {
   text: string;
   model?: string;
+  provider?: string;
+  runtimeScope?: string;
+  sessionId?: string;
+  usage?: unknown;
+  [key: string]: unknown;
 }
 
 export interface ModelImageGenerationRequest {
@@ -193,6 +210,8 @@ export interface ModelRouteProfile {
   availableModelCount: number;
   resolutionReason: string;
   selected?: QeeClawModelInfo | null;
+  cloudRoute?: ModelScopedRoute | null;
+  localRoute?: ModelScopedRoute | null;
 }
 
 interface RawModelRouteProfile {
@@ -206,6 +225,28 @@ interface RawModelRouteProfile {
   available_model_count: number;
   resolution_reason: string;
   selected?: RawModelInfo | null;
+  cloud_route?: RawModelScopedRoute | null;
+  local_route?: RawModelScopedRoute | null;
+}
+
+export interface ModelScopedRoute {
+  runtimeScope: "cloud" | "local" | string;
+  invokePath: string;
+  selected?: QeeClawModelInfo | null;
+  resolvedModel?: string | null;
+  resolvedProviderName?: string | null;
+  resolvedProviderModelId?: string | null;
+  available: boolean;
+}
+
+interface RawModelScopedRoute {
+  runtime_scope: "cloud" | "local" | string;
+  invoke_path: string;
+  selected?: RawModelInfo | null;
+  resolved_model?: string | null;
+  resolved_provider_name?: string | null;
+  resolved_provider_model_id?: string | null;
+  available: boolean;
 }
 
 export interface ModelCurrencyAmount {
@@ -361,6 +402,8 @@ function mapModelInfo(item: RawModelInfo): QeeClawModelInfo {
     modelName: item.model_name,
     providerModelId: item.provider_model_id,
     modelType: item.model_type,
+    runtimeScope: item.runtime_scope,
+    invokePath: item.invoke_path,
     label: item.label,
     isPreferred: item.is_preferred,
     availabilityStatus: item.availability_status,
@@ -370,6 +413,33 @@ function mapModelInfo(item: RawModelInfo): QeeClawModelInfo {
     billingMode: item.billing_mode,
     textUnitChars: item.text_unit_chars,
     textMinAmount: item.text_min_amount,
+  };
+}
+
+function mapScopedRoute(item?: RawModelScopedRoute | null): ModelScopedRoute | null {
+  if (!item) return null;
+  return {
+    runtimeScope: item.runtime_scope,
+    invokePath: item.invoke_path,
+    selected: item.selected ? mapModelInfo(item.selected) : null,
+    resolvedModel: item.resolved_model,
+    resolvedProviderName: item.resolved_provider_name,
+    resolvedProviderModelId: item.resolved_provider_model_id,
+    available: item.available,
+  };
+}
+
+function buildInvokeBody(payload: ModelInvokeRequest, runtimeScope?: "cloud" | "local") {
+  const { timeoutMs: _timeoutMs, modelId, systemPrompt, useAgent, useKnowledge, useMemory, maxTokens, ...rest } = payload;
+  return {
+    ...rest,
+    model_id: modelId,
+    system_prompt: systemPrompt,
+    use_agent: useAgent,
+    use_knowledge: useKnowledge,
+    use_memory: useMemory,
+    max_tokens: maxTokens,
+    runtime_scope: runtimeScope,
   };
 }
 
@@ -582,6 +652,8 @@ export class ModelsModule {
       availableModelCount: result.available_model_count,
       resolutionReason: result.resolution_reason,
       selected: result.selected ? mapModelInfo(result.selected) : null,
+      cloudRoute: mapScopedRoute(result.cloud_route),
+      localRoute: mapScopedRoute(result.local_route),
     };
   }
 
@@ -604,6 +676,8 @@ export class ModelsModule {
       availableModelCount: result.available_model_count,
       resolutionReason: result.resolution_reason,
       selected: result.selected ? mapModelInfo(result.selected) : null,
+      cloudRoute: mapScopedRoute(result.cloud_route),
+      localRoute: mapScopedRoute(result.local_route),
     };
   }
 
@@ -612,11 +686,16 @@ export class ModelsModule {
       method: "POST",
       path: "/api/platform/models/invoke",
       timeoutMs: payload.timeoutMs,
-      body: {
-        prompt: payload.prompt,
-        model_id: payload.modelId,
-        model: payload.model,
-      },
+      body: buildInvokeBody(payload, "cloud"),
+    });
+  }
+
+  async invokeLocal(payload: ModelInvokeRequest): Promise<ModelInvokeResult> {
+    return this.http.request<ModelInvokeResult>({
+      method: "POST",
+      path: "/api/platform/models/invoke_local",
+      timeoutMs: payload.timeoutMs,
+      body: buildInvokeBody(payload, "local"),
     });
   }
 

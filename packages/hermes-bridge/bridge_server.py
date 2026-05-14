@@ -31,8 +31,6 @@ import threading
 from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 
-import bailian_image
-
 try:
     import yaml
     _HAS_YAML = True
@@ -98,6 +96,357 @@ _KB_UPLOAD_LOCK = threading.Lock()
 
 # 日志显示地址：0.0.0.0/:: 不可在浏览器中访问，替换为 127.0.0.1
 _DISPLAY_HOST = "127.0.0.1" if BRIDGE_HOST in ("0.0.0.0", "::") else BRIDGE_HOST
+
+_LOG_LEVEL_ORDER = {
+    "debug": 10,
+    "info": 20,
+    "warn": 30,
+    "warning": 30,
+    "error": 40,
+}
+_SENSITIVE_LOG_KEYS = {
+    "api_key",
+    "authorization",
+    "password",
+    "secret",
+    "access_token",
+    "refresh_token",
+}
+_OPENAI_TRACE_PATCHED = False
+
+
+def _normalize_log_level(raw_level: Optional[str]) -> str:
+    level = str(raw_level or "info").strip().lower()
+    if level == "warn":
+        level = "warning"
+    return level if level in _LOG_LEVEL_ORDER else "info"
+
+
+QEECLAW_LOG_LEVEL = _normalize_log_level(
+    os.environ.get("QEECLAW_LOG_LEVEL", _cfg("logging", "level", "info"))
+)
+
+
+def _should_log(level: str) -> bool:
+    return (
+        _LOG_LEVEL_ORDER[_normalize_log_level(level)]
+        >= _LOG_LEVEL_ORDER[QEECLAW_LOG_LEVEL]
+    )
+
+
+def _is_llm_debug_enabled() -> bool:
+    return _should_log("debug")
+
+
+def _sanitize_log_value(value: Any, key: Optional[str] = None) -> Any:
+    if key and key.lower() in _SENSITIVE_LOG_KEYS and value not in (None, ""):
+        return "***"
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, bytes):
+        return f"<bytes:{len(value)}>"
+    if isinstance(value, dict):
+        return {
+            str(k): _sanitize_log_value(v, key=str(k))
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_sanitize_log_value(item) for item in value]
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _sanitize_log_value(model_dump())
+        except Exception:
+            pass
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        try:
+            return _sanitize_log_value(to_dict())
+        except Exception:
+            pass
+    try:
+        public_fields = {
+            k: v for k, v in vars(value).items()
+            if not str(k).startswith("_")
+        }
+        if public_fields:
+            return _sanitize_log_value(public_fields)
+    except Exception:
+        pass
+    return str(value)
+
+
+def _bridge_log(level: str, topic: str, message: str, payload: Any = None):
+    normalized_level = _normalize_log_level(level)
+    if not _should_log(normalized_level):
+        return
+    prefix = f"[hermes-bridge][{normalized_level}][{topic}]"
+    print(f"{prefix} {message}")
+    if payload is not None:
+        try:
+            payload_text = json.dumps(
+                _sanitize_log_value(payload),
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+            )
+        except Exception as exc:
+            payload_text = json.dumps({
+                "serialize_error": str(exc),
+                "repr": repr(payload),
+            }, ensure_ascii=False, default=str)
+        print(f"{prefix} payload={payload_text}")
+
+
+def _llm_debug_log(topic: str, message: str, payload: Any = None):
+    _bridge_log("debug", f"llm.{topic}", message, payload)
+
+
+def _coerce_message_content_to_text(content: Any) -> str:
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                text = (
+                    item.get("text")
+                    or item.get("content")
+                    or item.get("delta")
+                    or item.get("value")
+                )
+                if text is not None:
+                    parts.append(str(text))
+                    continue
+            for attr_name in ("text", "content", "delta", "value"):
+                attr_value = getattr(item, attr_name, None)
+                if attr_value is not None:
+                    parts.append(str(attr_value))
+                    break
+        return "".join(parts)
+    for attr_name in ("text", "content", "delta", "value"):
+        attr_value = getattr(content, attr_name, None)
+        if attr_value is not None:
+            return _coerce_message_content_to_text(attr_value)
+    return str(content)
+
+
+def _extract_usage_payload(usage: Any) -> Optional[Dict[str, Any]]:
+    if not usage:
+        return None
+    if isinstance(usage, dict):
+        return _sanitize_log_value(usage)
+    data: Dict[str, Any] = {}
+    for key in (
+        "prompt_tokens",
+        "completion_tokens",
+        "total_tokens",
+        "input_tokens",
+        "output_tokens",
+    ):
+        value = getattr(usage, key, None)
+        if value is not None:
+            data[key] = value
+    return data or _sanitize_log_value(usage)
+
+
+def _extract_openai_response_text(response: Any) -> str:
+    if response is None:
+        return ""
+    output_text = getattr(response, "output_text", None)
+    if output_text:
+        return str(output_text)
+    choices = getattr(response, "choices", None) or []
+    texts: List[str] = []
+    for choice in choices:
+        message = getattr(choice, "message", None)
+        if message is not None:
+            text = _coerce_message_content_to_text(getattr(message, "content", None))
+            if text:
+                texts.append(text)
+    if texts:
+        return "\n".join(texts)
+    return ""
+
+
+def _extract_openai_stream_text(chunk: Any) -> str:
+    if chunk is None:
+        return ""
+    chunk_type = getattr(chunk, "type", None)
+    if chunk_type in ("response.output_text.delta", "response.refusal.delta"):
+        return str(getattr(chunk, "delta", "") or "")
+    if chunk_type == "response.output_text.done":
+        return str(getattr(chunk, "text", "") or "")
+    choices = getattr(chunk, "choices", None) or []
+    if choices:
+        delta = getattr(choices[0], "delta", None)
+        if delta is not None:
+            return _coerce_message_content_to_text(getattr(delta, "content", None))
+    for attr_name in ("delta", "text", "content"):
+        attr_value = getattr(chunk, attr_name, None)
+        if attr_value:
+            return _coerce_message_content_to_text(attr_value)
+    return ""
+
+
+def _resolve_openai_client_base_url(resource_obj: Any) -> str:
+    client = getattr(resource_obj, "_client", None)
+    if client is None:
+        return ""
+    base_url = getattr(client, "base_url", None)
+    return str(base_url).strip() if base_url else ""
+
+
+def _wrap_openai_stream_with_logging(
+    stream: Any,
+    api_name: str,
+    base_url: str,
+    request_payload: Dict[str, Any],
+    started_at: float,
+):
+    def _iterator():
+        collected_text: List[str] = []
+        usage_payload: Optional[Dict[str, Any]] = None
+        last_model = request_payload.get("model")
+        chunk_count = 0
+        try:
+            for chunk in stream:
+                chunk_count += 1
+                text = _extract_openai_stream_text(chunk)
+                if text:
+                    collected_text.append(text)
+                chunk_model = getattr(chunk, "model", None)
+                if chunk_model:
+                    last_model = chunk_model
+                chunk_usage = _extract_usage_payload(getattr(chunk, "usage", None))
+                if chunk_usage:
+                    usage_payload = chunk_usage
+                yield chunk
+        except Exception as exc:
+            _llm_debug_log(
+                "raw.stream_error",
+                f"{api_name} streaming failed",
+                {
+                    "api": api_name,
+                    "base_url": base_url,
+                    "model": last_model,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": str(exc),
+                },
+            )
+            raise
+        finally:
+            _llm_debug_log(
+                "raw.stream_response",
+                f"{api_name} streaming completed",
+                {
+                    "api": api_name,
+                    "base_url": base_url,
+                    "model": last_model,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "chunk_count": chunk_count,
+                    "usage": usage_payload,
+                    "text": "".join(collected_text),
+                },
+            )
+
+    return _iterator()
+
+
+def _patch_openai_create_method(module_name: str, class_name: str, api_name: str) -> bool:
+    try:
+        module = __import__(module_name, fromlist=[class_name])
+        resource_cls = getattr(module, class_name)
+        original_create = getattr(resource_cls, "create")
+    except Exception:
+        return False
+
+    if getattr(original_create, "_qeeclaw_trace_patched", False):
+        return True
+
+    def _wrapped_create(self, *args, **kwargs):
+        started_at = time.perf_counter()
+        base_url = _resolve_openai_client_base_url(self)
+        request_payload: Dict[str, Any] = {
+            "api": api_name,
+            "base_url": base_url,
+            "args": _sanitize_log_value(list(args)) if args else None,
+            "kwargs": _sanitize_log_value(kwargs),
+            "model": kwargs.get("model"),
+        }
+        _llm_debug_log(
+            "raw.request",
+            f"{api_name} request",
+            request_payload,
+        )
+        try:
+            response = original_create(self, *args, **kwargs)
+        except Exception as exc:
+            _llm_debug_log(
+                "raw.error",
+                f"{api_name} request failed",
+                {
+                    **request_payload,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": str(exc),
+                },
+            )
+            raise
+
+        if kwargs.get("stream"):
+            return _wrap_openai_stream_with_logging(
+                stream=response,
+                api_name=api_name,
+                base_url=base_url,
+                request_payload=request_payload,
+                started_at=started_at,
+            )
+
+        _llm_debug_log(
+            "raw.response",
+            f"{api_name} response",
+            {
+                **request_payload,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "response_model": getattr(response, "model", None),
+                "usage": _extract_usage_payload(getattr(response, "usage", None)),
+                "text": _extract_openai_response_text(response),
+                "response_body": _sanitize_log_value(response),
+            },
+        )
+        return response
+
+    setattr(_wrapped_create, "_qeeclaw_trace_patched", True)
+    setattr(resource_cls, "create", _wrapped_create)
+    return True
+
+
+def _install_openai_trace_hooks() -> bool:
+    global _OPENAI_TRACE_PATCHED
+    if _OPENAI_TRACE_PATCHED or not _is_llm_debug_enabled():
+        return _OPENAI_TRACE_PATCHED
+
+    patched_any = False
+    patched_any = _patch_openai_create_method(
+        "openai.resources.chat.completions",
+        "Completions",
+        "chat.completions.create",
+    ) or patched_any
+    patched_any = _patch_openai_create_method(
+        "openai.resources.responses.responses",
+        "Responses",
+        "responses.create",
+    ) or patched_any
+
+    if patched_any:
+        _OPENAI_TRACE_PATCHED = True
+        _bridge_log("info", "llm.trace", "OpenAI-compatible LLM debug tracing enabled")
+    return patched_any
 
 
 def _resolve_repo_default_path(*relative_candidates: str) -> str:
@@ -266,8 +615,16 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, data: Any):
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Access-Control-Allow-Origin", _cors_origin(handler))
     handler.send_header("Access-Control-Allow-Credentials", "true")
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.end_headers()
+        handler.wfile.write(body)
+    except (BrokenPipeError, ConnectionResetError):
+        _bridge_log("info", "http.disconnect", "Client disconnected before response body was fully written", {
+            "status": status,
+            "path": getattr(handler, "path", ""),
+            "client": getattr(handler, "client_address", None),
+        })
+        raise
 
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> dict:
@@ -519,6 +876,7 @@ class AgentPool:
         temperature: Optional[float] = None,
         max_history_turns: int = 20,
         stream_callback=None,
+        runtime_scope: Optional[str] = None,
     ) -> dict:
         """创建 AIAgent 实例并调用 run_conversation()。
 
@@ -537,6 +895,7 @@ class AgentPool:
         Returns:
             dict: 包含 text, model, provider, usage 等字段
         """
+        _install_openai_trace_hooks()
         if not self._available:
             return self._invoke_fallback(
                 prompt=prompt,
@@ -547,11 +906,15 @@ class AgentPool:
                 system_prompt=system_prompt,
                 history=session.get_messages(max_turns=max_history_turns) if session else None,
                 import_error=self._init_error,
+                runtime_scope=runtime_scope,
             )
 
         # 从 profile 获取默认参数
         effective_model = model or (profile.model if profile else "") or _get_preferred_model()
-        effective_provider = _resolve_runtime_provider(provider or "", effective_model)
+        scope_defaults = _runtime_scope_defaults(runtime_scope)
+        if not model and scope_defaults.get("model"):
+            effective_model = scope_defaults["model"]
+        effective_provider = _resolve_runtime_provider(provider or "", effective_model, runtime_scope=runtime_scope)
         effective_max_tokens = max_tokens or (profile.max_tokens if profile else None)
         effective_max_iterations = (profile.max_iterations if profile else 30) or 30
 
@@ -579,7 +942,7 @@ class AgentPool:
         }
         if effective_provider:
             agent_kwargs["provider"] = effective_provider
-        runtime_client = _resolve_runtime_client_config(effective_provider, effective_model)
+        runtime_client = _resolve_runtime_client_config(effective_provider, effective_model, runtime_scope=runtime_scope)
         if not _runtime_client_is_configured(runtime_client):
             _raise_missing_runtime_credentials(runtime_client)
         if runtime_client.get("credential_pool") is not None:
@@ -600,6 +963,27 @@ class AgentPool:
             profile.hermes_home if (profile and profile.hermes_home)
             else self._ensure_profile_home(profile_name)
         )
+
+        llm_request_payload = {
+            "mode": "agent",
+            "runtime_scope": _normalize_runtime_scope(runtime_scope),
+            "session_id": session.session_id if session else None,
+            "profile": profile_name,
+            "provider": effective_provider,
+            "model": effective_model,
+            "max_tokens": effective_max_tokens,
+            "temperature": temperature,
+            "max_history_turns": max_history_turns,
+            "base_url": runtime_client.get("base_url"),
+            "history_count": len(session.get_messages(max_turns=max_history_turns)) if session else 0,
+            "system_prompt": system_prompt,
+            "prompt": prompt,
+            "enabled_toolsets": enabled_ts,
+            "disabled_toolsets": disabled_ts,
+            "streaming": bool(stream_callback),
+        }
+        _llm_debug_log("agent.request", "AIAgent request", llm_request_payload)
+        started_at = time.perf_counter()
 
         try:
             # 在构造 AIAgent 期间切换 HERMES_HOME（线程安全）
@@ -624,8 +1008,7 @@ class AgentPool:
             )
 
             final_text = result.get("final_response") or ""
-
-            return {
+            llm_result = {
                 "text": final_text,
                 "model": result.get("model", effective_model),
                 "provider": result.get("provider", effective_provider),
@@ -641,10 +1024,30 @@ class AgentPool:
                 "completed": result.get("completed", True),
                 "_agent_mode": True,
             }
+            _llm_debug_log(
+                "agent.response",
+                "AIAgent response",
+                {
+                    **llm_request_payload,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "result": llm_result,
+                },
+            )
+
+            return llm_result
         except Exception as e:
             traceback.print_exc()
             # 降级到 fallback
             print(f"[agent-pool] AIAgent invoke failed: {e} — falling back to raw LLM")
+            _llm_debug_log(
+                "agent.error",
+                "AIAgent request failed, fallback to raw LLM",
+                {
+                    **llm_request_payload,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": str(e),
+                },
+            )
             return self._invoke_fallback(
                 prompt=prompt,
                 model=model,
@@ -654,6 +1057,7 @@ class AgentPool:
                 system_prompt=system_prompt,
                 history=session.get_messages(max_turns=max_history_turns) if session else None,
                 import_error=str(e),
+                runtime_scope=runtime_scope,
             )
 
     def _invoke_fallback(
@@ -666,6 +1070,7 @@ class AgentPool:
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict]] = None,
         import_error: Optional[str] = None,
+        runtime_scope: Optional[str] = None,
     ) -> dict:
         """降级调用：直接使用 openai SDK 进行模型调用。"""
         try:
@@ -676,7 +1081,8 @@ class AgentPool:
                 "Please run: pip install openai"
             )
 
-        runtime_client = _resolve_runtime_client_config(provider, model)
+        _install_openai_trace_hooks()
+        runtime_client = _resolve_runtime_client_config(provider, model, runtime_scope=runtime_scope)
         if not _runtime_client_is_configured(runtime_client):
             _raise_missing_runtime_credentials(runtime_client)
         api_key = runtime_client["api_key"]
@@ -701,6 +1107,21 @@ class AgentPool:
         if temperature is not None:
             kwargs["temperature"] = temperature
 
+        started_at = time.perf_counter()
+        _llm_debug_log(
+            "fallback.request",
+            "Fallback raw LLM request",
+            {
+                "provider": runtime_client["provider"] or provider or "fallback",
+                "runtime_scope": runtime_client.get("runtime_scope"),
+                "model": kwargs["model"],
+                "base_url": base_url,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "import_error": import_error,
+            },
+        )
         response = client.chat.completions.create(**kwargs)
 
         choice = response.choices[0] if response.choices else None
@@ -714,14 +1135,28 @@ class AgentPool:
                 "total_tokens": response.usage.total_tokens,
             }
 
-        return {
+        result = {
             "text": text or "",
             "model": response.model,
             "provider": runtime_client["provider"] or provider or "fallback",
+            "runtime_scope": runtime_client.get("runtime_scope"),
             "usage": usage_data,
             "_fallback": True,
             "_import_error": import_error,
         }
+        _llm_debug_log(
+            "fallback.response",
+            "Fallback raw LLM response",
+            {
+                "provider": result["provider"],
+                "runtime_scope": result.get("runtime_scope"),
+                "model": result["model"],
+                "base_url": base_url,
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                "result": result,
+            },
+        )
+        return result
 
     def invoke_stream_fallback(
         self,
@@ -732,6 +1167,7 @@ class AgentPool:
         temperature: Optional[float] = None,
         system_prompt: Optional[str] = None,
         history: Optional[List[Dict]] = None,
+        runtime_scope: Optional[str] = None,
     ):
         """降级流式调用：返回一个 chunk 生成器。"""
         try:
@@ -739,7 +1175,8 @@ class AgentPool:
         except ImportError:
             raise RuntimeError("openai package is not installed.")
 
-        runtime_client = _resolve_runtime_client_config(provider, model)
+        _install_openai_trace_hooks()
+        runtime_client = _resolve_runtime_client_config(provider, model, runtime_scope=runtime_scope)
         if not _runtime_client_is_configured(runtime_client):
             _raise_missing_runtime_credentials(runtime_client)
         api_key = runtime_client["api_key"]
@@ -765,6 +1202,19 @@ class AgentPool:
         if temperature is not None:
             kwargs["temperature"] = temperature
 
+        _llm_debug_log(
+            "fallback.stream_request",
+            "Fallback raw LLM streaming request",
+            {
+                "provider": runtime_client["provider"] or provider or "fallback",
+                "runtime_scope": runtime_client.get("runtime_scope"),
+                "model": kwargs["model"],
+                "base_url": base_url,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+            },
+        )
         return client.chat.completions.create(**kwargs)
 
 
@@ -881,6 +1331,117 @@ def _is_local_runtime_base_url(base_url: str) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
+def _env_first(*keys: str) -> str:
+    for key in keys:
+        value = str(os.environ.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _normalize_runtime_scope(runtime_scope: Optional[str]) -> str:
+    scope = str(runtime_scope or "").strip().lower().replace("-", "_")
+    if scope in ("cloud", "remote"):
+        return "cloud"
+    if scope in ("local", "edge"):
+        return "local"
+    return ""
+
+
+def _runtime_scope_defaults(runtime_scope: Optional[str]) -> Dict[str, str]:
+    """Return model runtime defaults for cloud/local split invocations."""
+    scope = _normalize_runtime_scope(runtime_scope)
+    if scope == "local":
+        base_url = _env_first(
+            "QEECLAW_LOCAL_LLM_BASE_URL",
+            "QEECLAW_LOCAL_OPENAI_BASE_URL",
+            "LOCAL_OPENAI_BASE_URL",
+        )
+        legacy_openai_base_url = _env_first("OPENAI_BASE_URL")
+        using_legacy_local = not base_url and _is_local_runtime_base_url(legacy_openai_base_url)
+        if using_legacy_local:
+            base_url = legacy_openai_base_url
+        if not base_url:
+            base_url = "http://127.0.0.1:8090/v1"
+
+        model = _env_first(
+            "QEECLAW_LOCAL_LLM_MODEL",
+            "QEECLAW_LOCAL_MODEL",
+            "HERMES_LOCAL_MODEL",
+        )
+        if not model and using_legacy_local:
+            model = _env_first("HERMES_MODEL")
+        if not model:
+            model = "qwen3.5-2b-q4_0"
+
+        api_key = _env_first(
+            "QEECLAW_LOCAL_LLM_API_KEY",
+            "QEECLAW_LOCAL_OPENAI_API_KEY",
+            "LOCAL_OPENAI_API_KEY",
+        )
+        if not api_key and using_legacy_local:
+            api_key = _env_first("OPENAI_API_KEY")
+        if not api_key:
+            api_key = "local-bridge-key"
+
+        return {
+            "scope": "local",
+            "provider": _env_first("QEECLAW_LOCAL_LLM_PROVIDER") or "local",
+            "model": model,
+            "base_url": base_url,
+            "api_key": api_key,
+        }
+
+    if scope == "cloud":
+        explicit_provider = _env_first(
+            "QEECLAW_CLOUD_LLM_PROVIDER",
+            "HERMES_CLOUD_PROVIDER",
+        )
+        explicit_model = _env_first(
+            "QEECLAW_CLOUD_LLM_MODEL",
+            "QEECLAW_CLOUD_MODEL",
+            "HERMES_CLOUD_MODEL",
+        )
+        explicit_base_url = _env_first(
+            "QEECLAW_CLOUD_LLM_BASE_URL",
+            "QEECLAW_CLOUD_OPENAI_BASE_URL",
+            "CLOUD_OPENAI_BASE_URL",
+        )
+        explicit_api_key = _env_first(
+            "QEECLAW_CLOUD_LLM_API_KEY",
+            "QEECLAW_CLOUD_OPENAI_API_KEY",
+            "CLOUD_OPENAI_API_KEY",
+        )
+        legacy_base_url = _env_first("OPENAI_BASE_URL")
+        legacy_is_local = _is_local_runtime_base_url(legacy_base_url)
+        legacy_provider = ""
+        legacy_model = ""
+        legacy_api_key = ""
+        if not legacy_is_local:
+            legacy_provider = _env_first(
+                "HERMES_PROVIDER",
+                "QEECLAW_MODEL_PROVIDER",
+                "QEECLAW_LLM_PROVIDER",
+            )
+            legacy_model = _env_first("HERMES_MODEL")
+            legacy_api_key = _env_first("OPENAI_API_KEY")
+        return {
+            "scope": "cloud",
+            "provider": explicit_provider or legacy_provider,
+            "model": explicit_model or legacy_model,
+            "base_url": explicit_base_url or (legacy_base_url if not legacy_is_local else ""),
+            "api_key": explicit_api_key or legacy_api_key,
+        }
+
+    return {
+        "scope": "",
+        "provider": "",
+        "model": "",
+        "base_url": "",
+        "api_key": "",
+    }
+
+
 def _get_runtime_hermes_home() -> str:
     return os.environ.get("HERMES_HOME", os.path.expanduser("~/.qeeclaw_hermes"))
 
@@ -981,10 +1542,19 @@ def _infer_provider_from_model_name(model_name: str) -> str:
     return prefix
 
 
-def _resolve_runtime_provider(provider_name: Optional[str], model_name: Optional[str]) -> str:
+def _resolve_runtime_provider(
+    provider_name: Optional[str],
+    model_name: Optional[str],
+    runtime_scope: Optional[str] = None,
+) -> str:
     normalized_provider = _normalize_provider_name(provider_name)
     if normalized_provider:
         return normalized_provider
+
+    scope_defaults = _runtime_scope_defaults(runtime_scope)
+    scoped_provider = _normalize_provider_name(scope_defaults.get("provider"))
+    if scoped_provider:
+        return scoped_provider
 
     env_provider = _normalize_provider_name(
         os.environ.get("HERMES_PROVIDER")
@@ -1022,8 +1592,12 @@ def _resolve_runtime_provider(provider_name: Optional[str], model_name: Optional
     return ""
 
 
-def _load_runtime_credential(provider_name: Optional[str], model_name: Optional[str]) -> Tuple[str, Any, Any]:
-    resolved_provider = _resolve_runtime_provider(provider_name, model_name)
+def _load_runtime_credential(
+    provider_name: Optional[str],
+    model_name: Optional[str],
+    runtime_scope: Optional[str] = None,
+) -> Tuple[str, Any, Any]:
+    resolved_provider = _resolve_runtime_provider(provider_name, model_name, runtime_scope=runtime_scope)
     if not resolved_provider:
         return "", None, None
 
@@ -1047,12 +1621,22 @@ def _load_runtime_credential(provider_name: Optional[str], model_name: Optional[
         return resolved_provider, None, None
 
 
-def _resolve_runtime_client_config(provider_name: Optional[str], model_name: Optional[str]) -> Dict[str, Any]:
-    resolved_model = str(model_name or "").strip() or _get_user_preferred_model()
+def _resolve_runtime_client_config(
+    provider_name: Optional[str],
+    model_name: Optional[str],
+    runtime_scope: Optional[str] = None,
+) -> Dict[str, Any]:
+    scope_defaults = _runtime_scope_defaults(runtime_scope)
+    scoped_model = scope_defaults.get("model", "")
+    resolved_model = str(model_name or "").strip() or scoped_model or _get_user_preferred_model()
     if not resolved_model:
         resolved_model = os.environ.get("HERMES_MODEL", "")
 
-    resolved_provider, credential_pool, credential_entry = _load_runtime_credential(provider_name, resolved_model)
+    resolved_provider, credential_pool, credential_entry = _load_runtime_credential(
+        provider_name,
+        resolved_model,
+        runtime_scope=runtime_scope,
+    )
     runtime_api_key = None
     runtime_base_url = None
     if credential_entry is not None:
@@ -1080,9 +1664,15 @@ def _resolve_runtime_client_config(provider_name: Optional[str], model_name: Opt
                 break
 
         if not runtime_api_key:
+            runtime_api_key = scope_defaults.get("api_key") or ""
+
+        if not runtime_api_key:
             runtime_api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
     if not runtime_base_url:
-        if resolved_provider == "alibaba":
+        scoped_base_url = scope_defaults.get("base_url") or ""
+        if scoped_base_url:
+            runtime_base_url = scoped_base_url
+        elif resolved_provider == "alibaba":
             runtime_base_url = (
                 os.environ.get("DASHSCOPE_BASE_URL")
                 or os.environ.get("OPENAI_BASE_URL")
@@ -1108,6 +1698,7 @@ def _resolve_runtime_client_config(provider_name: Optional[str], model_name: Opt
         "api_key": runtime_api_key,
         "base_url": runtime_base_url,
         "credential_pool": credential_pool,
+        "runtime_scope": _normalize_runtime_scope(runtime_scope),
     }
 
 
@@ -1175,6 +1766,35 @@ def _discover_models() -> List[Dict[str, Any]]:
     auth_pools = _load_auth_credential_pools()
     cache = _load_models_dev_cache()
 
+    def add_model_record(
+        key: str,
+        model_name: str,
+        provider_name: str,
+        is_preferred: bool = False,
+        label: Optional[str] = None,
+        runtime_scope: Optional[str] = None,
+    ):
+        record_key = key or model_name
+        if record_key in models:
+            scope_prefix = _normalize_runtime_scope(runtime_scope) or provider_name or "model"
+            record_key = f"{scope_prefix}:{model_name}"
+        record = _make_model_record(
+            model_name=model_name,
+            provider_name=provider_name,
+            is_preferred=is_preferred,
+            label=label,
+        )
+        scoped = _normalize_runtime_scope(runtime_scope)
+        if scoped:
+            record["runtime_scope"] = scoped
+            record["invoke_path"] = (
+                "/api/platform/models/invoke_local"
+                if scoped == "local"
+                else "/api/platform/models/invoke"
+            )
+        models[record_key] = record
+        return record
+
     if auth_pools:
         for provider_name in auth_pools.keys():
             provider_cache = cache.get(provider_name) if isinstance(cache, dict) else None
@@ -1182,7 +1802,8 @@ def _discover_models() -> List[Dict[str, Any]]:
             if isinstance(cache_models, dict) and cache_models:
                 for model_name, payload in cache_models.items():
                     label = payload.get("name") if isinstance(payload, dict) else None
-                    models[model_name] = _make_model_record(
+                    add_model_record(
+                        key=model_name,
                         model_name=model_name,
                         provider_name=provider_name,
                         is_preferred=False,
@@ -1191,7 +1812,8 @@ def _discover_models() -> List[Dict[str, Any]]:
 
         if preferred_model and preferred_model not in models:
             inferred_provider = _resolve_runtime_provider(None, preferred_model)
-            models[preferred_model] = _make_model_record(
+            add_model_record(
+                key=preferred_model,
                 model_name=preferred_model,
                 provider_name=inferred_provider or next(iter(auth_pools.keys())),
                 is_preferred=True,
@@ -1203,7 +1825,6 @@ def _discover_models() -> List[Dict[str, Any]]:
             else:
                 first_model = next(iter(models.values()))
                 first_model["is_preferred"] = True
-            return list(models.values())
 
     env_model = os.environ.get("HERMES_MODEL", "").strip()
     env_provider = _resolve_runtime_provider(
@@ -1218,13 +1839,32 @@ def _discover_models() -> List[Dict[str, Any]]:
         ))
     env_runtime = _resolve_runtime_client_config(env_provider, env_model)
     if not _runtime_client_is_configured(env_runtime):
-        return []
+        env_runtime = {}
 
     provider = env_runtime.get("provider") or env_provider or "openai"
     default_model = env_runtime.get("model") or env_model
-    if not default_model:
-        return []
-    models[default_model] = _make_model_record(default_model, provider, is_preferred=True)
+    if default_model:
+        add_model_record(
+            key=default_model,
+            model_name=default_model,
+            provider_name=provider,
+            is_preferred=not bool(models),
+        )
+
+    for scope in ("cloud", "local"):
+        scoped_runtime = _resolve_runtime_client_config(None, None, runtime_scope=scope)
+        scoped_model = scoped_runtime.get("model") or ""
+        if not scoped_model or not _runtime_client_is_configured(scoped_runtime):
+            continue
+        scoped_provider = scoped_runtime.get("provider") or scope
+        add_model_record(
+            key=f"{scope}:{scoped_model}",
+            model_name=scoped_model,
+            provider_name=scoped_provider,
+            is_preferred=bool(scope == "cloud" and not models),
+            label=f"{scoped_model} ({scope})",
+            runtime_scope=scope,
+        )
 
     # 从 AgentProfile 收集额外模型
     try:
@@ -1233,11 +1873,30 @@ def _discover_models() -> List[Dict[str, Any]]:
         for p in sm._profiles.values():
             m = p.model
             if m and m not in models:
-                models[m] = _make_model_record(m, _resolve_runtime_provider(None, m) or provider, is_preferred=False)
+                add_model_record(
+                    key=m,
+                    model_name=m,
+                    provider_name=_resolve_runtime_provider(None, m) or provider,
+                    is_preferred=False,
+                )
     except Exception:
         pass
 
     return list(models.values())
+
+
+def _select_model_route(models: List[Dict[str, Any]], runtime_scope: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    scoped = _normalize_runtime_scope(runtime_scope)
+    if scoped:
+        candidates = [m for m in models if _normalize_runtime_scope(m.get("runtime_scope")) == scoped]
+    else:
+        candidates = models
+    if not candidates:
+        return None
+    for item in candidates:
+        if item.get("is_preferred"):
+            return item
+    return candidates[0]
 
 
 def _get_preferred_model() -> str:
@@ -2583,9 +3242,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             return
         _path = urllib.parse.urlparse(self.path).path
         if _path == "/invoke":
-            self._handle_invoke()
+            self._handle_invoke(runtime_scope="cloud")
+        elif _path == "/invoke_local":
+            self._handle_invoke(runtime_scope="local")
         elif _path == "/api/platform/models/invoke":
-            self._handle_invoke(platform_response=True)
+            self._handle_invoke(platform_response=True, runtime_scope="cloud")
+        elif _path == "/api/platform/models/invoke_local":
+            self._handle_invoke(platform_response=True, runtime_scope="local")
         elif _path == "/api/llm/images/generations":
             self._handle_llm_image_generation()
         elif _path == "/invoke/stream":
@@ -2869,7 +3532,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "message": f"Failed to import hermes-agent: {e}",
             })
 
-    def _handle_invoke(self, platform_response: bool = False):
+    def _handle_invoke(self, platform_response: bool = False, runtime_scope: Optional[str] = None):
         """非流式模型调用端点。支持 session_id 实现多轮对话。
 
         使用 AgentPool 调用 AIAgent.run_conversation()，
@@ -2882,16 +3545,37 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             prompt = body.get("prompt", "")
             model = body.get("model") or body.get("model_id") or body.get("modelId")
             provider = body.get("provider")
+            effective_runtime_scope = _normalize_runtime_scope(
+                body.get("runtime_scope") or body.get("runtimeScope") or runtime_scope
+            )
+            runtime_defaults = _runtime_scope_defaults(effective_runtime_scope)
+            if effective_runtime_scope and not model and runtime_defaults.get("model"):
+                model = runtime_defaults["model"]
+            if effective_runtime_scope and not provider and runtime_defaults.get("provider"):
+                provider = runtime_defaults["provider"]
             max_tokens = body.get("max_tokens") or body.get("maxTokens")
             temperature = body.get("temperature")
             system_prompt = body.get("system_prompt") or body.get("systemPrompt")
-            use_knowledge = body.get("use_knowledge", True)  # 默认启用 RAG
+            use_agent = _truthy_body_flag(
+                body,
+                "use_agent",
+                "useAgent",
+                default=(effective_runtime_scope != "local"),
+            )
+            use_knowledge = _truthy_body_flag(
+                body,
+                "use_knowledge",
+                "useKnowledge",
+                default=(effective_runtime_scope != "local"),
+            )
             kb_scope = body.get("kb_scope")
             # 多轮对话 + 多智体参数
             session_id = body.get("session_id") or body.get("sessionId")
             user_id = body.get("user_id") or body.get("userId") or "anonymous"
             agent_profile = body.get("agent_profile") or body.get("agentProfile") or "default"
-            max_history_turns = body.get("max_history_turns") or body.get("maxHistoryTurns") or 20
+            max_history_turns = body.get("max_history_turns") or body.get("maxHistoryTurns")
+            if max_history_turns is None:
+                max_history_turns = 0 if effective_runtime_scope == "local" else 20
 
             if not prompt:
                 if platform_response:
@@ -2930,22 +3614,67 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 except Exception as e:
                     print(f"[hermes-bridge] KB retrieval warning: {e}")
 
-            memory_context = _build_memory_context(prompt, body, agent_profile=session.agent_profile)
+            memory_context = ""
+            if _truthy_body_flag(
+                body,
+                "use_memory",
+                "useMemory",
+                default=(effective_runtime_scope != "local"),
+            ):
+                memory_context = _build_memory_context(prompt, body, agent_profile=session.agent_profile)
             effective_system_prompt = _append_context(system_prompt, memory_context, rag_context)
+
+            _llm_debug_log(
+                "invoke.request",
+                "Bridge non-stream invoke request",
+                {
+                    "session_id": actual_session_id,
+                    "runtime_scope": effective_runtime_scope,
+                    "user_id": user_id,
+                    "agent_profile": session.agent_profile,
+                    "provider": provider,
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "max_history_turns": max_history_turns,
+                    "use_agent": use_agent,
+                    "use_knowledge": use_knowledge,
+                    "kb_scope": kb_scope,
+                    "rag_used": bool(rag_context),
+                    "memory_used": bool(memory_context),
+                    "system_prompt": system_prompt,
+                    "effective_system_prompt": effective_system_prompt,
+                    "prompt": prompt,
+                    "platform_response": platform_response,
+                },
+            )
 
             # 通过 AgentPool 调用（AIAgent 或 fallback）
             pool = get_agent_pool()
-            result = pool.invoke(
-                prompt=prompt,
-                profile=profile,
-                session=session,
-                system_prompt=effective_system_prompt or None,
-                model=model,
-                provider=provider,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                max_history_turns=max_history_turns,
-            )
+            if use_agent:
+                result = pool.invoke(
+                    prompt=prompt,
+                    profile=profile,
+                    session=session,
+                    system_prompt=effective_system_prompt or None,
+                    model=model,
+                    provider=provider,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    max_history_turns=max_history_turns,
+                    runtime_scope=effective_runtime_scope,
+                )
+            else:
+                result = pool._invoke_fallback(
+                    prompt=prompt,
+                    model=model,
+                    provider=provider,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    system_prompt=effective_system_prompt or None,
+                    history=session.get_messages(max_turns=max_history_turns) if max_history_turns else None,
+                    runtime_scope=effective_runtime_scope,
+                )
 
             # 记录本轮对话到 session
             assistant_text = result.get("text", "")
@@ -2969,14 +3698,40 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 usage=result.get("usage"),
                 duration_seconds=time.perf_counter() - started_at,
             )
+            _llm_debug_log(
+                "invoke.response",
+                "Bridge non-stream invoke response",
+                {
+                    "session_id": actual_session_id,
+                    "agent_profile": session.agent_profile,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "result": result,
+                },
+            )
 
             if platform_response:
                 _platform_json_response(self, 200, result)
             else:
                 _json_response(self, 200, result)
 
+        except (BrokenPipeError, ConnectionResetError) as e:
+            _bridge_log("info", "invoke.disconnect", "Client disconnected after LLM completed; skip error response", {
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2) if 'started_at' in locals() else None,
+                "error": str(e),
+                "platform_response": platform_response,
+                "runtime_scope": _normalize_runtime_scope(runtime_scope),
+            })
+            return
         except Exception as e:
             traceback.print_exc()
+            _llm_debug_log(
+                "invoke.error",
+                "Bridge non-stream invoke failed",
+                {
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2) if 'started_at' in locals() else None,
+                    "error": str(e),
+                },
+            )
             if platform_response:
                 _platform_json_response(self, 500, None, f"Internal bridge error: {e}")
             else:
@@ -3823,6 +4578,28 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             if not model_name:
                 model_name = _get_preferred_model()
 
+            _llm_debug_log(
+                "invoke_stream.request",
+                "Bridge streaming invoke request",
+                {
+                    "session_id": actual_session_id,
+                    "user_id": user_id,
+                    "agent_profile": session.agent_profile,
+                    "provider": provider_name,
+                    "model": model_name,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                    "max_history_turns": max_history_turns,
+                    "use_knowledge": use_knowledge,
+                    "use_agent": use_agent,
+                    "kb_scope": kb_scope,
+                    "rag_used": bool(rag_context),
+                    "memory_used": bool(memory_context),
+                    "system_prompt": system_prompt,
+                    "prompt": prompt,
+                },
+            )
+
             # 发送 session 元信息（首个 SSE 事件）
             meta_event = json.dumps({
                 "type": "session",
@@ -3903,13 +4680,42 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 usage=(result or {}).get("usage"),
                 duration_seconds=time.perf_counter() - started_at,
             )
+            _llm_debug_log(
+                "invoke_stream.response",
+                "Bridge streaming invoke response",
+                {
+                    "session_id": actual_session_id,
+                    "agent_profile": session.agent_profile,
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "result": {
+                        "model": (result or {}).get("model"),
+                        "provider": (result or {}).get("provider"),
+                        "usage": (result or {}).get("usage"),
+                        "text": full_response,
+                    },
+                },
+            )
 
             # 发送完成信号
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
 
+        except (BrokenPipeError, ConnectionResetError) as e:
+            _bridge_log("info", "invoke_stream.disconnect", "Streaming client disconnected; stop sending SSE response", {
+                "duration_ms": round((time.perf_counter() - started_at) * 1000, 2) if 'started_at' in locals() else None,
+                "error": str(e),
+            })
+            return
         except Exception as e:
             traceback.print_exc()
+            _llm_debug_log(
+                "invoke_stream.error",
+                "Bridge streaming invoke failed",
+                {
+                    "duration_ms": round((time.perf_counter() - started_at) * 1000, 2) if 'started_at' in locals() else None,
+                    "error": str(e),
+                },
+            )
             try:
                 error_chunk = json.dumps({
                     "type": "error",
@@ -4116,7 +4922,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._send_kb_upload_response(status, result, platform_response)
 
         except ImportError:
-            self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Build runtime with chromadb and start the local llama-server embedding API for Qwen3-Embedding-0.6B-Q4_0.gguf."}, platform_response)
+            self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Build runtime with chromadb and configure QEECLAW_KB_EMBEDDING_API_URL to an OpenAI-compatible embeddings endpoint, e.g. http://127.0.0.1:8091/v1/embeddings."}, platform_response)
         except Exception as e:
             traceback.print_exc()
             self._send_kb_upload_response(500, {"error": str(e)}, platform_response)
@@ -4205,7 +5011,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _json_response(self, 200, {"results": results, "count": len(results)})
 
         except ImportError:
-            _json_response(self, 503, {"error": "Knowledge base module not available. Build runtime with chromadb and start the local llama-server embedding API for Qwen3-Embedding-0.6B-Q4_0.gguf."})
+            _json_response(self, 503, {"error": "Knowledge base module not available. Build runtime with chromadb and configure QEECLAW_KB_EMBEDDING_API_URL to an OpenAI-compatible embeddings endpoint, e.g. http://127.0.0.1:8091/v1/embeddings."})
         except Exception as e:
             traceback.print_exc()
             _json_response(self, 500, {"error": str(e)})
@@ -4219,7 +5025,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except ImportError:
             _json_response(self, 200, {
                 "available": False,
-                "error": "Knowledge base module not available. Build runtime with chromadb and start the local llama-server embedding API for Qwen3-Embedding-0.6B-Q4_0.gguf.",
+                "error": "Knowledge base module not available. Build runtime with chromadb and configure QEECLAW_KB_EMBEDDING_API_URL to an OpenAI-compatible embeddings endpoint, e.g. http://127.0.0.1:8091/v1/embeddings.",
                 "document_count": 0,
             })
         except Exception as e:
@@ -5134,6 +5940,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     break
 
             selected = preferred_selected or (models[0] if models else None)
+            cloud_selected = _select_model_route(models, "cloud")
+            local_selected = _select_model_route(models, "local")
 
             _platform_json_response(self, 200, {
                 "preferred_model": preferred,
@@ -5150,6 +5958,24 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     else ("fallback" if selected else "no_models")
                 ),
                 "selected": selected,
+                "cloud_route": {
+                    "runtime_scope": "cloud",
+                    "invoke_path": "/api/platform/models/invoke",
+                    "selected": cloud_selected,
+                    "resolved_model": cloud_selected["model_name"] if cloud_selected else None,
+                    "resolved_provider_name": cloud_selected["provider_name"] if cloud_selected else None,
+                    "resolved_provider_model_id": cloud_selected["provider_model_id"] if cloud_selected else None,
+                    "available": cloud_selected is not None,
+                },
+                "local_route": {
+                    "runtime_scope": "local",
+                    "invoke_path": "/api/platform/models/invoke_local",
+                    "selected": local_selected,
+                    "resolved_model": local_selected["model_name"] if local_selected else None,
+                    "resolved_provider_name": local_selected["provider_name"] if local_selected else None,
+                    "resolved_provider_model_id": local_selected["provider_model_id"] if local_selected else None,
+                    "available": local_selected is not None,
+                },
             })
         except Exception as e:
             traceback.print_exc()

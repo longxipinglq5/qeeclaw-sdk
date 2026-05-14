@@ -10,7 +10,7 @@ QeeClaw TypeScript SDK 与 [hermes-agent](https://github.com/NousResearch/hermes
 
 - Python 3.11+
 - `pip install openai` (最小依赖)
-- 可选：`pip install chromadb numpy`，并启动本地 `llama-server --embedding`（本地知识库向量检索）
+- 可选：`pip install chromadb numpy`，并配置本地或内网 OpenAI-compatible `/v1/embeddings` 接口（本地知识库向量检索）
 
 ### 启动
 
@@ -95,7 +95,8 @@ Bridge Server 暴露两类路径：
 | 方法 | 路径 | 说明 | SDK 模块 |
 |------|------|------|----------|
 | GET | `/health` | 健康检查（免鉴权） | — |
-| POST | `/invoke` | 非流式对话 | — |
+| POST | `/invoke` | 云端主模型非流式对话 | — |
+| POST | `/invoke_local` | 本地模型非流式对话，默认不注入 agent/RAG/memory 大上下文 | — |
 | POST | `/invoke/stream` | SSE 流式对话 | — |
 
 ### 智体管理 (Agent)
@@ -190,8 +191,10 @@ Bridge Server 暴露两类路径：
 | GET | `/api/platform/models/providers` | Provider 摘要 | `models` |
 | GET | `/api/platform/models/runtimes` | 运行时列表 | `models` |
 | GET | `/api/platform/models/resolve` | 模型解析 | `models` |
-| GET | `/api/platform/models/route` | 路由规则查看 | `models` |
+| GET | `/api/platform/models/route` | 路由规则查看，包含 cloud/local 双路由信息 | `models` |
 | PUT | `/api/platform/models/route` | 路由规则设置 | `models` |
+| POST | `/api/platform/models/invoke` | 云端主模型调用 | `models` |
+| POST | `/api/platform/models/invoke_local` | 本地模型调用 | `models.invokeLocal` |
 | GET | `/api/platform/models/usage` | 用量统计 | `models` |
 | GET | `/api/platform/models/cost` | 成本统计 | `models` |
 | GET | `/api/platform/models/quota` | 配额查询 | `models` |

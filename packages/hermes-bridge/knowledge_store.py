@@ -1,11 +1,11 @@
 """
-QeeClaw Knowledge Store - local ChromaDB + llama-server embedding API.
+QeeClaw Knowledge Store - local ChromaDB + OpenAI-compatible embeddings.
 
-The embedding model is a local GGUF file served by llama.cpp/llama-server.
+The embedding model is served by a local or LAN OpenAI-compatible runtime.
 This module does not download models and does not call cloud embedding APIs.
 
-Default model: Qwen3-Embedding-0.6B-Q4_0.gguf
-Default embedding API: http://127.0.0.1:8080/embedding
+Default embedding model: qwen3-embedding-0.6b-q4_0
+Default embedding API: http://127.0.0.1:8091/v1/embeddings
 Data storage path: ~/.qeeclaw/knowledge/ by default. Override with QEECLAW_KB_DIR.
 """
 
@@ -34,7 +34,7 @@ _MODULE_DIR = os.path.abspath(os.path.dirname(__file__))
 _CONFIG_DIR = _MODULE_DIR
 
 _DEFAULT_MODEL_FILE_NAME = "Qwen3-Embedding-0.6B-Q4_0.gguf"
-_DEFAULT_MODEL_NAME = "Qwen3-Embedding-0.6B-Q4_0"
+_DEFAULT_MODEL_NAME = "qwen3-embedding-0.6b-q4_0"
 
 KB_DIR = os.environ.get(
     "QEECLAW_KB_DIR",
@@ -45,8 +45,8 @@ KB_TABLE_NAME = os.environ.get("QEECLAW_KB_TABLE", "qeeclaw_knowledge")
 KB_EMBEDDING_MODEL = os.environ.get("QEECLAW_KB_EMBEDDING_MODEL", _DEFAULT_MODEL_NAME)
 KB_EMBEDDING_MODEL_FILE = os.environ.get("QEECLAW_KB_EMBEDDING_MODEL_FILE", "")
 KB_EMBEDDING_MODEL_DIR = os.environ.get("QEECLAW_KB_EMBEDDING_MODEL_DIR", "")
-KB_EMBEDDING_ENGINE = os.environ.get("QEECLAW_KB_EMBEDDING_ENGINE", "llama-server").lower()
-KB_EMBEDDING_API_URL = os.environ.get("QEECLAW_KB_EMBEDDING_API_URL", "http://127.0.0.1:8080/embedding")
+KB_EMBEDDING_ENGINE = os.environ.get("QEECLAW_KB_EMBEDDING_ENGINE", "openai-compatible").lower()
+KB_EMBEDDING_API_URL = os.environ.get("QEECLAW_KB_EMBEDDING_API_URL", "http://127.0.0.1:8091/v1/embeddings")
 KB_EMBEDDING_API_TIMEOUT = float(os.environ.get("QEECLAW_KB_EMBEDDING_API_TIMEOUT", "30"))
 KB_CHROMA_DIR = os.environ.get("QEECLAW_KB_CHROMA_DIR", "")
 KB_BATCH_SIZE = int(os.environ.get("QEECLAW_KB_EMBEDDING_BATCH_SIZE", "1"))
@@ -240,7 +240,7 @@ def _extract_embedding_vector(value: Any) -> Optional[List[float]]:
     if isinstance(value, list):
         if not value:
             return None
-        # llama-server legacy endpoint may return [{"embedding": [[...]]}].
+        # Legacy llama-server endpoint may return [{"embedding": [[...]]}].
         for item in value:
             vector = _extract_embedding_vector(item)
             if vector:
@@ -264,10 +264,21 @@ def _embedding_base_url() -> str:
     return api_url
 
 
+def _is_openai_embeddings_url() -> bool:
+    return KB_EMBEDDING_API_URL.rstrip("/").endswith("/v1/embeddings")
+
+
 def _check_embedding_api_health():
     base_url = _embedding_base_url()
     if not base_url:
         raise RuntimeError("QEECLAW_KB_EMBEDDING_API_URL is empty")
+
+    if _is_openai_embeddings_url():
+        embedder = _EmbeddingApiClient(KB_EMBEDDING_API_URL, KB_EMBEDDING_API_TIMEOUT)
+        vector = embedder._request_embedding("health")
+        if vector:
+            return
+
     for path in ("/health", "/v1/health"):
         try:
             with urllib.request.urlopen(base_url + path, timeout=min(KB_EMBEDDING_API_TIMEOUT, 5.0)) as response:
@@ -276,13 +287,13 @@ def _check_embedding_api_health():
         except Exception:
             continue
     raise RuntimeError(
-        "Embedding API is not healthy. Start llama-server first, for example: "
-        f"llama-server -m {_resolve_local_model_file(require=False) or _DEFAULT_MODEL_FILE_NAME} "
-        "--port 8080 --embedding -t 8"
+        "Embedding API is not healthy. Check QEECLAW_KB_EMBEDDING_API_URL. "
+        "Expected an OpenAI-compatible embeddings endpoint such as "
+        "http://127.0.0.1:8091/v1/embeddings."
     )
 
 
-class _LlamaServerEmbedder:
+class _EmbeddingApiClient:
     def __init__(self, api_url: str, timeout: float):
         if not api_url:
             raise RuntimeError("QEECLAW_KB_EMBEDDING_API_URL is empty")
@@ -291,7 +302,7 @@ class _LlamaServerEmbedder:
 
     def _payload_for_text(self, text: str) -> Dict[str, Any]:
         if self.api_url.rstrip("/").endswith("/v1/embeddings"):
-            return {"input": text, "model": KB_EMBEDDING_MODEL}
+            return {"input": [text], "model": KB_EMBEDDING_MODEL}
         return {"content": text}
 
     def _request_embedding(self, text: str) -> List[float]:
@@ -346,14 +357,28 @@ def _load_embedding_model():
 
     engine = KB_EMBEDDING_ENGINE
     if engine == "auto":
-        engine = "llama-server"
+        engine = "openai-compatible"
 
-    if engine in ("llama-server", "llama_server", "llama.cpp", "llamacpp"):
-        _embedding_model = _LlamaServerEmbedder(KB_EMBEDDING_API_URL, KB_EMBEDDING_API_TIMEOUT)
-        _embedding_backend = "llama-server"
+    if engine in (
+        "openai-compatible",
+        "openai_compatible",
+        "openai",
+        "embedding-api",
+        "embedding_api",
+        "api",
+        "llama-server",
+        "llama_server",
+        "llama.cpp",
+        "llamacpp",
+    ):
+        _embedding_model = _EmbeddingApiClient(KB_EMBEDDING_API_URL, KB_EMBEDDING_API_TIMEOUT)
+        _embedding_backend = "openai-compatible" if _is_openai_embeddings_url() else "llama-server"
         return _embedding_model
 
-    raise RuntimeError(f"Unsupported local embedding engine: {KB_EMBEDDING_ENGINE}. Expected llama-server.")
+    raise RuntimeError(
+        f"Unsupported local embedding engine: {KB_EMBEDDING_ENGINE}. "
+        "Expected openai-compatible embeddings API."
+    )
 
 
 def _normalize_vector(vector: List[float]) -> List[float]:
