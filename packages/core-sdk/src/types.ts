@@ -17,8 +17,28 @@ export interface QeeClawAuthContext {
   token?: string;
 }
 
-export interface QeeClawClientOptions extends QeeClawAuthContext {
+/** Configuration for a single endpoint (cloud or local). */
+export interface QeeClawEndpointConfig extends QeeClawAuthContext {
   baseUrl: string;
+  fetch?: typeof fetch;
+  headers?: Record<string, string>;
+  timeoutMs?: number;
+  userAgent?: string;
+}
+
+export interface QeeClawClientOptions {
+  /** Cloud endpoint — backend LLM gateway, billing, IAM, etc. */
+  cloud?: QeeClawEndpointConfig;
+  /** Local endpoint — hermes-bridge for local LLM, knowledge, memory. */
+  local?: QeeClawEndpointConfig;
+
+  /**
+   * @deprecated Use `cloud` and `local` for dual-endpoint configuration.
+   * Single `baseUrl` maps to cloud only.
+   */
+  baseUrl?: string;
+  /** @deprecated Use `cloud.token` or `local.token`. */
+  token?: string;
   fetch?: typeof fetch;
   headers?: Record<string, string>;
   timeoutMs?: number;

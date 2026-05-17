@@ -1,23 +1,6 @@
-import { HttpClient } from "./client/http-client.js";
-import { AgentModule } from "./modules/agent.js";
-import { ApiKeyModule } from "./modules/apikey.js";
-import { ApprovalModule } from "./modules/approval.js";
-import { AuditModule } from "./modules/audit.js";
-import { BillingModule } from "./modules/billing.js";
-import { BuilderModule } from "./modules/builder.js";
-import { ChannelsModule } from "./modules/channels.js";
-import { ConversationsModule } from "./modules/conversations.js";
-import { DevicesModule } from "./modules/devices.js";
-import { FileModule } from "./modules/file.js";
-import { IamModule } from "./modules/iam.js";
-import { KnowledgeModule } from "./modules/knowledge.js";
-import { MemoryModule } from "./modules/memory.js";
-import { ModelsModule } from "./modules/models.js";
-import { PolicyModule } from "./modules/policy.js";
-import { TenantModule } from "./modules/tenant.js";
-import { VoiceModule } from "./modules/voice.js";
-import { WorkflowModule } from "./modules/workflow.js";
-import type { QeeClawClientOptions } from "./types.js";
+import { CloudNamespace } from "./namespace/cloud.js";
+import { LocalNamespace } from "./namespace/local.js";
+import type { QeeClawClientOptions, QeeClawEndpointConfig } from "./types.js";
 
 export * from "./errors.js";
 export * from "./types.js";
@@ -39,48 +22,89 @@ export * from "./modules/policy.js";
 export * from "./modules/tenant.js";
 export * from "./modules/voice.js";
 export * from "./modules/workflow.js";
+export * from "./modules/llm/types.js";
+export * from "./modules/llm/chat-completions.js";
+export * from "./modules/llm/images.js";
+export * from "./modules/llm/videos.js";
+export * from "./namespace/cloud.js";
+export * from "./namespace/local.js";
 export * from "./runtime/index.js";
 
+function resolveEndpointConfig(
+  options: QeeClawClientOptions,
+  scope: "cloud" | "local",
+): QeeClawEndpointConfig | undefined {
+  if (scope === "cloud") {
+    if (options.cloud) return options.cloud;
+    if (options.baseUrl) {
+      return {
+        baseUrl: options.baseUrl,
+        token: options.token,
+        fetch: options.fetch,
+        headers: options.headers,
+        timeoutMs: options.timeoutMs,
+        userAgent: options.userAgent,
+      };
+    }
+    return undefined;
+  }
+  return options.local;
+}
+
 export class QeeClawCoreSDK {
-  readonly file: FileModule;
-  readonly voice: VoiceModule;
-  readonly workflow: WorkflowModule;
-  readonly agent: AgentModule;
-  readonly billing: BillingModule;
-  readonly builder: BuilderModule;
-  readonly iam: IamModule;
-  readonly apikey: ApiKeyModule;
-  readonly tenant: TenantModule;
-  readonly devices: DevicesModule;
-  readonly channels: ChannelsModule;
-  readonly conversations: ConversationsModule;
-  readonly models: ModelsModule;
-  readonly memory: MemoryModule;
-  readonly knowledge: KnowledgeModule;
-  readonly policy: PolicyModule;
-  readonly approval: ApprovalModule;
-  readonly audit: AuditModule;
+  readonly cloud: CloudNamespace;
+  readonly local: LocalNamespace | null;
+
+  // --- Backward-compatible top-level accessors (delegate to cloud) ---
+
+  /** @deprecated Use `sdk.cloud.agent` */
+  get agent() { return this.cloud.agent; }
+  /** @deprecated Use `sdk.cloud.apikey` */
+  get apikey() { return this.cloud.apikey; }
+  /** @deprecated Use `sdk.cloud.approval` */
+  get approval() { return this.cloud.approval; }
+  /** @deprecated Use `sdk.cloud.audit` */
+  get audit() { return this.cloud.audit; }
+  /** @deprecated Use `sdk.cloud.billing` */
+  get billing() { return this.cloud.billing; }
+  /** @deprecated Use `sdk.cloud.builder` */
+  get builder() { return this.cloud.builder; }
+  /** @deprecated Use `sdk.cloud.channels` */
+  get channels() { return this.cloud.channels; }
+  /** @deprecated Use `sdk.cloud.conversations` */
+  get conversations() { return this.cloud.conversations; }
+  /** @deprecated Use `sdk.cloud.devices` */
+  get devices() { return this.cloud.devices; }
+  /** @deprecated Use `sdk.cloud.file` */
+  get file() { return this.cloud.file; }
+  /** @deprecated Use `sdk.cloud.iam` */
+  get iam() { return this.cloud.iam; }
+  /** @deprecated Use `sdk.cloud.knowledge` */
+  get knowledge() { return this.cloud.knowledge; }
+  /** @deprecated Use `sdk.cloud.models` */
+  get models() { return this.cloud.models; }
+  /** @deprecated Use `sdk.cloud.policy` */
+  get policy() { return this.cloud.policy; }
+  /** @deprecated Use `sdk.cloud.tenant` */
+  get tenant() { return this.cloud.tenant; }
+  /** @deprecated Use `sdk.cloud.voice` */
+  get voice() { return this.cloud.voice; }
+  /** @deprecated Use `sdk.cloud.workflow` */
+  get workflow() { return this.cloud.workflow; }
+  /** @deprecated Use `sdk.local.memory` */
+  get memory() { return this.local?.memory; }
 
   constructor(options: QeeClawClientOptions) {
-    const http = new HttpClient(options);
-    this.file = new FileModule(http);
-    this.voice = new VoiceModule(http);
-    this.workflow = new WorkflowModule(http);
-    this.agent = new AgentModule(http);
-    this.billing = new BillingModule(http);
-    this.builder = new BuilderModule(http);
-    this.iam = new IamModule(http);
-    this.apikey = new ApiKeyModule(http);
-    this.tenant = new TenantModule(http);
-    this.devices = new DevicesModule(http);
-    this.channels = new ChannelsModule(http);
-    this.conversations = new ConversationsModule(http);
-    this.models = new ModelsModule(http);
-    this.memory = new MemoryModule(http);
-    this.knowledge = new KnowledgeModule(http);
-    this.policy = new PolicyModule(http);
-    this.approval = new ApprovalModule(http);
-    this.audit = new AuditModule(http);
+    const cloudConfig = resolveEndpointConfig(options, "cloud");
+    if (!cloudConfig) {
+      throw new Error(
+        "QeeClaw: cloud endpoint config is required. Provide `cloud` or legacy `baseUrl`.",
+      );
+    }
+    this.cloud = new CloudNamespace(cloudConfig);
+
+    const localConfig = resolveEndpointConfig(options, "local");
+    this.local = localConfig ? new LocalNamespace(localConfig) : null;
   }
 }
 

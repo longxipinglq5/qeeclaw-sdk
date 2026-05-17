@@ -1,6 +1,6 @@
 import { QeeClawApiError, QeeClawTimeoutError } from "../errors.js";
 import type {
-  QeeClawClientOptions,
+  QeeClawEndpointConfig,
   QeeClawRequestOptions,
   QeeClawResponseEnvelope,
 } from "../types.js";
@@ -63,7 +63,7 @@ export class HttpClient {
   private readonly timeoutMs: number;
   private readonly token?: string;
 
-  constructor(options: QeeClawClientOptions) {
+  constructor(options: QeeClawEndpointConfig) {
     this.baseUrl = options.baseUrl;
     const resolvedFetch = options.fetch ?? globalThis.fetch;
     this.fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
