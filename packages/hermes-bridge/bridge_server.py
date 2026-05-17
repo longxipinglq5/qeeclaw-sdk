@@ -33,8 +33,6 @@ import threading
 from threading import Thread
 from typing import Any, Dict, List, Optional, Tuple
 
-import bailian_image
-
 try:
     import yaml
     _HAS_YAML = True
@@ -955,19 +953,6 @@ class AgentPool:
             agent_kwargs["api_key"] = runtime_client["api_key"]
         if runtime_client.get("base_url"):
             agent_kwargs["base_url"] = runtime_client["base_url"]
-        if (
-            runtime_client.get("runtime_scope") == "cloud"
-            and _is_platform_model_base_url(str(runtime_client.get("base_url") or ""))
-        ):
-            return _invoke_platform_model_api(
-                runtime_client,
-                prompt=prompt,
-                model=effective_model,
-                provider=effective_provider,
-                max_tokens=effective_max_tokens,
-                temperature=temperature,
-                system_prompt=system_prompt,
-            )
         if effective_max_tokens is not None:
             agent_kwargs["max_tokens"] = effective_max_tokens
         if enabled_ts is not None:
@@ -1112,20 +1097,6 @@ class AgentPool:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-
-        if (
-            runtime_client.get("runtime_scope") == "cloud"
-            and _is_platform_model_base_url(str(base_url or ""))
-        ):
-            return _invoke_platform_model_api(
-                runtime_client,
-                prompt=prompt,
-                model=model or default_model,
-                provider=provider,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                system_prompt=system_prompt,
-            )
 
         client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
@@ -1506,47 +1477,6 @@ def _runtime_scope_defaults(runtime_scope: Optional[str]) -> Dict[str, str]:
             "api_key": api_key,
         }
 
-    if scope == "cloud":
-        explicit_provider = _env_first(
-            "QEECLAW_CLOUD_LLM_PROVIDER",
-            "HERMES_CLOUD_PROVIDER",
-        )
-        explicit_model = _env_first(
-            "QEECLAW_CLOUD_LLM_MODEL",
-            "QEECLAW_CLOUD_MODEL",
-            "HERMES_CLOUD_MODEL",
-        )
-        explicit_base_url = _env_first(
-            "QEECLAW_CLOUD_LLM_BASE_URL",
-            "QEECLAW_CLOUD_OPENAI_BASE_URL",
-            "CLOUD_OPENAI_BASE_URL",
-        )
-        explicit_api_key = _env_first(
-            "QEECLAW_CLOUD_LLM_API_KEY",
-            "QEECLAW_CLOUD_OPENAI_API_KEY",
-            "CLOUD_OPENAI_API_KEY",
-        )
-        legacy_base_url = _env_first("OPENAI_BASE_URL")
-        legacy_is_local = _is_local_runtime_base_url(legacy_base_url)
-        legacy_provider = ""
-        legacy_model = ""
-        legacy_api_key = ""
-        if not legacy_is_local:
-            legacy_provider = _env_first(
-                "HERMES_PROVIDER",
-                "QEECLAW_MODEL_PROVIDER",
-                "QEECLAW_LLM_PROVIDER",
-            )
-            legacy_model = _env_first("HERMES_MODEL")
-            legacy_api_key = _env_first("OPENAI_API_KEY")
-        return {
-            "scope": "cloud",
-            "provider": explicit_provider or legacy_provider,
-            "model": explicit_model or legacy_model,
-            "base_url": explicit_base_url or (legacy_base_url if not legacy_is_local else ""),
-            "api_key": explicit_api_key or legacy_api_key,
-        }
-
     return {
         "scope": "",
         "provider": "",
@@ -1692,18 +1622,7 @@ def _resolve_runtime_provider(
     inferred_from_env = _normalize_provider_name(_infer_provider_from_url(base_url))
     if not inferred_from_env:
         return ""
-    if _is_local_runtime_base_url(base_url):
-        return inferred_from_env
-    required_env_keys = {
-        "alibaba": ("DASHSCOPE_API_KEY", "ALIBABA_API_KEY"),
-        "deepseek": ("DEEPSEEK_API_KEY",),
-        "openrouter": ("OPENROUTER_API_KEY",),
-        "openai": ("OPENAI_API_KEY",),
-    }
-    for env_key in required_env_keys.get(inferred_from_env, ()):
-        if os.environ.get(env_key):
-            return inferred_from_env
-    return ""
+    return inferred_from_env
 
 
 def _load_runtime_credential(
@@ -1762,49 +1681,16 @@ def _resolve_runtime_client_config(
             runtime_base_url = getattr(credential_entry, "runtime_base_url", None) or getattr(credential_entry, "base_url", None)
 
     if not runtime_api_key:
-        provider_env_keys: List[str] = []
-        if resolved_provider == "alibaba":
-            provider_env_keys = ["DASHSCOPE_API_KEY", "ALIBABA_API_KEY"]
-        elif resolved_provider == "deepseek":
-            provider_env_keys = ["DEEPSEEK_API_KEY"]
-        elif resolved_provider == "openrouter":
-            provider_env_keys = ["OPENROUTER_API_KEY"]
-        elif resolved_provider == "openai":
-            provider_env_keys = ["OPENAI_API_KEY"]
+        runtime_api_key = scope_defaults.get("api_key") or ""
 
-        for env_key in provider_env_keys:
-            runtime_api_key = os.environ.get(env_key, "")
-            if runtime_api_key:
-                break
-
-        if not runtime_api_key:
-            runtime_api_key = scope_defaults.get("api_key") or ""
-
-        if not runtime_api_key:
-            runtime_api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENROUTER_API_KEY", "")
+    if not runtime_api_key and _is_local_runtime_base_url(str(runtime_base_url or "")):
+        runtime_api_key = os.environ.get("QEECLAW_LOCAL_OPENAI_API_KEY", "local-bridge-key")
     if not runtime_base_url:
         scoped_base_url = scope_defaults.get("base_url") or ""
         if scoped_base_url:
             runtime_base_url = scoped_base_url
-        elif resolved_provider == "alibaba":
-            runtime_base_url = (
-                os.environ.get("DASHSCOPE_BASE_URL")
-                or os.environ.get("OPENAI_BASE_URL")
-                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-            )
-        elif resolved_provider == "deepseek":
-            runtime_base_url = (
-                os.environ.get("DEEPSEEK_BASE_URL")
-                or os.environ.get("OPENAI_BASE_URL")
-                or "https://api.deepseek.com/v1"
-            )
-        elif resolved_provider == "openrouter":
-            runtime_base_url = os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
         else:
-            runtime_base_url = os.environ.get("OPENAI_BASE_URL") or os.environ.get("OPENROUTER_BASE_URL", "")
-
-    if not runtime_api_key and _is_local_runtime_base_url(str(runtime_base_url or "")):
-        runtime_api_key = os.environ.get("QEECLAW_LOCAL_OPENAI_API_KEY", "local-bridge-key")
+            runtime_base_url = os.environ.get("OPENAI_BASE_URL") or ""
 
     runtime_base_url = _normalize_openai_compatible_base_url(str(runtime_base_url or ""))
 
@@ -1849,87 +1735,13 @@ def _extract_platform_text(payload: Any) -> str:
     return ""
 
 
-def _invoke_platform_model_api(
-    runtime_client: Dict[str, Any],
-    *,
-    prompt: str,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    max_tokens: Optional[int] = None,
-    temperature: Optional[float] = None,
-    system_prompt: Optional[str] = None,
-) -> Dict[str, Any]:
-    api_url = _join_url(runtime_client["base_url"], "/api/platform/models/invoke")
-    body: Dict[str, Any] = {
-        "prompt": prompt,
-        "model": model or runtime_client.get("model") or None,
-        "model_id": model or runtime_client.get("model") or None,
-        "provider": provider or runtime_client.get("provider") or None,
-    }
-    if max_tokens is not None:
-        body["max_tokens"] = max_tokens
-    if temperature is not None:
-        body["temperature"] = temperature
-    if system_prompt:
-        body["system_prompt"] = system_prompt
-    body = {k: v for k, v in body.items() if v not in (None, "")}
-
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {runtime_client['api_key']}",
-    }
-    request = urllib.request.Request(
-        api_url,
-        data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        headers=headers,
-        method="POST",
-    )
-    started_at = time.perf_counter()
-    _llm_debug_log("platform.request", "Platform model API request", {
-        "runtime_scope": runtime_client.get("runtime_scope"),
-        "provider": runtime_client.get("provider"),
-        "model": body.get("model") or body.get("model_id"),
-        "url": api_url,
-        "body": body,
-    })
-    try:
-        with urllib.request.urlopen(request, timeout=180) as response:
-            raw_text = response.read().decode("utf-8")
-            payload = json.loads(raw_text) if raw_text else {}
-    except urllib.error.HTTPError as exc:
-        error_text = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Platform model API returned HTTP {exc.code}: {error_text}") from exc
-
-    if isinstance(payload, dict) and payload.get("code") not in (None, 0):
-        raise RuntimeError(f"Platform model API returned code={payload.get('code')}: {payload.get('message')}")
-
-    data = payload.get("data") if isinstance(payload, dict) else {}
-    data = data if isinstance(data, dict) else {}
-    text = _extract_platform_text(payload)
-    result = {
-        "text": text,
-        "model": data.get("model") or data.get("model_id") or body.get("model") or runtime_client.get("model"),
-        "provider": data.get("provider") or data.get("provider_name") or runtime_client.get("provider") or provider or "platform",
-        "runtime_scope": runtime_client.get("runtime_scope"),
-        "usage": data.get("usage"),
-        "_platform_api": True,
-    }
-    _llm_debug_log("platform.response", "Platform model API response", {
-        "runtime_scope": runtime_client.get("runtime_scope"),
-        "duration_ms": round((time.perf_counter() - started_at) * 1000, 2),
-        "result": result,
-        "raw": payload,
-    })
-    return result
-
-
 def _raise_missing_runtime_credentials(runtime_client: Dict[str, Any]) -> None:
     provider = runtime_client.get("provider") or "the selected provider"
     model = runtime_client.get("model") or "the selected model"
     raise RuntimeError(
         f"No local runtime credentials configured for provider '{provider}' and model '{model}'. "
-        "Configure a real LLM credential in ~/.qeeclaw_hermes/auth.json credential_pool, "
-        "or set a provider API key such as DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / OPENAI_API_KEY / OPENROUTER_API_KEY."
+        "Configure a local LLM credential in ~/.qeeclaw_hermes/auth.json credential_pool, "
+        "or set a provider API key such as DEEPSEEK_API_KEY."
     )
 
 
@@ -1999,11 +1811,7 @@ def _discover_models() -> List[Dict[str, Any]]:
         scoped = _normalize_runtime_scope(runtime_scope)
         if scoped:
             record["runtime_scope"] = scoped
-            record["invoke_path"] = (
-                "/api/platform/models/invoke_local"
-                if scoped == "local"
-                else "/api/platform/models/invoke"
-            )
+            record["invoke_path"] = "/api/platform/models/invoke_local"
         models[record_key] = record
         return record
 
@@ -2063,7 +1871,7 @@ def _discover_models() -> List[Dict[str, Any]]:
             is_preferred=not bool(models),
         )
 
-    for scope in ("cloud", "local"):
+    for scope in ("local",):
         scoped_runtime = _resolve_runtime_client_config(None, None, runtime_scope=scope)
         scoped_model = scoped_runtime.get("model") or ""
         if not scoped_model or not _runtime_client_is_configured(scoped_runtime):
@@ -2073,7 +1881,7 @@ def _discover_models() -> List[Dict[str, Any]]:
             key=f"{scope}:{scoped_model}",
             model_name=scoped_model,
             provider_name=scoped_provider,
-            is_preferred=bool(scope == "cloud" and not models),
+            is_preferred=not models,
             label=f"{scoped_model} ({scope})",
             runtime_scope=scope,
         )
@@ -3429,9 +3237,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # --- App Keys ---
         elif _path == "/api/users/app-keys":
             self._handle_app_keys_list()
-        # --- LLM Keys ---
-        elif _path == "/api/llm/keys":
-            self._handle_llm_keys_list()
         # --- Workflows ---
         elif _path.startswith("/api/workflows/executions/") and _path.endswith("/logs"):
             self._handle_workflow_execution_logs()
@@ -3455,16 +3260,10 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         _path = urllib.parse.urlparse(self.path).path
         if _path == "/v1/chat/completions":
             self._handle_openai_chat_completions()
-        elif _path == "/invoke":
-            self._handle_invoke(runtime_scope="cloud")
         elif _path == "/invoke_local":
             self._handle_invoke(runtime_scope="local")
-        elif _path == "/api/platform/models/invoke":
-            self._handle_invoke(platform_response=True, runtime_scope="cloud")
         elif _path == "/api/platform/models/invoke_local":
             self._handle_invoke(platform_response=False, runtime_scope="local")
-        elif _path == "/api/llm/images/generations":
-            self._handle_llm_image_generation()
         elif _path == "/invoke/stream":
             self._handle_invoke_stream()
         elif _path == "/knowledge/upload":
@@ -3584,8 +3383,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_app_key_issue_token()
         elif _path == "/api/users/app-keys":
             self._handle_app_key_create()
-        elif _path == "/api/llm/keys":
-            self._handle_llm_key_create()
         # --- Platform Products ---
         elif _path == "/api/platform/workflows" or _path == "/api/platform/workflows/":
             self._handle_platform_workflow_create()
@@ -3639,9 +3436,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # --- Devices ---
         elif _path.startswith("/api/platform/devices/") and _path.count("/") == 4:
             self._handle_device_update()
-        # --- LLM Keys ---
-        elif _path.startswith("/api/llm/keys/") and _path.count("/") == 4:
-            self._handle_llm_key_update()
         else:
             _json_response(self, 404, {"error": "Not found"})
 
@@ -3669,9 +3463,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         # --- App Keys ---
         elif _path.startswith("/api/users/app-keys/"):
             self._handle_app_key_delete()
-        # --- LLM Keys ---
-        elif _path.startswith("/api/llm/keys/"):
-            self._handle_llm_key_delete()
         # --- Devices ---
         elif _path.startswith("/api/platform/devices/") and _path.count("/") == 4:
             self._handle_device_delete()
@@ -3751,8 +3542,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
 
         Accepts standard OpenAI chat completion requests and returns
         OpenAI-format responses, without any platform wrapper layer.
-        Defaults to local runtime scope; pass X-Runtime-Scope: cloud header
-        or set model_id/provider/prompt in the request to route to cloud.
+        Defaults to local runtime scope.
         """
         try:
             body = _read_json_body(self)
@@ -6289,7 +6079,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     break
 
             selected = preferred_selected or (models[0] if models else None)
-            cloud_selected = _select_model_route(models, "cloud")
             local_selected = _select_model_route(models, "local")
 
             _platform_json_response(self, 200, {
@@ -6307,15 +6096,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     else ("fallback" if selected else "no_models")
                 ),
                 "selected": selected,
-                "cloud_route": {
-                    "runtime_scope": "cloud",
-                    "invoke_path": "/api/platform/models/invoke",
-                    "selected": cloud_selected,
-                    "resolved_model": cloud_selected["model_name"] if cloud_selected else None,
-                    "resolved_provider_name": cloud_selected["provider_name"] if cloud_selected else None,
-                    "resolved_provider_model_id": cloud_selected["provider_model_id"] if cloud_selected else None,
-                    "available": cloud_selected is not None,
-                },
                 "local_route": {
                     "runtime_scope": "local",
                     "invoke_path": "/api/platform/models/invoke_local",
@@ -6375,18 +6155,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
-
-    def _handle_llm_image_generation(self):
-        """POST /api/llm/images/generations — unified image generation route."""
-        try:
-            body = _read_json_body(self)
-            _json_response(self, 200, bailian_image.generate_image(body))
-        except Exception as e:
-            traceback.print_exc()
-            _json_response(self, 502, {
-                "code": "IMAGE_GENERATION_FAILED",
-                "message": str(e),
-            })
 
     def _handle_models_usage(self):
         """GET /api/platform/models/usage — 用量统计（本地账本聚合）。"""
@@ -8043,79 +7811,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 "app_key": first.get("app_key", ""),
                 "app_key_id": first.get("id", 1),
             })
-        except Exception as e:
-            traceback.print_exc()
-            _platform_json_response(self, 500, None, str(e))
-
-    def _handle_llm_keys_list(self):
-        """GET /api/llm/keys — LLM Key 列表。"""
-        try:
-            data = _load_api_keys()
-            _platform_json_response(self, 200, data.get("llm_keys", []))
-        except Exception as e:
-            traceback.print_exc()
-            _platform_json_response(self, 500, None, str(e))
-
-    def _handle_llm_key_create(self):
-        """POST /api/llm/keys — 创建 LLM Key。"""
-        try:
-            body = _read_json_body(self)
-            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            key_id = int(time.time() * 1000) % 1000000
-            record = {
-                "id": key_id,
-                "key": f"llm_{uuid.uuid4().hex[:24]}",
-                "provider": body.get("provider", ""),
-                "api_key": body.get("api_key", ""),
-                "name": body.get("name", ""),
-                "description": body.get("description"),
-                "limit_config": body.get("limit_config"),
-                "expire_time": body.get("expire_time"),
-                "is_active": True,
-                "created_time": now,
-            }
-            data = _load_api_keys()
-            data.setdefault("llm_keys", []).append(record)
-            _save_api_keys(data)
-            _platform_json_response(self, 200, record)
-        except Exception as e:
-            traceback.print_exc()
-            _platform_json_response(self, 500, None, str(e))
-
-    def _handle_llm_key_update(self):
-        """PUT /api/llm/keys/{id} — 更新 LLM Key。"""
-        try:
-            _path = urllib.parse.urlparse(self.path).path
-            key_id = int(_path.split("/")[-1])
-            body = _read_json_body(self)
-            data = _load_api_keys()
-            for k in data.get("llm_keys", []):
-                if k.get("id") == key_id:
-                    if "name" in body:
-                        k["name"] = body["name"]
-                    if "description" in body:
-                        k["description"] = body["description"]
-                    if "expire_time" in body:
-                        k["expire_time"] = body["expire_time"]
-                    if "is_active" in body:
-                        k["is_active"] = body["is_active"]
-                    _save_api_keys(data)
-                    _platform_json_response(self, 200, k)
-                    return
-            _platform_json_response(self, 404, None, "LLM key not found")
-        except Exception as e:
-            traceback.print_exc()
-            _platform_json_response(self, 500, None, str(e))
-
-    def _handle_llm_key_delete(self):
-        """DELETE /api/llm/keys/{id} — 删除 LLM Key。"""
-        try:
-            _path = urllib.parse.urlparse(self.path).path
-            key_id = int(_path.split("/")[-1])
-            data = _load_api_keys()
-            data["llm_keys"] = [k for k in data.get("llm_keys", []) if k.get("id") != key_id]
-            _save_api_keys(data)
-            _platform_json_response(self, 200, None)
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
