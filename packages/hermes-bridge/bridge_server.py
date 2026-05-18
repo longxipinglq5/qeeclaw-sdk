@@ -3251,6 +3251,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_document_get()
         elif _path == "/api/documents" or _path == "/api/documents/":
             self._handle_documents_list()
+        # --- LLM Video generation result: forward to backend ---
+        elif _path.startswith("/api/llm/video/generations/"):
+            self._handle_llm_proxy_to_backend("GET", _path)
         else:
             _json_response(self, 404, {"error": "Not found"})
 
@@ -3406,6 +3409,11 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_voice_not_implemented()
         elif _path == "/api/audio/speech":
             self._handle_voice_not_implemented()
+        # --- LLM Image/Video generation: forward to backend ---
+        elif _path == "/api/llm/images/generations":
+            self._handle_llm_proxy_to_backend("POST", "/api/llm/images/generations")
+        elif _path == "/api/llm/video/generations":
+            self._handle_llm_proxy_to_backend("POST", "/api/llm/video/generations")
         else:
             _json_response(self, 404, {"error": "Not found"})
 
@@ -7974,6 +7982,92 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             _platform_json_response(self, 500, None, str(e))
 
     # ----- Step 11: Voice -----
+
+    def _handle_llm_proxy_to_backend(self, method: str, backend_path: str):
+        """Forward LLM image/video requests to the Nexus backend.
+
+        Requires NEXUS_URL and NEXUS_API_KEY to be configured.
+        """
+        nexus_url = (os.environ.get("NEXUS_URL") or "").strip().rstrip("/")
+        nexus_api_key = (os.environ.get("NEXUS_API_KEY") or "").strip()
+
+        if not nexus_url:
+            _json_response(self, 503, {
+                "error": {
+                    "message": "Image/video generation requires NEXUS_URL to be configured",
+                    "type": "server_error",
+                    "code": "nexus_url_not_configured",
+                }
+            })
+            return
+
+        try:
+            body = _read_json_body(self) if method == "POST" else None
+            url = f"{nexus_url}{backend_path}"
+            query = urllib.parse.urlparse(self.path).query
+            if query:
+                url = f"{url}?{query}"
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {nexus_api_key}",
+            }
+
+            if method == "POST" and body:
+                data = json.dumps(body, ensure_ascii=False).encode("utf-8")
+                req = urllib.request.Request(url, data=data, method="POST")
+            else:
+                req = urllib.request.Request(url, method="GET")
+
+            for k, v in headers.items():
+                req.add_header(k, v)
+
+            timeout = float(os.environ.get("NEXUS_LLM_TIMEOUT_SECONDS", "300"))
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp_body = resp.read().decode("utf-8")
+                try:
+                    result = json.loads(resp_body) if resp_body else {}
+                except json.JSONDecodeError:
+                    result = {"data": resp_body}
+
+                content_type = resp.headers.get("Content-Type", "application/json")
+                if "text/event-stream" in content_type:
+                    _json_response(self, 200, {"message": "Streaming not yet supported via bridge proxy"})
+                    return
+
+                _json_response(self, resp.status, result)
+
+        except urllib.error.HTTPError as exc:
+            error_body = ""
+            try:
+                error_body = exc.read().decode("utf-8")
+            except Exception:
+                pass
+            try:
+                error_json = json.loads(error_body) if error_body else {}
+            except json.JSONDecodeError:
+                error_json = {"error": {"message": error_body or f"Backend returned HTTP {exc.code}"}}
+            _json_response(self, exc.code, error_json)
+
+        except (urllib.error.URLError, OSError) as exc:
+            _bridge_log("warning", "llm.proxy.error", f"Failed to reach backend: {exc}", {"url": nexus_url})
+            _json_response(self, 502, {
+                "error": {
+                    "message": f"Failed to reach backend at {nexus_url}: {exc}",
+                    "type": "server_error",
+                    "code": "backend_unreachable",
+                }
+            })
+
+        except Exception as exc:
+            traceback.print_exc()
+            _json_response(self, 500, {
+                "error": {
+                    "message": str(exc),
+                    "type": "server_error",
+                    "code": "proxy_error",
+                }
+            })
 
     def _handle_voice_not_implemented(self):
         """POST /api/asr, /api/tts, /api/audio/speech — 语音服务未实现。"""
