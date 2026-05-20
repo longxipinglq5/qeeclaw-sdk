@@ -3409,7 +3409,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_voice_not_implemented()
         elif _path == "/api/audio/speech":
             self._handle_voice_not_implemented()
-        # --- LLM Image/Video generation: forward to backend ---
+        # --- LLM text/image/video generation: forward to Nexus backend ---
+        elif _path == "/api/platform/models/invoke":
+            self._handle_llm_proxy_to_backend("POST", "/api/platform/models/invoke")
         elif _path == "/api/llm/images/generations":
             self._handle_llm_proxy_to_backend("POST", "/api/llm/images/generations")
         elif _path == "/api/llm/video/generations":

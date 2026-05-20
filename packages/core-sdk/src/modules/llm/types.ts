@@ -130,3 +130,23 @@ export interface VideoGenerateResult {
   data: VideoData[];
   usage?: unknown;
 }
+
+export type VideoTaskStatus = "processing" | "completed" | "failed";
+
+export interface VideoTaskPollParams {
+  task_id: string;
+  model?: string;
+}
+
+export interface VideoTaskPollResult {
+  id: string;
+  status: VideoTaskStatus;
+  model: string;
+  created?: number;
+  data?: VideoData[];
+  error?: {
+    message: string;
+    type: string;
+    code: string;
+  };
+}
