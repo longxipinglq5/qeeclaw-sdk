@@ -62,4 +62,14 @@ await client.models.generateImage({
 assert.equal(calls.length, 1);
 assert.equal(calls[0].body.prompt, "兼容旧入口");
 
+calls.length = 0;
+await client.models.images.generate({
+  prompt: "使用后端默认图片模型",
+});
+assert.equal(calls.length, 1);
+assert.deepEqual(calls[0].body, {
+  prompt: "使用后端默认图片模型",
+});
+assert.equal(Object.hasOwn(calls[0].body, "model"), false);
+
 console.log("models.images API contract ok");

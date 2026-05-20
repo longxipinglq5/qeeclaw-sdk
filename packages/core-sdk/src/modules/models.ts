@@ -486,17 +486,18 @@ class ModelsImagesApi implements ModelImagesApi {
 
   async generate(payload: ModelImageGenerationRequest): Promise<ModelImageGenerationResult> {
     const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    const requestBody = {
+      ...body,
+      ...(payload.model ? { model: payload.model } : {}),
+      response_format: payload.response_format ?? responseFormat,
+      output_format: payload.output_format ?? outputFormat,
+      partial_images: payload.partial_images ?? partialImages,
+    };
     const result = await this.http.request<RawModelImageGenerationResult>({
       method: "POST",
       path: "/api/llm/images/generations",
       timeoutMs,
-      body: {
-        ...body,
-        model: payload.model ?? "gpt-image-2",
-        response_format: payload.response_format ?? responseFormat,
-        output_format: payload.output_format ?? outputFormat,
-        partial_images: payload.partial_images ?? partialImages,
-      },
+      body: requestBody,
     });
 
     return {
@@ -515,6 +516,14 @@ class ModelsImagesApi implements ModelImagesApi {
 
   async stream(payload: ModelImageGenerationStreamRequest): Promise<Response> {
     const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    const requestBody = {
+      ...body,
+      stream: true,
+      ...(payload.model ? { model: payload.model } : {}),
+      response_format: payload.response_format ?? responseFormat,
+      output_format: payload.output_format ?? outputFormat,
+      partial_images: payload.partial_images ?? partialImages,
+    };
     return this.http.requestRaw({
       method: "POST",
       path: "/api/llm/images/generations",
@@ -522,14 +531,7 @@ class ModelsImagesApi implements ModelImagesApi {
       headers: {
         Accept: "text/event-stream",
       },
-      body: {
-        ...body,
-        stream: true,
-        model: payload.model ?? "gpt-image-2",
-        response_format: payload.response_format ?? responseFormat,
-        output_format: payload.output_format ?? outputFormat,
-        partial_images: payload.partial_images ?? partialImages,
-      },
+      body: requestBody,
     });
   }
 }
