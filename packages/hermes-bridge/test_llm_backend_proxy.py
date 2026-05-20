@@ -89,7 +89,9 @@ def test_platform_models_invoke_proxies_to_nexus_backend_without_model(tmp_path,
         backend.shutdown()
 
     assert status == 200
-    assert body["data"]["text"] == "backend text ok"
+    assert body["text"] == "backend text ok"
+    assert body["model"] == "backend-default-chat"
+    assert body["raw"]["data"]["text"] == "backend text ok"
     assert _BackendHandler.received == [{
         "path": "/api/platform/models/invoke",
         "authorization": "Bearer backend-key",

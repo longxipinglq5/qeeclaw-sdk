@@ -1735,6 +1735,20 @@ def _extract_platform_text(payload: Any) -> str:
     return ""
 
 
+def _normalize_backend_invoke_response(payload: Any) -> Dict[str, Any]:
+    """Convert Nexus platform invoke response to the legacy /invoke shape."""
+    if not isinstance(payload, dict):
+        return {"text": str(payload or ""), "raw": payload}
+
+    data = payload.get("data")
+    source = data if isinstance(data, dict) else payload
+    text = _extract_platform_text(payload)
+    result: Dict[str, Any] = dict(source)
+    result["text"] = text
+    result["raw"] = payload
+    return result
+
+
 def _raise_missing_runtime_credentials(runtime_client: Dict[str, Any]) -> None:
     provider = runtime_client.get("provider") or "the selected provider"
     model = runtime_client.get("model") or "the selected model"
@@ -8036,6 +8050,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 if "text/event-stream" in content_type:
                     _json_response(self, 200, {"message": "Streaming not yet supported via bridge proxy"})
                     return
+
+                if backend_path == "/api/platform/models/invoke":
+                    result = _normalize_backend_invoke_response(result)
 
                 _json_response(self, resp.status, result)
 
