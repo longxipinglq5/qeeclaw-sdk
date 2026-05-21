@@ -496,19 +496,6 @@ HERMES_AGENT_DIR = _resolve_existing_override_path(
 # HERMES_HOME: 数据/配置目录，默认 ~/.qeeclaw_hermes（避免与独立安装的 hermes-agent 冲突）
 os.environ["HERMES_HOME"] = _resolve_home_path(os.environ.get("HERMES_HOME"), ".qeeclaw_hermes")
 
-# HUD 源码路径
-HUD_DIR = os.environ.get(
-    "QEECLAW_HUD_DIR",
-    _cfg("hud", "dir", _resolve_repo_default_path("../../../vendor/hermes-hudui", "../vendor/hermes-hudui")),
-)
-HUD_DIR = _resolve_existing_override_path(
-    HUD_DIR,
-    "../../../vendor/hermes-hudui",
-    "../vendor/hermes-hudui",
-)
-HUD_ENABLED = _cfg("hud", "enabled", True)
-HUD_PORT = int(os.environ.get("QEECLAW_HUD_PORT", _cfg("hud", "port", 8134)))
-
 # ---------------------------------------------------------------------------
 # API Key 鉴权
 # ---------------------------------------------------------------------------
@@ -8125,77 +8112,6 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         )
 
 
-# ---------------------------------------------------------------------------
-# HUD 子进程管理
-# ---------------------------------------------------------------------------
-
-_hud_process: Optional[subprocess.Popen] = None
-
-def _is_tcp_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def _start_hud():
-    """后台启动 hermes-hudui。"""
-    global _hud_process
-    if not HUD_ENABLED:
-        return
-    main_py_path = os.path.join(HUD_DIR, "backend", "main.py")
-    if not os.path.isfile(main_py_path):
-        print(f"[hermes-bridge] ⚠️ HUD disabled: 'backend/main.py' not found at {HUD_DIR}")
-        return
-
-    # 准备环境变量
-    env = os.environ.copy()
-    env["HERMES_HOME"] = os.path.abspath(HERMES_AGENT_DIR)
-
-    _hud_host = os.environ.get("QEECLAW_HUD_HOST", _cfg("hud", "host", "127.0.0.1"))
-    if _is_tcp_port_open(_hud_host, HUD_PORT):
-        print(f"[hermes-bridge] ⚠️ HUD Dashboard already listening on http://{_hud_host}:{HUD_PORT}; reusing existing service.")
-        return
-
-    print(f"[hermes-bridge] Starting HUD Dashboard on http://{_hud_host}:{HUD_PORT} ...")
-    try:
-        _hud_process = subprocess.Popen(
-            [sys.executable, "-m", "backend.main",
-             "--host", _hud_host, "--port", str(HUD_PORT)],
-            cwd=HUD_DIR,
-            env=env,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True
-        )
-
-        # 启动一个线程异步消费 HUD stderr，防止死锁
-        def _consume_hud_stderr():
-            if not _hud_process or not _hud_process.stderr:
-                return
-            for line in _hud_process.stderr:
-                # 脱敏或直接输出
-                sys.stderr.write(f"[hudui] {line}")
-        Thread(target=_consume_hud_stderr, daemon=True).start()
-
-    except Exception as e:
-        print(f"[hermes-bridge] ❌ Failed to start HUD: {e}")
-
-
-def _stop_hud():
-    """停止 hermes-hudui。"""
-    global _hud_process
-    if _hud_process:
-        print("[hermes-bridge] Stopping HUD Dashboard...")
-        _hud_process.terminate()
-        try:
-            _hud_process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            _hud_process.kill()
-        _hud_process = None
-
-
 def main():
     """启动 bridge HTTP 服务。"""
     print(f"[hermes-bridge] ======================================")
@@ -8208,7 +8124,6 @@ def main():
         print(f"[hermes-bridge] API keys loaded: {len(_AUTH_API_KEYS)}")
     print(f"[hermes-bridge] CORS origins: {_CORS_ORIGINS}")
     print(f"[hermes-bridge] Hermes agent dir: {os.path.abspath(HERMES_AGENT_DIR)}")
-    print(f"[hermes-bridge] Hermes hud dir: {os.path.abspath(HUD_DIR)}")
     print(f"[hermes-bridge] Python: {sys.version}")
     print(f"[hermes-bridge] Config file: {os.environ.get('QEECLAW_CONFIG_FILE', '(default)')}")
 
@@ -8254,9 +8169,6 @@ def main():
         print("[hermes-bridge] Cloud tunnel: UNAVAILABLE (websockets not installed)")
     except Exception as e:
         print(f"[hermes-bridge] Cloud tunnel: ERROR ({e})")
-
-    # 启动 HUD 子服务
-    _start_hud()
 
     class ReusableThreadingHTTPServer(ThreadingHTTPServer):
         allow_reuse_address = True
@@ -8335,7 +8247,6 @@ def main():
             stop_tunnel()
         except Exception:
             pass
-        _stop_hud()
         server.server_close()
 
 

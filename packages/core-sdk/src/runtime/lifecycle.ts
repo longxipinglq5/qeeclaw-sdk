@@ -135,7 +135,6 @@ export function detectPythonEnvironment(preferredPath?: string): PythonEnvironme
 export class HermesBridgeLifecycle {
   private readonly options: Required<HermesBridgeLifecycleOptions>;
   private childProcess: ChildProcess | null = null;
-  private hudProcess: ChildProcess | null = null;
   private pythonEnv: PythonEnvironmentInfo | null = null;
   private intentionallyStopped: boolean = false;
 
@@ -253,41 +252,7 @@ export class HermesBridgeLifecycle {
       }
     });
 
-    // 5. 拉起 HUD Dashboard 微服务
-    const hudDir = path.join(__dirname, "..", "..", "vendor", "hermes-hudui");
-    if (existsSync(path.join(hudDir, "backend", "main.py"))) {
-      const hudEnv: Record<string, string> = {
-        ...env,
-        HERMES_HOME: this.options.hermesAgentDir,
-      };
-      
-      const hud = spawn(pyEnv.path, ["-m", "backend.main", "--port", "8134"], {
-        cwd: hudDir,
-        env: hudEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: false,
-      });
-
-      this.hudProcess = hud;
-
-      hud.stderr?.on("data", (data: Buffer) => {
-        let text = data.toString();
-        // Masking basic keys doesn't usually apply to HUD but safe guard
-        text = text.replace(/([a-zA-Z0-9_\-]{8})[a-zA-Z0-9_\-]{16,}/g, "$1****");
-        process.stderr.write(`[hudui] ${text}`);
-      });
-
-      hud.on("exit", (code) => {
-        process.stderr.write(`[hudui] HUD process exited (code: ${code})\n`);
-        this.hudProcess = null;
-        if (!this.intentionallyStopped) {
-           process.stderr.write(`[hudui] Watchdog restart in 5s...\n`);
-           setTimeout(() => { if (!this.intentionallyStopped) this.start().catch(()=>{}); }, 5000);
-        }
-      });
-    }
-
-    // 6. 持久化 PID
+    // 5. 持久化 PID
     await this.persistState({
       pid: child.pid ?? -1,
       startedAt: new Date().toISOString(),
@@ -306,11 +271,6 @@ export class HermesBridgeLifecycle {
     if (this.childProcess) {
       this.childProcess.kill("SIGTERM");
       this.childProcess = null;
-    }
-
-    if (this.hudProcess) {
-       this.hudProcess.kill("SIGTERM");
-       this.hudProcess = null;
     }
 
     // 也检查持久化的 PID

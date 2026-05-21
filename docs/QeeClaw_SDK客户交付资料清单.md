@@ -91,7 +91,6 @@
     └── qeeclaw-server-{version}-{platform}-standalone.tar.gz
         ├── python/                      # 内嵌 Python 运行时（无需客户安装 Python）
         ├── vendor/hermes-agent/         # AI Agent 推理引擎
-        ├── vendor/hermes-hudui/         # HUD 可视化仪表盘
         ├── venv/                        # Python 虚拟环境（预装依赖）
         ├── bridge_server.py             # HTTP Bridge 服务
         ├── start.sh                     # 一键启动
