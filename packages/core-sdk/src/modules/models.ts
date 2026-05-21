@@ -486,10 +486,11 @@ class ModelsImagesApi implements ModelImagesApi {
 
   async generate(payload: ModelImageGenerationRequest): Promise<ModelImageGenerationResult> {
     const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    const resolvedResponseFormat = payload.response_format ?? responseFormat ?? "url";
     const requestBody = {
       ...body,
       ...(payload.model ? { model: payload.model } : {}),
-      response_format: payload.response_format ?? responseFormat,
+      response_format: resolvedResponseFormat,
       output_format: payload.output_format ?? outputFormat,
       partial_images: payload.partial_images ?? partialImages,
     };
@@ -516,11 +517,12 @@ class ModelsImagesApi implements ModelImagesApi {
 
   async stream(payload: ModelImageGenerationStreamRequest): Promise<Response> {
     const { timeoutMs, responseFormat, outputFormat, partialImages, ...body } = payload;
+    const resolvedResponseFormat = payload.response_format ?? responseFormat ?? "url";
     const requestBody = {
       ...body,
       stream: true,
       ...(payload.model ? { model: payload.model } : {}),
-      response_format: payload.response_format ?? responseFormat,
+      response_format: resolvedResponseFormat,
       output_format: payload.output_format ?? outputFormat,
       partial_images: payload.partial_images ?? partialImages,
     };

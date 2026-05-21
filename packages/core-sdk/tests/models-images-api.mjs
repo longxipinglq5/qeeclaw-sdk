@@ -69,6 +69,7 @@ await client.models.images.generate({
 assert.equal(calls.length, 1);
 assert.deepEqual(calls[0].body, {
   prompt: "使用后端默认图片模型",
+  response_format: "url",
 });
 assert.equal(Object.hasOwn(calls[0].body, "model"), false);
 

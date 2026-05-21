@@ -3277,6 +3277,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         _path = urllib.parse.urlparse(self.path).path
         if _path == "/v1/chat/completions":
             self._handle_openai_chat_completions()
+        elif _path == "/invoke":
+            self._handle_llm_proxy_to_backend("POST", "/api/platform/models/invoke")
         elif _path == "/invoke_local":
             self._handle_invoke(runtime_scope="local")
         elif _path == "/api/platform/models/invoke_local":

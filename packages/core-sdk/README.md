@@ -57,7 +57,6 @@ const cost = await client.models.getCost({ days: 30 });
 const quota = await client.models.getQuota();
 
 const image = await client.models.images.generate({
-  model: "gpt-image-2",
   prompt: "一只在办公室写代码的猫",
   size: "1024x1024",
   output_format: "png",
@@ -307,7 +306,7 @@ const client = createQeeClawClient({
 - `POST /api/platform/models/invoke`
 - `POST /api/llm/images/generations`
 
-`/api/llm/images/generations` 按 OpenAI Images API 兼容设计：请求字段优先使用 OpenAI 原始 snake_case，例如 `response_format`、`output_format`、`partial_images`；SDK 同时保留 `responseFormat`、`outputFormat`、`partialImages` 作为 TypeScript 便利别名。非流式响应原样返回 OpenAI 风格 JSON，图片内容通常在 `data[0].b64_json`。
+`/api/llm/images/generations` 按 OpenAI Images API 兼容设计：请求字段优先使用 OpenAI 原始 snake_case，例如 `response_format`、`output_format`、`partial_images`；SDK 同时保留 `responseFormat`、`outputFormat`、`partialImages` 作为 TypeScript 便利别名。未显式指定时 SDK 默认使用 `response_format: "url"`，模型由后端路由选择。非流式响应原样返回 OpenAI 风格 JSON，图片地址通常在 `data[0].url`。
 
 如果需要消费 OpenAI 图片生成 SSE，可以使用 `client.models.images.stream({ model: "gpt-image-2", prompt: "...", stream: true })`，返回值是原始 `Response`，调用方可自行读取 `response.body`。`client.models.generateImage()` 和 `client.models.generateImageStream()` 保留为兼容入口。
 
