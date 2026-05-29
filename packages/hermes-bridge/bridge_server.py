@@ -19,6 +19,7 @@ import json
 import os
 import platform as platform_mod
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -28,6 +29,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+import queue
+import base64
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from threading import Thread
@@ -95,6 +98,23 @@ KB_MAX_UPLOAD_BYTES = int(os.environ.get(
     _cfg("knowledge", "max_upload_bytes", 8 * 1024 * 1024),
 ))
 _KB_UPLOAD_LOCK = threading.Lock()
+_KB_UPLOAD_JOBS: Dict[str, Dict[str, Any]] = {}
+_KB_UPLOAD_JOBS_LOCK = threading.Lock()
+_KB_UPLOAD_QUEUE: "queue.Queue[Tuple[Any, str]]" = queue.Queue()
+_KB_UPLOAD_QUEUED_IDS: set = set()
+_KB_UPLOAD_WORKER_STARTED = False
+_KB_UPLOAD_WORKER_LOCK = threading.Lock()
+_KB_UPLOAD_JOB_RETENTION_SECONDS = int(os.environ.get(
+    "QEECLAW_KB_UPLOAD_JOB_RETENTION_SECONDS",
+    _cfg("knowledge", "upload_job_retention_seconds", 24 * 60 * 60),
+))
+
+
+def _get_kb_upload_jobs_dir() -> str:
+    return os.path.join(
+        os.environ.get("HERMES_HOME", os.path.expanduser("~/.qeeclaw_hermes")),
+        "kb-upload-jobs",
+    )
 
 # 日志显示地址：0.0.0.0/:: 不可在浏览器中访问，替换为 127.0.0.1
 _DISPLAY_HOST = "127.0.0.1" if BRIDGE_HOST in ("0.0.0.0", "::") else BRIDGE_HOST
@@ -3225,6 +3245,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_platform_knowledge_stats()
         elif _path == "/api/platform/knowledge/list":
             self._handle_platform_knowledge_list()
+        elif _path.startswith("/api/platform/knowledge/jobs/"):
+            self._handle_platform_knowledge_job_get()
         # --- Approval ---
         elif _path.startswith("/api/platform/approvals/") and _path.count("/") == 4:
             self._handle_approval_get()
@@ -4955,124 +4977,359 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         else:
             _json_response(self, status, payload)
 
+    def _is_async_kb_upload_requested(self) -> bool:
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        value = (params.get("async") or params.get("async_upload") or params.get("background") or [""])[0]
+        return str(value).lower() in ("1", "true", "yes", "on")
+
+    def _decode_form_value(self, value: Any, default: str = "") -> str:
+        if value is None:
+            return default
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="ignore")
+        return str(value)
+
+    def _read_kb_upload_payload(self, parse_text: bool = True) -> Dict[str, Any]:
+        ctype = self.headers.get("Content-Type", "")
+        content_length = int(self.headers.get("Content-Length") or 0)
+        if KB_MAX_UPLOAD_BYTES > 0 and content_length > KB_MAX_UPLOAD_BYTES:
+            raise ValueError(
+                f"uploaded file is too large: {content_length} bytes > "
+                f"{KB_MAX_UPLOAD_BYTES} bytes. Split the file or increase "
+                "QEECLAW_KB_MAX_UPLOAD_BYTES."
+            )
+
+        payload: Dict[str, Any] = {
+            "content": "",
+            "raw_content": None,
+            "content_type": "",
+            "filename": "",
+            "doc_type": "text",
+            "scope": "default",
+            "tags": [],
+            "team_id": None,
+            "device_id": None,
+            "runtime_type": None,
+            "agent_id": None,
+        }
+
+        if "multipart/form-data" in ctype:
+            import cgi
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", DeprecationWarning)
+                form = cgi.FieldStorage(
+                    fp=self.rfile,
+                    headers=self.headers,
+                    environ={'REQUEST_METHOD': 'POST'},
+                    keep_blank_values=True
+                )
+
+            if "file" in form:
+                file_item = form["file"]
+                filename = file_item.filename or form.getvalue("source_name", "")
+                raw_content = file_item.file.read()
+                if KB_MAX_UPLOAD_BYTES > 0 and len(raw_content) > KB_MAX_UPLOAD_BYTES:
+                    raise ValueError(
+                        f"uploaded file is too large: {len(raw_content)} bytes > "
+                        f"{KB_MAX_UPLOAD_BYTES} bytes. Split the file or increase "
+                        "QEECLAW_KB_MAX_UPLOAD_BYTES."
+                    )
+                content_type = getattr(file_item, "type", "") or ""
+                payload.update({
+                    "filename": self._decode_form_value(filename),
+                    "raw_content": raw_content,
+                    "content_type": content_type,
+                })
+                if parse_text:
+                    payload["content"] = self._extract_uploaded_text(raw_content, payload["filename"], content_type)
+            elif "content" in form:
+                raw_c = form.getvalue("content", b"")
+                payload["content"] = self._decode_form_value(raw_c)
+                payload["filename"] = self._decode_form_value(form.getvalue("source_name", ""))
+
+            payload["team_id"] = self._decode_form_value(form.getvalue("team_id", ""))
+            payload["device_id"] = self._decode_form_value(form.getvalue("device_id", ""))
+            payload["runtime_type"] = self._decode_form_value(form.getvalue("runtime_type", ""))
+            payload["agent_id"] = self._decode_form_value(form.getvalue("agent_id", ""))
+            payload["scope"] = self._decode_form_value(
+                form.getvalue("scope", "") or form.getvalue("agent_id", "") or "default",
+                "default",
+            )
+            payload["doc_type"] = self._decode_form_value(form.getvalue("doc_type", "text"), "text")
+        else:
+            body = _read_json_body(self)
+            content = body.get("content", "")
+            payload["content"] = self._decode_form_value(content)
+            payload["filename"] = self._decode_form_value(body.get("filename", ""))
+            payload["doc_type"] = self._decode_form_value(body.get("doc_type", "text"), "text")
+            payload["team_id"] = self._decode_form_value(body.get("team_id") or body.get("teamId") or "")
+            payload["device_id"] = self._decode_form_value(body.get("device_id") or body.get("deviceId") or "")
+            payload["runtime_type"] = self._decode_form_value(body.get("runtime_type") or body.get("runtimeType") or "")
+            payload["agent_id"] = self._decode_form_value(body.get("agent_id") or body.get("agentId") or "")
+            payload["scope"] = self._decode_form_value(
+                body.get("scope") or body.get("agent_id") or body.get("agentId") or "default",
+                "default",
+            )
+            payload["tags"] = body.get("tags", [])
+
+        return payload
+
+    def _parse_kb_upload_payload(self, payload: Optional[Dict[str, Any]] = None) -> Tuple[str, str, str, str, List[Any]]:
+        payload = payload or self._read_kb_upload_payload(parse_text=True)
+        content_str = str(payload.get("content") or "")
+        raw_content = payload.get("raw_content")
+        filename = str(payload.get("filename") or "")
+        content_type = str(payload.get("content_type") or "")
+        if not content_str and isinstance(raw_content, bytes):
+            content_str = self._extract_uploaded_text(raw_content, filename, content_type)
+
+        if not content_str:
+            raise ValueError("content or file is required")
+
+        return (
+            content_str,
+            filename,
+            str(payload.get("doc_type") or "text"),
+            str(payload.get("scope") or "default"),
+            list(payload.get("tags") or []),
+        )
+
+    def _index_kb_upload_payload(
+        self,
+        payload: Dict[str, Any],
+    ) -> Tuple[int, Dict[str, Any]]:
+        content_str, filename, doc_type, scope, tags = self._parse_kb_upload_payload(payload)
+        from knowledge_store import add_document
+        with _KB_UPLOAD_LOCK:
+            result = add_document(
+                content=content_str,
+                filename=filename,
+                doc_type=doc_type,
+                scope=scope,
+                tags=tags,
+            )
+
+        if not result.get("success") and result.get("existing_doc_id"):
+            result = {
+                **result,
+                "success": True,
+                "duplicate": True,
+                "doc_id": result.get("existing_doc_id"),
+                "message": "文档已存在，已复用现有索引。",
+            }
+
+        return (200 if result.get("success") else 400), result
+
+    def _cleanup_kb_upload_jobs(self):
+        if _KB_UPLOAD_JOB_RETENTION_SECONDS <= 0:
+            return
+        cutoff = time.time() - _KB_UPLOAD_JOB_RETENTION_SECONDS
+        with _KB_UPLOAD_JOBS_LOCK:
+            stale_ids = [
+                job_id
+                for job_id, job in _KB_UPLOAD_JOBS.items()
+                if job.get("status") in ("succeeded", "failed") and float(job.get("updated_at") or 0) < cutoff
+            ]
+            for job_id in stale_ids:
+                _KB_UPLOAD_JOBS.pop(job_id, None)
+                self._delete_kb_upload_job_files(job_id)
+
+    def _kb_upload_job_dir(self, job_id: str) -> str:
+        return os.path.join(_get_kb_upload_jobs_dir(), job_id)
+
+    def _kb_upload_job_meta_path(self, job_id: str) -> str:
+        return os.path.join(self._kb_upload_job_dir(job_id), "job.json")
+
+    def _encode_kb_upload_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        encoded = dict(payload)
+        raw_content = encoded.get("raw_content")
+        if isinstance(raw_content, bytes):
+            encoded["raw_content_b64"] = base64.b64encode(raw_content).decode("ascii")
+            encoded.pop("raw_content", None)
+        return encoded
+
+    def _decode_kb_upload_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        decoded = dict(payload)
+        raw_content_b64 = decoded.pop("raw_content_b64", None)
+        if raw_content_b64 is not None:
+            decoded["raw_content"] = base64.b64decode(str(raw_content_b64).encode("ascii"))
+        return decoded
+
+    def _serialize_kb_upload_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        serialized = dict(job)
+        if isinstance(serialized.get("payload"), dict):
+            serialized["payload"] = self._encode_kb_upload_payload(serialized["payload"])
+        return serialized
+
+    def _deserialize_kb_upload_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        deserialized = dict(job)
+        if isinstance(deserialized.get("payload"), dict):
+            deserialized["payload"] = self._decode_kb_upload_payload(deserialized["payload"])
+        return deserialized
+
+    def _save_kb_upload_job(self, job: Dict[str, Any]):
+        job_id = str(job.get("job_id") or "")
+        if not job_id:
+            return
+        job_dir = self._kb_upload_job_dir(job_id)
+        os.makedirs(job_dir, exist_ok=True)
+        tmp_path = os.path.join(job_dir, "job.json.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(self._serialize_kb_upload_job(job), f, ensure_ascii=False)
+        os.replace(tmp_path, self._kb_upload_job_meta_path(job_id))
+
+    def _load_kb_upload_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        meta_path = self._kb_upload_job_meta_path(job_id)
+        if not os.path.isfile(meta_path):
+            return None
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                job = self._deserialize_kb_upload_job(json.load(f))
+            if job.get("job_id") != job_id:
+                return None
+            return job
+        except Exception as exc:
+            _bridge_log("warning", "knowledge.upload", f"failed to load upload job {job_id}: {exc}")
+            return None
+
+    def _delete_kb_upload_job_files(self, job_id: str):
+        shutil.rmtree(self._kb_upload_job_dir(job_id), ignore_errors=True)
+
+    def _get_kb_upload_job(self, job_id: str) -> Optional[Dict[str, Any]]:
+        with _KB_UPLOAD_JOBS_LOCK:
+            job = _KB_UPLOAD_JOBS.get(job_id)
+        if job:
+            return job
+        job = self._load_kb_upload_job(job_id)
+        if job:
+            with _KB_UPLOAD_JOBS_LOCK:
+                _KB_UPLOAD_JOBS[job_id] = job
+            if job.get("status") in ("queued", "running"):
+                self._queue_kb_upload_job_once(job_id)
+        return job
+
+    def _public_kb_upload_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "job_id": job.get("job_id"),
+            "status": job.get("status"),
+            "filename": job.get("filename"),
+            "source_name": job.get("filename"),
+            "created_at": job.get("created_at"),
+            "updated_at": job.get("updated_at"),
+            "result": job.get("result"),
+            "error": job.get("error"),
+        }
+
+    def _update_kb_upload_job(self, job_id: str, **updates):
+        with _KB_UPLOAD_JOBS_LOCK:
+            job = _KB_UPLOAD_JOBS.get(job_id)
+            if not job:
+                return
+            job.update(updates)
+            job["updated_at"] = time.time()
+            saved_job = dict(job)
+        self._save_kb_upload_job(saved_job)
+
+    def _run_async_kb_upload_job(self, job_id: str, payload: Dict[str, Any]):
+        self._update_kb_upload_job(job_id, status="running")
+        try:
+            status, result = self._index_kb_upload_payload(payload)
+            if status < 400 and result.get("success"):
+                self._update_kb_upload_job(job_id, status="succeeded", result=result, error=None)
+            else:
+                self._update_kb_upload_job(
+                    job_id,
+                    status="failed",
+                    result=result,
+                    error=str(result.get("error") or "knowledge upload failed"),
+                )
+        except Exception as exc:
+            traceback.print_exc()
+            self._update_kb_upload_job(job_id, status="failed", result=None, error=str(exc))
+
+    def _kb_upload_worker_loop(self):
+        while True:
+            handler, job_id = _KB_UPLOAD_QUEUE.get()
+            try:
+                with _KB_UPLOAD_JOBS_LOCK:
+                    _KB_UPLOAD_QUEUED_IDS.discard(job_id)
+                with _KB_UPLOAD_JOBS_LOCK:
+                    job = _KB_UPLOAD_JOBS.get(job_id)
+                    payload = dict(job.get("payload") or {}) if job else {}
+                if job and payload:
+                    handler._run_async_kb_upload_job(job_id, payload)
+            finally:
+                _KB_UPLOAD_QUEUE.task_done()
+
+    def _ensure_kb_upload_worker(self):
+        global _KB_UPLOAD_WORKER_STARTED
+        with _KB_UPLOAD_WORKER_LOCK:
+            if _KB_UPLOAD_WORKER_STARTED:
+                return
+            thread = threading.Thread(
+                target=self._kb_upload_worker_loop,
+                daemon=True,
+                name="kb-upload-worker",
+            )
+            thread.start()
+            _KB_UPLOAD_WORKER_STARTED = True
+
+    def _queue_kb_upload_job_once(self, job_id: str):
+        self._ensure_kb_upload_worker()
+        with _KB_UPLOAD_JOBS_LOCK:
+            job = _KB_UPLOAD_JOBS.get(job_id)
+            if not job or job.get("status") not in ("queued", "running"):
+                return
+            if job_id in _KB_UPLOAD_QUEUED_IDS:
+                return
+            _KB_UPLOAD_QUEUED_IDS.add(job_id)
+        _KB_UPLOAD_QUEUE.put((self, job_id))
+
+    def _enqueue_kb_upload_job(
+        self,
+        payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        self._cleanup_kb_upload_jobs()
+        now = time.time()
+        job_id = f"kbjob_{uuid.uuid4().hex[:16]}"
+        job = {
+            "job_id": job_id,
+            "status": "queued",
+            "filename": payload.get("filename") or "",
+            "payload": payload,
+            "created_at": now,
+            "updated_at": now,
+            "result": None,
+            "error": None,
+        }
+        with _KB_UPLOAD_JOBS_LOCK:
+            _KB_UPLOAD_JOBS[job_id] = job
+        self._save_kb_upload_job(job)
+        self._queue_kb_upload_job_once(job_id)
+        return job
+
     def _handle_kb_upload(self, platform_response: bool = False):
         """上传文档到知识库。"""
         try:
-            ctype = self.headers.get("Content-Type", "")
-            content_length = int(self.headers.get("Content-Length") or 0)
-            if KB_MAX_UPLOAD_BYTES > 0 and content_length > KB_MAX_UPLOAD_BYTES:
-                self._send_kb_upload_response(
-                    413,
-                    {
-                        "error": (
-                            f"uploaded file is too large: {content_length} bytes > "
-                            f"{KB_MAX_UPLOAD_BYTES} bytes. Split the file or increase "
-                            "QEECLAW_KB_MAX_UPLOAD_BYTES."
-                        )
-                    },
-                    platform_response,
-                )
-                return
-            
-            content_str = ""
-            filename = ""
-            doc_type = "text"
-            scope = "default"
-            tags = []
-
-            if "multipart/form-data" in ctype:
-                import cgi
-                import warnings
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore", DeprecationWarning)
-                    form = cgi.FieldStorage(
-                        fp=self.rfile,
-                        headers=self.headers,
-                        environ={'REQUEST_METHOD': 'POST'},
-                        keep_blank_values=True
-                    )
-                
-                if "file" in form:
-                    file_item = form["file"]
-                    filename = file_item.filename
-                    raw_content = file_item.file.read()
-                    if KB_MAX_UPLOAD_BYTES > 0 and len(raw_content) > KB_MAX_UPLOAD_BYTES:
-                        self._send_kb_upload_response(
-                            413,
-                            {
-                                "error": (
-                                    f"uploaded file is too large: {len(raw_content)} bytes > "
-                                    f"{KB_MAX_UPLOAD_BYTES} bytes. Split the file or increase "
-                                    "QEECLAW_KB_MAX_UPLOAD_BYTES."
-                                )
-                            },
-                            platform_response,
-                        )
-                        return
-                    content_type = getattr(file_item, "type", "") or ""
-                    content_str = self._extract_uploaded_text(raw_content, filename, content_type)
-                elif "content" in form:
-                    raw_c = form.getvalue("content", b"")
-                    content_str = raw_c.decode("utf-8", errors="ignore") if isinstance(raw_c, bytes) else str(raw_c)
-                    filename = form.getvalue("source_name", "")
-                
-                scope_val = form.getvalue("scope", "default")
-                if isinstance(scope_val, bytes):
-                    scope = scope_val.decode("utf-8", errors="ignore")
-                else:
-                    scope = str(scope_val)
-                    
-                # 从 form 中提取可能的团队或 agent 信息，虽然原版没有处理
-                # tag 尚未支持通过 form
-            else:
-                body = _read_json_body(self)
-                content = body.get("content", "")
-                if isinstance(content, bytes):
-                    content_str = content.decode("utf-8", errors="ignore")
-                else:
-                    content_str = str(content)
-                filename = body.get("filename", "")
-                doc_type = body.get("doc_type", "text")
-                scope = body.get("scope", "default")
-                tags = body.get("tags", [])
-
-            if not content_str:
-                self._send_kb_upload_response(400, {"error": "content or file is required"}, platform_response)
+            if self._is_async_kb_upload_requested():
+                payload = self._read_kb_upload_payload(parse_text=False)
+                if not payload.get("content") and not payload.get("raw_content"):
+                    raise ValueError("content or file is required")
+                job = self._enqueue_kb_upload_job(payload)
+                self._send_kb_upload_response(202, self._public_kb_upload_job(job), platform_response)
                 return
 
-            from knowledge_store import add_document
-            if not _KB_UPLOAD_LOCK.acquire(blocking=False):
-                self._send_kb_upload_response(
-                    429,
-                    {"error": "knowledge indexing is busy; please retry after the current upload finishes"},
-                    platform_response,
-                )
-                return
-            try:
-                result = add_document(
-                    content=content_str,
-                    filename=filename,
-                    doc_type=doc_type,
-                    scope=scope,
-                    tags=tags,
-                )
-            finally:
-                _KB_UPLOAD_LOCK.release()
-
-            if not result.get("success") and result.get("existing_doc_id"):
-                result = {
-                    **result,
-                    "success": True,
-                    "duplicate": True,
-                    "doc_id": result.get("existing_doc_id"),
-                    "message": "文档已存在，已复用现有索引。",
-                }
-
-            status = 200 if result.get("success") else 400
+            payload = self._read_kb_upload_payload(parse_text=True)
+            status, result = self._index_kb_upload_payload(payload)
             self._send_kb_upload_response(status, result, platform_response)
 
         except ImportError:
             self._send_kb_upload_response(503, {"error": "Knowledge base module not available. Build runtime with chromadb and configure QEECLAW_KB_EMBEDDING_API_URL to an OpenAI-compatible embeddings endpoint, e.g. http://127.0.0.1:8091/v1/embeddings."}, platform_response)
+        except ValueError as e:
+            status = 413 if str(e).startswith("uploaded file is too large") else 400
+            self._send_kb_upload_response(status, {"error": str(e)}, platform_response)
         except Exception as e:
             traceback.print_exc()
             self._send_kb_upload_response(500, {"error": str(e)}, platform_response)
@@ -7439,6 +7696,25 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/knowledge/upload — 代理到现有上传。"""
         try:
             self._handle_kb_upload(platform_response=True)
+        except Exception as e:
+            traceback.print_exc()
+            _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_knowledge_job_get(self):
+        """GET /api/platform/knowledge/jobs/{job_id} — 查询异步知识库上传任务。"""
+        try:
+            _path = urllib.parse.urlparse(self.path).path
+            job_id = urllib.parse.unquote(_path.rsplit("/", 1)[-1])
+            if not job_id:
+                _platform_json_response(self, 400, None, "job_id is required")
+                return
+            self._cleanup_kb_upload_jobs()
+            job = self._get_kb_upload_job(job_id)
+            data = self._public_kb_upload_job(job) if job else None
+            if not data:
+                _platform_json_response(self, 404, None, f"knowledge upload job not found: {job_id}")
+                return
+            _platform_json_response(self, 200, data)
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))

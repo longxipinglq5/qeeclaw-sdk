@@ -17,10 +17,12 @@ import shutil
 import tempfile
 import threading
 import time
+import queue
 import urllib.error
 import urllib.request
+import uuid
 from http.server import HTTPServer
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import pytest
 
@@ -370,6 +372,45 @@ def _http_request(
     except urllib.error.HTTPError as e:
         body = json.loads(e.read().decode("utf-8")) if e.fp else {}
         return {"status": e.code, "body": body}
+
+
+def _http_multipart_request(
+    url: str,
+    fields: Dict[str, str],
+    files: Dict[str, tuple[str, bytes, str]],
+    method: str = "POST",
+) -> Dict:
+    boundary = f"----qeeclaw-test-{uuid.uuid4().hex}"
+    parts: list[bytes] = []
+    for name, value in fields.items():
+        parts.extend([
+            f"--{boundary}\r\n".encode("utf-8"),
+            f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"),
+            str(value).encode("utf-8"),
+            b"\r\n",
+        ])
+    for name, (filename, content, content_type) in files.items():
+        parts.extend([
+            f"--{boundary}\r\n".encode("utf-8"),
+            (
+                f'Content-Disposition: form-data; name="{name}"; '
+                f'filename="{filename}"\r\n'
+            ).encode("utf-8"),
+            f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"),
+            content,
+            b"\r\n",
+        ])
+    parts.append(f"--{boundary}--\r\n".encode("utf-8"))
+    body = b"".join(parts)
+    req = urllib.request.Request(url, data=body, method=method)
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    req.add_header("Content-Length", str(len(body)))
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return {"status": resp.status, "body": json.loads(resp.read().decode("utf-8"))}
+    except urllib.error.HTTPError as e:
+        body_data = json.loads(e.read().decode("utf-8")) if e.fp else {}
+        return {"status": e.code, "body": body_data}
 
 
 # 测试用的 bridge server port (随机高端口)
@@ -1754,6 +1795,237 @@ class TestHTTPChannelsEndpoints:
         )
         # 可能 404（文件不存在）或 200
         assert r["status"] in (200, 404)
+
+    def test_platform_knowledge_async_upload_returns_job_and_status(self, bridge_server, monkeypatch):
+        import bridge_server as bs_mod
+
+        def fake_index_kb_upload_payload(self, payload):
+            content_str, filename, doc_type, scope, tags = self._parse_kb_upload_payload(payload)
+            assert content_str == "async knowledge upload test"
+            assert filename == "async-test.txt"
+            return 200, {"success": True, "doc_id": "doc_async", "chunk_count": 1, "char_count": len(content_str)}
+
+        monkeypatch.setattr(
+            bs_mod.BridgeRequestHandler,
+            "_index_kb_upload_payload",
+            fake_index_kb_upload_payload,
+        )
+
+        r = _http_multipart_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/upload?async=1",
+            fields={"team_id": "1", "source_name": "async-test.txt"},
+            files={"file": ("async-test.txt", b"async knowledge upload test", "text/plain")},
+        )
+        assert r["status"] == 202
+        data = r["body"]["data"]
+        assert data["status"] in ("queued", "running", "succeeded")
+        assert data["job_id"].startswith("kbjob_")
+
+        deadline = time.time() + 10
+        status_body = {}
+        while time.time() < deadline:
+            status = _http_request(
+                f"{self.base(bridge_server)}/api/platform/knowledge/jobs/{data['job_id']}"
+            )
+            assert status["status"] == 200
+            status_body = status["body"]["data"]
+            if status_body["status"] in ("succeeded", "failed"):
+                break
+            time.sleep(0.1)
+
+        assert status_body["status"] == "succeeded"
+        assert status_body["result"]["success"] is True
+
+    def test_platform_knowledge_async_upload_does_not_parse_before_response(self, bridge_server, monkeypatch):
+        import bridge_server as bs_mod
+
+        parse_started = threading.Event()
+        release_parse = threading.Event()
+
+        def fake_extract_uploaded_text(self, raw_content, filename, content_type):
+            parse_started.set()
+            release_parse.wait(timeout=5)
+            return raw_content.decode("utf-8")
+
+        monkeypatch.setattr(
+            bs_mod.BridgeRequestHandler,
+            "_extract_uploaded_text",
+            fake_extract_uploaded_text,
+        )
+
+        responses: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+
+        def upload():
+            responses.put(_http_multipart_request(
+                f"{self.base(bridge_server)}/api/platform/knowledge/upload?async=1",
+                fields={"team_id": "1", "source_name": "slow-parse.txt"},
+                files={"file": ("slow-parse.txt", b"slow parser input", "text/plain")},
+            ))
+
+        upload_thread = threading.Thread(target=upload)
+        upload_thread.start()
+        r = responses.get(timeout=2)
+        assert r["status"] == 202
+        upload_thread.join(timeout=1)
+        assert not upload_thread.is_alive()
+        assert parse_started.wait(timeout=2)
+        release_parse.set()
+        deadline = time.time() + 10
+        status_body = {}
+        while time.time() < deadline:
+            status = _http_request(
+                f"{self.base(bridge_server)}/api/platform/knowledge/jobs/{r['body']['data']['job_id']}"
+            )
+            assert status["status"] == 200
+            status_body = status["body"]["data"]
+            if status_body["status"] in ("succeeded", "failed"):
+                break
+            time.sleep(0.1)
+
+        assert status_body["status"] in ("succeeded", "failed")
+
+    def test_platform_knowledge_async_uploads_are_queued(self, bridge_server, monkeypatch):
+        import bridge_server as bs_mod
+
+        calls: "queue.Queue[str]" = queue.Queue()
+        release_first = threading.Event()
+
+        def fake_index_kb_upload_payload(self, payload):
+            content_str, filename, doc_type, scope, tags = self._parse_kb_upload_payload(payload)
+            calls.put(filename)
+            if filename == "queued-1.txt":
+                release_first.wait(timeout=5)
+            return 200, {"success": True, "doc_id": filename, "chunk_count": 1, "char_count": len(content_str)}
+
+        monkeypatch.setattr(
+            bs_mod.BridgeRequestHandler,
+            "_index_kb_upload_payload",
+            fake_index_kb_upload_payload,
+        )
+
+        first = _http_multipart_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/upload?async=1",
+            fields={"team_id": "1", "source_name": "queued-1.txt"},
+            files={"file": ("queued-1.txt", b"first", "text/plain")},
+        )
+        second = _http_multipart_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/upload?async=1",
+            fields={"team_id": "1", "source_name": "queued-2.txt"},
+            files={"file": ("queued-2.txt", b"second", "text/plain")},
+        )
+        assert first["status"] == 202
+        assert second["status"] == 202
+        assert calls.get(timeout=3) == "queued-1.txt"
+
+        second_status = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/jobs/{second['body']['data']['job_id']}"
+        )
+        assert second_status["body"]["data"]["status"] == "queued"
+        release_first.set()
+
+        deadline = time.time() + 10
+        final_second = {}
+        while time.time() < deadline:
+            status = _http_request(
+                f"{self.base(bridge_server)}/api/platform/knowledge/jobs/{second['body']['data']['job_id']}"
+            )
+            final_second = status["body"]["data"]
+            if final_second["status"] in ("succeeded", "failed"):
+                break
+            time.sleep(0.1)
+
+        assert final_second["status"] == "succeeded"
+
+    def test_platform_knowledge_async_upload_job_survives_memory_reset(self, bridge_server, monkeypatch):
+        import bridge_server as bs_mod
+
+        calls: "queue.Queue[str]" = queue.Queue()
+        release_job = threading.Event()
+
+        def fake_index_kb_upload_payload(self, payload):
+            content_str, filename, doc_type, scope, tags = self._parse_kb_upload_payload(payload)
+            calls.put(filename)
+            release_job.wait(timeout=5)
+            return 200, {"success": True, "doc_id": filename, "chunk_count": 1, "char_count": len(content_str)}
+
+        monkeypatch.setattr(
+            bs_mod.BridgeRequestHandler,
+            "_index_kb_upload_payload",
+            fake_index_kb_upload_payload,
+        )
+
+        r = _http_multipart_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/upload?async=1",
+            fields={"team_id": "1", "source_name": "persistent-job.txt"},
+            files={"file": ("persistent-job.txt", b"persistent job content", "text/plain")},
+        )
+        assert r["status"] == 202
+        job_id = r["body"]["data"]["job_id"]
+        assert calls.get(timeout=3) == "persistent-job.txt"
+
+        with bs_mod._KB_UPLOAD_JOBS_LOCK:
+            bs_mod._KB_UPLOAD_JOBS.clear()
+
+        recovered = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/jobs/{job_id}"
+        )
+        assert recovered["status"] == 200
+        assert recovered["body"]["data"]["job_id"] == job_id
+        assert recovered["body"]["data"]["status"] in ("queued", "running")
+
+        release_job.set()
+
+    def test_platform_knowledge_async_upload_recovers_queued_job_from_disk(self, bridge_server, monkeypatch):
+        import bridge_server as bs_mod
+
+        payload = {
+            "content": "queued disk content",
+            "raw_content": None,
+            "content_type": "",
+            "filename": "queued-disk.txt",
+            "doc_type": "text",
+            "scope": "default",
+            "tags": [],
+        }
+        job = {
+            "job_id": "kbjob_diskqueued",
+            "status": "queued",
+            "filename": "queued-disk.txt",
+            "payload": payload,
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "result": None,
+            "error": None,
+        }
+        job_dir = os.path.join(bs_mod._get_kb_upload_jobs_dir(), job["job_id"])
+        os.makedirs(job_dir, exist_ok=True)
+        with open(os.path.join(job_dir, "job.json"), "w", encoding="utf-8") as f:
+            json.dump(job, f)
+
+        with bs_mod._KB_UPLOAD_JOBS_LOCK:
+            bs_mod._KB_UPLOAD_JOBS.clear()
+
+        processed = threading.Event()
+
+        def fake_index_kb_upload_payload(self, payload):
+            content_str, filename, doc_type, scope, tags = self._parse_kb_upload_payload(payload)
+            assert content_str == "queued disk content"
+            assert filename == "queued-disk.txt"
+            processed.set()
+            return 200, {"success": True, "doc_id": filename, "chunk_count": 1, "char_count": len(content_str)}
+
+        monkeypatch.setattr(
+            bs_mod.BridgeRequestHandler,
+            "_index_kb_upload_payload",
+            fake_index_kb_upload_payload,
+        )
+
+        recovered = _http_request(
+            f"{self.base(bridge_server)}/api/platform/knowledge/jobs/kbjob_diskqueued"
+        )
+        assert recovered["status"] == 200
+        assert recovered["body"]["data"]["status"] in ("queued", "running", "succeeded")
+        assert processed.wait(timeout=5)
 
     # --- Step 7: Approval ---
 

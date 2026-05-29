@@ -41,6 +41,17 @@ export interface KnowledgeConfigUpdateRequest extends KnowledgeContext {
   watchDir: string;
 }
 
+export interface KnowledgeIngestJob {
+  job_id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  filename?: string;
+  source_name?: string;
+  created_at?: number;
+  updated_at?: number;
+  result?: Record<string, unknown> | null;
+  error?: string | null;
+}
+
 function buildBlob(
   value: Blob | Uint8Array | ArrayBuffer,
   contentType?: string,
@@ -57,7 +68,7 @@ function buildBlob(
 export class KnowledgeModule {
   constructor(private readonly http: HttpClient) {}
 
-  async ingest(payload: KnowledgeIngestRequest): Promise<Record<string, unknown>> {
+  private buildIngestForm(payload: KnowledgeIngestRequest): FormData {
     const form = new FormData();
     form.set("team_id", String(payload.teamId));
     if (payload.deviceId !== undefined) {
@@ -79,12 +90,32 @@ export class KnowledgeModule {
     } else {
       form.set("content", payload.content ?? "");
     }
+    return form;
+  }
 
+  async ingest(payload: KnowledgeIngestRequest): Promise<Record<string, unknown>> {
     return this.http.request<Record<string, unknown>>({
       method: "POST",
       path: "/api/platform/knowledge/upload",
-      body: form,
+      body: this.buildIngestForm(payload),
       timeoutMs: 300_000,
+    });
+  }
+
+  async ingestAsync(payload: KnowledgeIngestRequest): Promise<KnowledgeIngestJob> {
+    return this.http.request<KnowledgeIngestJob>({
+      method: "POST",
+      path: "/api/platform/knowledge/upload",
+      query: { async: "1" },
+      body: this.buildIngestForm(payload),
+      timeoutMs: 60_000,
+    });
+  }
+
+  async getIngestJob(jobId: string): Promise<KnowledgeIngestJob> {
+    return this.http.request<KnowledgeIngestJob>({
+      method: "GET",
+      path: `/api/platform/knowledge/jobs/${encodeURIComponent(jobId)}`,
     });
   }
 
