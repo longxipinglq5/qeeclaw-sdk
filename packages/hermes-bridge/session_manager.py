@@ -217,6 +217,34 @@ _BUILTIN_PROFILES: Dict[str, AgentProfile] = {
         system_prompt="你是由 QeeClaw 部署在微信内的私域助理，请用简洁亲和的语调回答。",
         temperature=0.6,
     ),
+    "edge_supervisor": AgentProfile(
+        name="edge_supervisor",
+        display_name="Edge 主管 Agent",
+        system_prompt=(
+            "你是 Centaur Edge 的主管型 AI Agent，负责主对话、AI 工具箱和 AI 专家协作。"
+            "你可以理解用户目标、追问信息、调用已安装的 Hermes skill/tool，并在执行、发布、写入或自动化变更前要求用户确认。"
+        ),
+        temperature=0.45,
+        tools_enabled=True,
+        metadata={
+            "edge_role": "supervisor",
+            "description": "Edge 首页、工具箱和专家协作统一执行 profile",
+        },
+    ),
+    "edge_consultant": AgentProfile(
+        name="edge_consultant",
+        display_name="Edge 陪跑咨询顾问",
+        system_prompt=(
+            "你是 Centaur Edge 的企业 AI 经营咨询顾问，只做经营咨询、问题分析、方案建议和人工专家服务引导。"
+            "不要调用工具箱、发布内容、写入系统、创建自动化动作或接管首页主管 Agent 的执行职责。"
+        ),
+        temperature=0.35,
+        tools_enabled=False,
+        metadata={
+            "edge_role": "consultant",
+            "description": "Edge 侧边栏陪跑咨询独立 profile",
+        },
+    ),
 }
 
 

@@ -179,6 +179,33 @@ class TestSessionManager:
         with pytest.raises(ValueError, match="Unknown agent profile"):
             self.mgr.create_session(agent_profile="nonexistent_profile")
 
+    def test_edge_profiles_are_builtin(self):
+        supervisor = self.mgr.get_profile("edge_supervisor")
+        consultant = self.mgr.get_profile("edge_consultant")
+
+        assert supervisor is not None
+        assert supervisor.display_name == "Edge 主管 Agent"
+        assert supervisor.tools_enabled is True
+        assert supervisor.metadata.get("edge_role") == "supervisor"
+
+        assert consultant is not None
+        assert consultant.display_name == "Edge 陪跑咨询顾问"
+        assert consultant.tools_enabled is False
+        assert consultant.metadata.get("edge_role") == "consultant"
+
+    def test_create_edge_profile_sessions(self):
+        supervisor_session = self.mgr.create_session(
+            session_id="edge-supervisor-test",
+            agent_profile="edge_supervisor",
+        )
+        consultant_session = self.mgr.create_session(
+            session_id="edge-consultant-test",
+            agent_profile="edge_consultant",
+        )
+
+        assert supervisor_session.agent_profile == "edge_supervisor"
+        assert consultant_session.agent_profile == "edge_consultant"
+
     def test_get_session(self):
         s = self.mgr.create_session(user_id="bob")
         got = self.mgr.get_session(s.session_id)

@@ -305,3 +305,30 @@ def test_real_hermes_skill_resolution_uses_requested_profile_home(tmp_path, monk
     assert "请执行 beta" in prompt
     assert os.environ["HERMES_HOME"] == str(profile_a)
     assert skills_tool.SKILLS_DIR == profile_a / "skills"
+
+
+def test_edge_supervisor_profile_resolves_installed_edge_skill_commands(tmp_path, monkeypatch):
+    bridge = _load_bridge_with_hermes(monkeypatch, tmp_path)
+    profile_home = tmp_path / "profiles" / "edge_supervisor"
+    _write_skill(profile_home, "moments-copywriter", "Moments copy")
+    _write_skill(profile_home, "xiaohongshu-note-writer", "Xiaohongshu note")
+
+    os.environ["HERMES_HOME"] = str(profile_home)
+    import agent.skill_commands as skill_commands
+
+    skill_commands.scan_skill_commands()
+    assert skill_commands.resolve_skill_command_key("moments-copywriter") == "/moments-copywriter"
+    assert skill_commands.resolve_skill_command_key("xiaohongshu-note-writer") == "/xiaohongshu-note-writer"
+
+
+def test_agent_pool_creates_edge_profile_home_without_installing_execution_skills(tmp_path, monkeypatch):
+    bridge = _load_bridge_with_hermes(monkeypatch, tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+    pool = bridge.AgentPool()
+
+    profile_home = Path(pool._ensure_profile_home("edge_supervisor"))
+
+    assert profile_home.name == "edge_supervisor"
+    assert profile_home.is_dir()
+    assert not (profile_home / "skills" / "moments-copywriter" / "SKILL.md").exists()
+    assert not (profile_home / "skills" / "xiaohongshu-note-writer" / "SKILL.md").exists()
