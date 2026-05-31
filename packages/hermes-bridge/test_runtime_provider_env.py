@@ -22,8 +22,9 @@ def _load_bridge(monkeypatch, tmp_path):
 def test_deepseek_env_resolves_openai_compatible_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROVIDER", "deepseek")
     monkeypatch.setenv("HERMES_MODEL", "deepseek-chat")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     bridge = _load_bridge(monkeypatch, tmp_path)
 
@@ -40,8 +41,9 @@ def test_deepseek_env_resolves_openai_compatible_runtime(tmp_path, monkeypatch):
 def test_release_runtime_scope_does_not_default_to_local(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_PROVIDER", "deepseek")
     monkeypatch.setenv("HERMES_MODEL", "deepseek-chat")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-test")
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
     bridge = _load_bridge(monkeypatch, tmp_path)
 
     cloud_runtime = bridge._resolve_runtime_client_config(None, None, runtime_scope=None)

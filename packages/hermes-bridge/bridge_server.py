@@ -1557,6 +1557,19 @@ def _provider_env_api_key(provider_name: Optional[str]) -> str:
     return _env_first(*keys)
 
 
+def _provider_env_base_url(provider_name: Optional[str]) -> str:
+    provider = _normalize_provider_name(provider_name)
+    if provider == "deepseek":
+        return _env_first("DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1"
+    if provider == "openrouter":
+        return _env_first("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+    if provider == "alibaba":
+        return _env_first("DASHSCOPE_BASE_URL", "QWEN_BASE_URL") or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    if provider == "openai":
+        return _env_first("OPENAI_BASE_URL") or "https://api.openai.com/v1"
+    return ""
+
+
 def _normalize_runtime_scope(runtime_scope: Optional[str]) -> str:
     scope = str(runtime_scope or "").strip().lower().replace("-", "_")
     if scope in ("cloud", "remote"):
@@ -1825,7 +1838,7 @@ def _resolve_runtime_client_config(
         if scoped_base_url:
             runtime_base_url = scoped_base_url
         else:
-            runtime_base_url = os.environ.get("OPENAI_BASE_URL") or ""
+            runtime_base_url = _provider_env_base_url(resolved_provider) or os.environ.get("OPENAI_BASE_URL") or ""
 
     runtime_base_url = _normalize_openai_compatible_base_url(str(runtime_base_url or ""))
 
