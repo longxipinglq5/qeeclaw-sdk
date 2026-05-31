@@ -28,6 +28,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 import threading
 from threading import Thread
@@ -631,11 +632,17 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, data: Any):
 
 def _read_json_body(handler: BaseHTTPRequestHandler) -> dict:
     """读取请求体的 JSON。"""
+    cached = getattr(handler, "_cached_json_body", None)
+    if isinstance(cached, dict):
+        return cached
     content_length = int(handler.headers.get("Content-Length", 0))
     if content_length == 0:
         return {}
     raw = handler.rfile.read(content_length)
-    return json.loads(raw.decode("utf-8"))
+    parsed = json.loads(raw.decode("utf-8"))
+    if isinstance(parsed, dict):
+        setattr(handler, "_cached_json_body", parsed)
+    return parsed
 
 
 def _body_value(body: Dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -652,6 +659,13 @@ def _truthy_body_flag(body: Dict[str, Any], *keys: str, default: bool = True) ->
     if value is None:
         return default
     return str(value).lower() not in ("0", "false", "no", "off")
+
+
+def _has_skill_invocation_metadata(body: Dict[str, Any]) -> bool:
+    if _body_value(body, "skill_command", "skillCommand"):
+        return True
+    slash_command, _instruction = _split_slash_skill_prompt(str(body.get("prompt") or ""))
+    return bool(slash_command)
 
 
 def _memory_scope_from_body(body: Dict[str, Any], agent_profile: str = "default") -> Dict[str, Any]:
@@ -721,6 +735,118 @@ def _append_context(system_prompt: Optional[str], *contexts: str) -> str:
     parts = [system_prompt or ""]
     parts.extend(ctx for ctx in contexts if ctx)
     return "\n\n".join(part for part in parts if part)
+
+
+def _split_slash_skill_prompt(prompt: str) -> Tuple[Optional[str], str]:
+    text = str(prompt or "").strip()
+    if not text.startswith("/"):
+        return None, text
+    first, _, rest = text.partition(" ")
+    command = first[1:].strip()
+    if not command:
+        return None, text
+    return command, rest.strip()
+
+
+def _activate_hermes_skill_home(hermes_home: Optional[str]) -> Dict[str, Any]:
+    """Synchronize Hermes skill module globals with a profile HERMES_HOME."""
+    state: Dict[str, Any] = {
+        "env_home": os.environ.get("HERMES_HOME", ""),
+        "skills_tool": None,
+        "skills_home": None,
+        "skills_dir": None,
+    }
+    if not hermes_home:
+        return state
+
+    os.environ["HERMES_HOME"] = hermes_home
+    skills_tool = sys.modules.get("tools.skills_tool")
+    if skills_tool is not None:
+        state["skills_tool"] = skills_tool
+        state["skills_home"] = getattr(skills_tool, "HERMES_HOME", None)
+        state["skills_dir"] = getattr(skills_tool, "SKILLS_DIR", None)
+        target_home = Path(hermes_home)
+        skills_tool.HERMES_HOME = target_home
+        skills_tool.SKILLS_DIR = target_home / "skills"
+    return state
+
+
+def _restore_hermes_skill_home(state: Dict[str, Any]):
+    env_home = state.get("env_home")
+    os.environ["HERMES_HOME"] = env_home or os.environ.get("HERMES_HOME", "")
+    skills_tool = state.get("skills_tool")
+    if skills_tool is not None:
+        if state.get("skills_home") is not None:
+            skills_tool.HERMES_HOME = state["skills_home"]
+        if state.get("skills_dir") is not None:
+            skills_tool.SKILLS_DIR = state["skills_dir"]
+
+
+def _resolve_skill_invocation_prompt(
+    prompt: str,
+    body: Dict[str, Any],
+    hermes_home: Optional[str] = None,
+) -> Tuple[str, Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
+    explicit_command = _body_value(body, "skill_command", "skillCommand")
+    slash_command, slash_instruction = _split_slash_skill_prompt(prompt)
+    command = str(explicit_command or slash_command or "").strip().lstrip("/")
+    if not command:
+        return prompt, None, None
+
+    skill_home_state = _activate_hermes_skill_home(hermes_home)
+    try:
+        _ensure_hermes_on_path()
+        from agent.skill_commands import (
+            build_skill_invocation_message,
+            resolve_skill_command_key,
+            scan_skill_commands,
+        )
+        if hermes_home:
+            scan_skill_commands()
+    except Exception as exc:
+        return prompt, None, {
+            "code": "skill_command_dispatch_unavailable",
+            "message": f"Hermes skill command dispatch is unavailable: {exc}",
+            "skill_command": command,
+        }
+    finally:
+        _restore_hermes_skill_home(skill_home_state)
+
+    skill_home_state = _activate_hermes_skill_home(hermes_home)
+    try:
+        cmd_key = resolve_skill_command_key(command)
+        if cmd_key is None:
+            return prompt, None, {
+                "code": "unknown_skill_command",
+                "message": f"Unknown skill command: /{command}",
+                "skill_command": command,
+            }
+
+        user_instruction = str(prompt or "").strip()
+        if explicit_command:
+            user_instruction = str(prompt or "").strip()
+        elif slash_command:
+            user_instruction = slash_instruction
+
+        invocation_message = build_skill_invocation_message(
+            cmd_key,
+            user_instruction,
+            task_id=_body_value(body, "task_id", "taskId"),
+            runtime_note=str(_body_value(body, "runtime_note", "runtimeNote", default="") or ""),
+        )
+        if not invocation_message:
+            return prompt, None, {
+                "code": "skill_invocation_build_failed",
+                "message": f"Failed to build invocation message for skill command: /{command}",
+                "skill_command": command,
+            }
+    finally:
+        _restore_hermes_skill_home(skill_home_state)
+
+    return invocation_message, {
+        "skill_command": command,
+        "skill_command_resolved": cmd_key,
+    }, None
 
 
 # ---------------------------------------------------------------------------
@@ -3278,7 +3404,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if _path == "/v1/chat/completions":
             self._handle_openai_chat_completions()
         elif _path == "/invoke":
-            self._handle_llm_proxy_to_backend("POST", "/api/platform/models/invoke")
+            self._handle_invoke()
         elif _path == "/invoke_local":
             self._handle_invoke(runtime_scope="local")
         elif _path == "/api/platform/models/invoke_local":
@@ -3427,7 +3553,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._handle_voice_not_implemented()
         # --- LLM text/image/video generation: forward to Nexus backend ---
         elif _path == "/api/platform/models/invoke":
-            self._handle_llm_proxy_to_backend("POST", "/api/platform/models/invoke")
+            self._handle_platform_model_invoke()
         elif _path == "/api/llm/images/generations":
             self._handle_llm_proxy_to_backend("POST", "/api/llm/images/generations")
         elif _path == "/api/llm/video/generations":
@@ -3767,6 +3893,32 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 if temperature is None and profile.temperature is not None:
                     temperature = profile.temperature
 
+            pool = get_agent_pool()
+            profile_name = session.agent_profile
+            profile_home = profile.hermes_home if (profile and profile.hermes_home) else None
+            if not profile_home and hasattr(pool, "_ensure_profile_home"):
+                profile_home = pool._ensure_profile_home(profile_name)
+            resolver_lock = getattr(pool, "_creation_lock", None)
+            if resolver_lock:
+                with resolver_lock:
+                    prompt, skill_meta, skill_error = _resolve_skill_invocation_prompt(
+                        prompt,
+                        body,
+                        hermes_home=profile_home,
+                    )
+            else:
+                prompt, skill_meta, skill_error = _resolve_skill_invocation_prompt(
+                    prompt,
+                    body,
+                    hermes_home=profile_home,
+                )
+            if skill_error:
+                if platform_response:
+                    _platform_json_response(self, 400, None, skill_error["message"])
+                else:
+                    _json_response(self, 400, {"error": skill_error})
+                return
+
             # RAG: 自动检索知识库并注入上下文
             rag_context = ""
             if use_knowledge:
@@ -3810,12 +3962,12 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                     "system_prompt": system_prompt,
                     "effective_system_prompt": effective_system_prompt,
                     "prompt": prompt,
+                    "skill": skill_meta,
                     "platform_response": platform_response,
                 },
             )
 
             # 通过 AgentPool 调用（AIAgent 或 fallback）
-            pool = get_agent_pool()
             if use_agent:
                 result = pool.invoke(
                     prompt=prompt,
@@ -3854,6 +4006,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
                 result["_rag_used"] = True
             if memory_context:
                 result["_memory_used"] = True
+            if skill_meta:
+                result["_skill_command"] = skill_meta["skill_command"]
+                result["_skill_command_resolved"] = skill_meta["skill_command_resolved"]
 
             _record_finance_usage(
                 prompt=prompt,
@@ -7947,6 +8102,23 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         except Exception as e:
             traceback.print_exc()
             _platform_json_response(self, 500, None, str(e))
+
+    def _handle_platform_model_invoke(self):
+        try:
+            body = _read_json_body(self)
+            if _has_skill_invocation_metadata(body):
+                self._handle_invoke(platform_response=False)
+                return
+            self._handle_llm_proxy_to_backend("POST", "/api/platform/models/invoke")
+        except Exception as e:
+            traceback.print_exc()
+            _json_response(self, 500, {
+                "error": {
+                    "message": str(e),
+                    "type": "server_error",
+                    "code": "platform_model_invoke_error",
+                }
+            })
 
     def _handle_platform_file_delete(self):
         """DELETE /api/platform/files/{id} — 删除文件记录。"""
