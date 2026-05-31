@@ -1550,6 +1550,13 @@ def _env_first(*keys: str) -> str:
     return ""
 
 
+def _provider_env_api_key(provider_name: Optional[str]) -> str:
+    provider = _normalize_provider_name(provider_name)
+    provider_key = f"{provider.upper()}_API_KEY" if provider else ""
+    keys = [key for key in (provider_key, "OPENAI_API_KEY") if key]
+    return _env_first(*keys)
+
+
 def _normalize_runtime_scope(runtime_scope: Optional[str]) -> str:
     scope = str(runtime_scope or "").strip().lower().replace("-", "_")
     if scope in ("cloud", "remote"):
@@ -1808,6 +1815,8 @@ def _resolve_runtime_client_config(
 
     if not runtime_api_key:
         runtime_api_key = scope_defaults.get("api_key") or ""
+    if not runtime_api_key:
+        runtime_api_key = _provider_env_api_key(resolved_provider)
 
     if not runtime_api_key and _is_local_runtime_base_url(str(runtime_base_url or "")):
         runtime_api_key = os.environ.get("QEECLAW_LOCAL_OPENAI_API_KEY", "local-bridge-key")
