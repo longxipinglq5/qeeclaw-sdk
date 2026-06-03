@@ -33,11 +33,23 @@ hermes = [
 ]
 dev = [
     "pytest>=9.0,<10",
+    "pytest-asyncio>=0.24,<1",
     "httpx>=0.28,<1",
+    "pydantic-settings>=2.0,<3",
+    "python-dotenv>=1.0,<2",
+    "sse-starlette>=2.0,<3",
 ]
 
 [project.scripts]
 qeeclaw-hermes-bridge = "bridge_server:main"
+qeeclaw-bridge = "bridge.main:cli"
 
 [tool.setuptools]
 py-modules = ["bridge_server", "bailian_image", "wechat_gateway", "knowledge_store", "memory_store", "session_manager", "cloud_tunnel"]
+
+[tool.setuptools.packages.find]
+include = ["bridge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["bridge/tests"]
+asyncio_mode = "auto"
