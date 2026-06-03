@@ -21,6 +21,24 @@ class TestInvokeAPI:
         assert body["session_id"] == "test-s"
 
     @pytest.mark.asyncio
+    async def test_invoke_ignores_request_history(self, app_client, mock_agent_class):
+        resp = await app_client.post(
+            "/chat/invoke",
+            json={
+                "scenario": "general",
+                "session_id": "test-s",
+                "user_text": "你好",
+                "conversation_history": [{"role": "user", "content": "旧历史"}],
+                "context": {"businessContext": "旧上下文"},
+            },
+        )
+        assert resp.status_code == 200
+
+        call_kwargs = mock_agent_class.return_value.run_conversation.call_args.kwargs
+        assert call_kwargs["user_message"] == "你好"
+        assert call_kwargs["conversation_history"] == []
+
+    @pytest.mark.asyncio
     async def test_invoke_unknown_scenario(self, app_client):
         resp = await app_client.post(
             "/chat/invoke",

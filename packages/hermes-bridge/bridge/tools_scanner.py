@@ -66,12 +66,14 @@ def _parse_skill_md(path: Path) -> ToolInfo | None:
 
     name = meta.get("name") or path.parent.name
     description = meta.get("description") or ""
+    category = meta.get("category")
     input_schema = _convert_input_schema(meta.get("input_schema"))
     card_template = meta.get("card_template")
 
     return ToolInfo(
         name=name,
         description=description,
+        category=category,
         input_schema=input_schema,
         card_template=card_template,
     )

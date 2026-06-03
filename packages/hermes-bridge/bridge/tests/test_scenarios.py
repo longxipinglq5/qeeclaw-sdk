@@ -19,12 +19,28 @@ class TestScenarios:
         prompt = get_system_prompt("general")
         assert "AI 助理" in prompt
 
-    def test_context_injection(self):
+    def test_request_context_is_not_injected(self):
         prompt = get_system_prompt(
-            "general", {"company_name": "测试公司", "owner_name": "张总"}
+            "supervisor",
+            {
+                "company_name": "测试公司",
+                "owner_name": "张总",
+                "ownerContext": "来自 Edge 的记忆",
+                "businessContext": "来自 Edge 的企业资料",
+                "pageContext": "来自 Edge 的页面上下文",
+                "taskContext": "来自 Edge 的任务上下文",
+                "expertRules": "来自 Edge 的专家规则",
+                "expertCatalog": "来自 Edge 的专家列表",
+            },
         )
-        assert "测试公司" in prompt
-        assert "张总" in prompt
+        assert "测试公司" not in prompt
+        assert "张总" not in prompt
+        assert "来自 Edge 的记忆" not in prompt
+        assert "来自 Edge 的企业资料" not in prompt
+        assert "来自 Edge 的页面上下文" not in prompt
+        assert "来自 Edge 的任务上下文" not in prompt
+        assert "来自 Edge 的专家规则" not in prompt
+        assert "来自 Edge 的专家列表" not in prompt
 
     def test_context_none_no_extra(self):
         prompt = get_system_prompt("general", None)

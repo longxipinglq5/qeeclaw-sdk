@@ -8,9 +8,18 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from bridge.api.billing import router as billing_router
+from bridge.api.channels import router as channels_router
 from bridge.api.invoke import router as invoke_router
 from bridge.api.invoke_compat import router as invoke_compat_router
+from bridge.api.knowledge import router as knowledge_router
+from bridge.api.memory import router as memory_router
 from bridge.api.models import HealthResponse
+from bridge.api.models_invoke import router as models_invoke_router
+from bridge.api.models_mgmt import router as models_mgmt_router
+from bridge.api.platform import router as platform_router
+from bridge.api.profile_context import router as profile_context_router
+from bridge.api.sessions import router as sessions_router
 from bridge.api.stream import router as stream_router
 from bridge.api.stream_compat import router as stream_compat_router
 from bridge.api.tools_list import router as tools_list_router
@@ -63,6 +72,7 @@ def create_app() -> FastAPI:
             "https://localhost:5174",
             "https://127.0.0.1:5173",
             "https://localhost:5173",
+            "*"
         ],
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
@@ -74,6 +84,15 @@ def create_app() -> FastAPI:
     app.include_router(invoke_compat_router, tags=["compat"])
     app.include_router(stream_compat_router, tags=["compat"])
     app.include_router(tools_list_router, tags=["tools"])
+    app.include_router(models_invoke_router, tags=["models"])
+    app.include_router(models_mgmt_router, tags=["models"])
+    app.include_router(knowledge_router, tags=["knowledge"])
+    app.include_router(memory_router, tags=["memory"])
+    app.include_router(sessions_router, tags=["sessions"])
+    app.include_router(channels_router, tags=["channels"])
+    app.include_router(billing_router, tags=["billing"])
+    app.include_router(platform_router, tags=["platform"])
+    app.include_router(profile_context_router, tags=["profile-context"])
 
     @app.get("/health", response_model=HealthResponse)
     async def health():
@@ -86,12 +105,14 @@ app = create_app()
 
 
 def cli() -> None:
+    import os
+    reload_enabled = os.environ.get("BRIDGE_RELOAD", "").lower() in ("1", "true", "yes")
     uvicorn.run(
         "bridge.main:app",
-        host="0.0.0.0",
+        host=settings.bridge_host,
         port=settings.bridge_port,
-        reload=True,
-        reload_dirs=[str(Path(__file__).resolve().parent)],
+        reload=reload_enabled,
+        reload_dirs=[str(Path(__file__).resolve().parent)] if reload_enabled else None,
         log_level=settings.bridge_log_level.lower(),
     )
 

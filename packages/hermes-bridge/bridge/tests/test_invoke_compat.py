@@ -69,6 +69,24 @@ class TestInvokeCompat:
         assert constructor_kwargs.get("ephemeral_system_prompt") == "你是营销专家"
 
     @pytest.mark.asyncio
+    async def test_invoke_uses_request_session_and_profile(self, app_client, mock_agent_class):
+        """兼容路由必须使用调用方传入的稳定 session/profile。"""
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "你好",
+                "session_id": "edge:supervisor",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+        assert resp.status_code == 200
+
+        constructor_kwargs = mock_agent_class.call_args.kwargs
+        assert constructor_kwargs["session_id"] == "compat:edge:supervisor:edge_supervisor"
+        assert constructor_kwargs["load_soul_identity"] is True
+        assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+
+    @pytest.mark.asyncio
     async def test_invoke_missing_prompt(self, app_client):
         """缺 prompt 应返回 422。"""
         resp = await app_client.post(
@@ -151,6 +169,24 @@ class TestStreamCompat:
         assert constructor_kwargs.get("ephemeral_system_prompt") == "你是营销专家"
         # stream_delta_callback 必须被注入
         assert constructor_kwargs.get("stream_delta_callback") is not None
+
+    @pytest.mark.asyncio
+    async def test_stream_uses_request_session_and_profile(self, app_client, mock_agent_class):
+        """流式兼容路由也必须使用调用方传入的稳定 session/profile。"""
+        resp = await app_client.post(
+            "/invoke/stream",
+            json={
+                "prompt": "你好",
+                "session_id": "edge:supervisor",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+        assert resp.status_code == 200
+
+        constructor_kwargs = mock_agent_class.call_args.kwargs
+        assert constructor_kwargs["session_id"] == "compat-stream:edge:supervisor:edge_supervisor"
+        assert constructor_kwargs["load_soul_identity"] is True
+        assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio
     async def test_stream_terminator_format(self, app_client):

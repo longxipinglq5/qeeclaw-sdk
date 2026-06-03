@@ -47,3 +47,78 @@ class TestInvoke:
         call_kwargs = mock_agent_class.return_value.run_conversation.call_args
         assert call_kwargs.kwargs["user_message"] == "你好"
         assert result["final_response"] == "测试回复"
+
+    async def test_invoke_raw_reuses_cached_agent(
+        self, fresh_runtime, mock_agent_class, standard_agent_response
+    ):
+        mock_agent_class.return_value.run_conversation.return_value = (
+            standard_agent_response
+        )
+
+        await fresh_runtime.invoke_raw(
+            session_id="edge:supervisor",
+            user_text="你好",
+            agent_profile="edge_supervisor",
+        )
+        await fresh_runtime.invoke_raw(
+            session_id="edge:supervisor",
+            user_text="继续",
+            agent_profile="edge_supervisor",
+        )
+
+        mock_agent_class.assert_called_once()
+        run_calls = mock_agent_class.return_value.run_conversation.call_args_list
+        assert run_calls[0].kwargs["user_message"] == "你好"
+        assert run_calls[0].kwargs["conversation_history"] == []
+        assert run_calls[1].kwargs["user_message"] == "继续"
+        assert run_calls[1].kwargs["conversation_history"] == [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "测试回复"},
+        ]
+
+    async def test_invoke_raw_history_is_isolated_by_session(
+        self, fresh_runtime, mock_agent_class, standard_agent_response
+    ):
+        mock_agent_class.return_value.run_conversation.return_value = (
+            standard_agent_response
+        )
+
+        await fresh_runtime.invoke_raw(
+            session_id="edge:a",
+            user_text="A 第一轮",
+            agent_profile="edge_supervisor",
+        )
+        await fresh_runtime.invoke_raw(
+            session_id="edge:b",
+            user_text="B 第一轮",
+            agent_profile="edge_supervisor",
+        )
+
+        run_calls = mock_agent_class.return_value.run_conversation.call_args_list
+        assert run_calls[1].kwargs["conversation_history"] == []
+
+    async def test_invoke_uses_server_side_history(
+        self, fresh_runtime, mock_agent_class, standard_agent_response
+    ):
+        mock_agent_class.return_value.run_conversation.return_value = (
+            standard_agent_response
+        )
+
+        await fresh_runtime.invoke(
+            session_id="edge:chat",
+            scenario="supervisor",
+            user_text="设计一个主机盒子的产品海报",
+        )
+        await fresh_runtime.invoke(
+            session_id="edge:chat",
+            scenario="supervisor",
+            user_text="小红书用",
+            conversation_history=[{"role": "user", "content": "外部历史"}],
+        )
+
+        run_calls = mock_agent_class.return_value.run_conversation.call_args_list
+        assert run_calls[0].kwargs["conversation_history"] == []
+        assert run_calls[1].kwargs["conversation_history"] == [
+            {"role": "user", "content": "设计一个主机盒子的产品海报"},
+            {"role": "assistant", "content": "测试回复"},
+        ]

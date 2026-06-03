@@ -20,8 +20,6 @@ async def invoke(req: ChatInvokeRequest, request: Request) -> JSONResponse:
             session_id=req.session_id,
             scenario=req.scenario,
             user_text=req.user_text,
-            context=req.context,
-            conversation_history=req.conversation_history,
         )
     except ValueError as exc:
         return JSONResponse(

@@ -40,6 +40,7 @@ class ChatInvokeResponse(BaseModel):
 class ToolInfo(BaseModel):
     name: str
     description: str
+    category: str | None = None
     input_schema: dict | None = None
     card_template: str | None = None
 
@@ -60,6 +61,20 @@ class CompatInvokeRequest(BaseModel):
     """HermesAdapter 调用契约: prompt + 可选 system_prompt / model / provider。"""
 
     prompt: str = Field(..., min_length=1, description="用户 prompt（必填）")
+    session_id: str | None = Field(
+        None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-zA-Z0-9_\-=:.]+$",
+        description="稳定会话 ID；未提供时由 bridge 使用默认兼容会话",
+    )
+    agent_profile: str | None = Field(
+        None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[a-zA-Z0-9_\-=:.]+$",
+        description="Hermes agent profile；规则、工具、专家由服务端 profile 管理",
+    )
     model: str | None = Field(None, description="模型名（当前由 settings 统一管理，忽略）")
     provider: str | None = Field(None, description="提供商（当前由 settings 统一管理，忽略）")
     max_tokens: int | None = Field(None, description="最大 token 数（透传给 hermes-agent）")

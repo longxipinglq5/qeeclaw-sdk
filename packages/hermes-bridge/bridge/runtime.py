@@ -24,6 +24,7 @@ class HermesRuntime:
     def __init__(self, max_size: int | None = None) -> None:
         self._max_size = max_size or settings.cache_max_size
         self._cache: OrderedDict[str, Any] = OrderedDict()
+        self._histories: dict[str, list[dict[str, str]]] = {}
         self._cache_lock = threading.Lock()
         self._AIAgent: type | None = None
 
@@ -36,6 +37,17 @@ class HermesRuntime:
 
     def _cache_key(self, session_id: str, scenario: str) -> str:
         return f"{session_id}:{scenario}"
+
+    def evict_agent_profile(self, agent_profile: str) -> int:
+        suffix = f":{agent_profile}"
+        with self._cache_lock:
+            keys = [key for key in self._cache if key.endswith(suffix)]
+            for key in keys:
+                self._cache.pop(key, None)
+                self._histories.pop(key, None)
+        if keys:
+            logger.info("清理 agent_profile=%s 的缓存 agent: %d", agent_profile, len(keys))
+        return len(keys)
 
     def get_or_create(
         self,
@@ -57,15 +69,34 @@ class HermesRuntime:
             self._cache.move_to_end(cache_key)
             while len(self._cache) > self._max_size:
                 evicted_key, _ = self._cache.popitem(last=False)
+                self._histories.pop(evicted_key, None)
                 logger.info("LRU 淘汰: %s", evicted_key)
 
         return agent
+
+    def _history_for(self, cache_key: str) -> list[dict[str, str]]:
+        with self._cache_lock:
+            return [dict(message) for message in self._histories.get(cache_key, [])]
+
+    def _append_history(self, cache_key: str, user_text: str, result: dict[str, Any]) -> None:
+        assistant_text = str(result.get("final_response") or "")
+        if not assistant_text:
+            return
+        with self._cache_lock:
+            history = self._histories.setdefault(cache_key, [])
+            history.extend([
+                {"role": "user", "content": user_text},
+                {"role": "assistant", "content": assistant_text},
+            ])
+            if len(history) > 24:
+                del history[:-24]
 
     def _create_agent(
         self,
         session_id: str,
         ephemeral_system_prompt: str | None = None,
         stream_delta_callback: Callable[[str], None] | None = None,
+        **overrides: Any,
     ) -> Any:
         AIAgent = self._get_ai_agent_class()
         kwargs: dict[str, Any] = {
@@ -81,7 +112,8 @@ class HermesRuntime:
             kwargs["ephemeral_system_prompt"] = ephemeral_system_prompt
         if stream_delta_callback is not None:
             kwargs["stream_delta_callback"] = stream_delta_callback
-        logger.info("构造 AIAgent: session=%s", session_id)
+        kwargs.update(overrides)
+        logger.info("构造 AIAgent: session=%s overrides=%s", session_id, list(overrides.keys()))
         return AIAgent(**kwargs)
 
     async def invoke(
@@ -99,8 +131,9 @@ class HermesRuntime:
         result = await asyncio.to_thread(
             agent.run_conversation,
             user_message=user_text,
-            conversation_history=conversation_history or [],
+            conversation_history=self._history_for(key),
         )
+        self._append_history(key, user_text, result)
         return result
 
     async def stream(
@@ -118,6 +151,7 @@ class HermesRuntime:
             loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
 
         ephemeral = get_system_prompt(scenario, context)
+        history_key = self._cache_key(session_id, scenario)
         # stream 每次创建新 agent，因为 stream_delta_callback 是 per-request 的
         agent = self._create_agent(
             f"stream:{session_id}:{scenario}",
@@ -130,9 +164,10 @@ class HermesRuntime:
                 result = await asyncio.to_thread(
                     agent.run_conversation,
                     user_message=user_text,
-                    conversation_history=conversation_history or [],
+                    conversation_history=self._history_for(history_key),
                 )
                 final = result.get("final_response") or ""
+                self._append_history(history_key, user_text, result)
                 await queue.put(("done", final))
             except Exception as exc:
                 logger.exception("stream run_conversation 异常")
@@ -145,26 +180,31 @@ class HermesRuntime:
         self,
         session_id: str,
         user_text: str,
+        agent_profile: str = "default",
         system_prompt: str | None = None,
     ) -> dict[str, Any]:
-        """兼容 core-sdk HermesAdapter 的非流式调用：跳过 scenario 映射，按需注入 system_prompt。
+        """兼容 core-sdk HermesAdapter 的非流式调用。
 
-        每次创建新 agent（不缓存，不进 LRU），调用完成后引用出作用域即被 GC。
+        Edge 只传用户输入；系统规则、记忆、skills 由 Hermes agent/profile 自主管理。
         """
-        agent = self._create_agent(
-            f"compat:{session_id}",
+        cache_key = f"compat:{session_id}:{agent_profile}"
+        agent = self.get_or_create(
+            cache_key,
             ephemeral_system_prompt=system_prompt,
         )
-        return await asyncio.to_thread(
+        result = await asyncio.to_thread(
             agent.run_conversation,
             user_message=user_text,
-            conversation_history=[],
+            conversation_history=self._history_for(cache_key),
         )
+        self._append_history(cache_key, user_text, result)
+        return result
 
     async def stream_raw(
         self,
         session_id: str,
         user_text: str,
+        agent_profile: str = "default",
         system_prompt: str | None = None,
     ) -> StreamHandle:
         """兼容 core-sdk HermesAdapter 的流式调用：跳过 scenario 映射，按需注入 system_prompt。"""
@@ -175,7 +215,7 @@ class HermesRuntime:
             loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
 
         agent = self._create_agent(
-            f"compat-stream:{session_id}",
+            f"compat-stream:{session_id}:{agent_profile}",
             ephemeral_system_prompt=system_prompt,
             stream_delta_callback=on_delta,
         )
@@ -185,9 +225,10 @@ class HermesRuntime:
                 result = await asyncio.to_thread(
                     agent.run_conversation,
                     user_message=user_text,
-                    conversation_history=[],
+                    conversation_history=self._history_for(f"compat:{session_id}:{agent_profile}"),
                 )
                 final = result.get("final_response") or ""
+                self._append_history(f"compat:{session_id}:{agent_profile}", user_text, result)
                 await queue.put(("done", final))
             except Exception as exc:
                 logger.exception("stream_raw run_conversation 异常")

@@ -22,8 +22,6 @@ async def stream(req: ChatStreamRequest, request: Request) -> StreamingResponse:
                 session_id=req.session_id,
                 scenario=req.scenario,
                 user_text=req.user_text,
-                context=req.context,
-                conversation_history=req.conversation_history,
             )
         except ValueError as exc:
             yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"

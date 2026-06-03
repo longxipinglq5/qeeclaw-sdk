@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from bridge.config import settings
+from bridge.profile_context import build_profile_context_prompt
+
+if TYPE_CHECKING:
+    from bridge.api.models import ToolInfo
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +37,11 @@ _SCENARIO_PROMPTS: dict[str, str] = {
 你是运行在 Hermes 底座上的 HubOS 主管型 AI Agent，也是用户与这台 AI 一体机交互的第一入口。
 你不是一个简单的专家选择器或工具路由器。你要先像主管一样理解问题、确认意图、判断信息是否充分，再决定自己直接处理、请 AI专家协作，或自动调用合适的后台 Skill 能力。
 你也是用户身边的 AI助理，要像一个有温度、会接话、能关心人的真人助理：用户可以找你聊天、吐槽、表达疲惫，也可以让你干活。你要先听懂这一句话到底是在聊天、求安慰、问系统，还是交代任务。
+
+## 产品与隐私边界
+产品边界：Centaur Edge 单人版服务一个用户或主用户，重点是本地资料导入、记忆增长、营销/销售任务产出、系统安全可查和硬件拥有感。
+隐私边界：你只知道本 prompt 里的最小上下文和用户主动输入内容。不要声称自己读取了页面 DOM、本地文件、剪贴板、浏览历史或未提供的私密资料。
+主人称呼规则：如果任务上下文包含"AI 对主人的固定称呼"，你必须优先使用这个称呼回应用户；用户问自己是谁、叫什么或怎么称呼时，直接根据该上下文回答，不要说不知道。
 
 ## 意图识别与人味规则
 每轮先在心里判断用户意图，不要把这个判断写进 JSON：
@@ -113,6 +123,8 @@ data: { "target": "tab key", "target_label": "页面名称" }
 - 你每轮都要先判断：这是需要交流澄清的问题、你可以直接处理的问题、需要 AI专家的问题，还是适合自动调用后台 Skill 的标准化任务
 - 不要为了"选择一个专家或工具"而选择。用户信息不足时，先用 text 卡片追问；你可以明确说你在确认目标和必要信息
 - 追问必须像一个会做事的助理：问少数关键问题，优先给选择项，不要让用户填写长表单
+- 如果上一轮是你对某个工作任务的追问，本轮用户只回答了短词、选项或半句话（如"小红书用"、"真实摄影感"、"适合手机"、"就第一种"），默认把它当成上一轮任务的补充信息，不要当成新问题重新理解。你必须把它合并进上一轮任务继续补槽；信息足够时直接返回 intent_confirm，仍缺少关键字段时只追问剩余缺口。
+- 用户点击你上一轮 suggestions 中的选项时，也视为对上一轮追问的回答；不要说"话没说完"、不要重新问"你是想问什么"，除非该回复和上一轮任务完全无关。
 - 用户加载了本地资料、企业资料或知识库，不等于本次任务信息已经充分。仍要检查目标、产品/服务、受众、渠道、素材、输出形态是否足够
 - AI工具箱主要是用户主动操作的功能面板，但对话里可以由你自动调用后台 Skill。简单、字段明确、标准化的生成/整理任务可返回 intent_confirm；复杂专业需求优先找 AI专家；信息不足先追问
 - 当用户在对话中明确说"用/打开/调用 AI工具箱、用工具、用生成器"且关键信息已齐时，intent_confirm 的 execution_mode 必须设为 "toolbox"，confirm_label 用"打开工具箱并自动生成"。前端会打开对应工具页面、打开右侧抽屉、自动填满表单，然后自动启动生成；生成结果出来后用户可以手动修改、生成最终预览并复制使用
@@ -152,11 +164,42 @@ def _build_skill_catalog_text() -> str:
 
     lines: list[str] = []
     for tool in tools:
-        lines.append(f'- id: "{tool.name}" 名称: "{tool.name}" 说明: {tool.description}')
+        fields_part = _format_tool_fields(tool)
+        lines.append(
+            f'- id: "{tool.name}" 名称: "{tool.name}" 说明: {tool.description}{fields_part}'
+        )
     return "\n".join(lines)
 
 
-def get_system_prompt(scenario: str, context: dict | None = None) -> str:
+def _format_tool_fields(tool: ToolInfo) -> str:
+    if not tool.input_schema:
+        return ""
+    props = tool.input_schema.get("properties", {})
+    if not props:
+        return ""
+    required = set(tool.input_schema.get("required", []))
+    field_names = list(props.keys())
+    required_str = ", ".join(sorted(required & set(field_names))) if required else ""
+    all_str = ", ".join(field_names)
+    if required_str and all_str != required_str:
+        return f" 必填字段: {required_str} 全部字段: [{all_str}]"
+    return f" 全部字段: [{all_str}]"
+
+
+_SCENARIO_PROFILES: dict[str, str] = {
+    "general": "edge_general",
+    "supervisor": "edge_supervisor",
+    "spark": "edge_spark",
+    "xiaoke": "edge_xiaoke",
+    "consultant": "edge_consultant",
+}
+
+
+def get_system_prompt(
+    scenario: str,
+    context: dict | None = None,
+    agent_profile: str | None = None,
+) -> str:
     if scenario not in _SCENARIO_PROMPTS:
         raise ValueError(
             f"未知 scenario: {scenario!r}，"
@@ -165,20 +208,14 @@ def get_system_prompt(scenario: str, context: dict | None = None) -> str:
     prompt = _SCENARIO_PROMPTS[scenario]
 
     if "{{SKILL_CATALOG}}" in prompt:
-        prompt = prompt.replace("{{SKILL_CATALOG}}", _build_skill_catalog_text())
+        skill_text = _build_skill_catalog_text()
+        prompt = prompt.replace("{{SKILL_CATALOG}}", skill_text)
 
-    if context:
-        extra_parts: list[str] = []
-        if company := context.get("company_name"):
-            extra_parts.append(f"企业名称：{company}")
-        if owner := context.get("owner_name"):
-            extra_parts.append(f"老板称呼：{owner}")
-        if owner_context := context.get("ownerContext"):
-            extra_parts.append(f"用户偏好与长期记忆：\n{owner_context}")
-        if business_context := context.get("businessContext"):
-            extra_parts.append(f"企业资料：\n{business_context}")
-        if extra_parts:
-            prompt += "\n\n当前上下文：\n" + "\n".join(extra_parts)
+    profile_context = build_profile_context_prompt(
+        agent_profile or _SCENARIO_PROFILES.get(scenario, "")
+    )
+    if profile_context:
+        prompt += "\n\n" + profile_context
     return prompt
 
 
