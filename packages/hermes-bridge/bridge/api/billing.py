@@ -118,6 +118,17 @@ async def app_keys_list(
         return _platform_error(500, str(exc))
 
 
+@router.get("/api/llm/keys")
+async def llm_keys_list():
+    try:
+        import bridge_server as _bs
+        data = _bs._load_api_keys()
+        return _platform_ok(data.get("llm_keys", []))
+    except Exception as exc:
+        traceback.print_exc()
+        return _platform_error(500, str(exc))
+
+
 @router.post("/api/users/app-keys")
 async def app_key_create(request: Request):
     try:

@@ -86,3 +86,36 @@ class TestHealthAPI:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "ok"
+
+
+class TestLLMKeysAPI:
+    @pytest.mark.asyncio
+    async def test_llm_keys_list(self, app_client, tmp_path, monkeypatch):
+        import bridge_server as _bs
+
+        monkeypatch.setattr(_bs, "_API_KEYS_FILE", str(tmp_path / "api_keys.json"))
+        _bs._save_api_keys({
+            "app_keys": [],
+            "llm_keys": [
+                {
+                    "id": 1,
+                    "provider": "deepseek",
+                    "name": "default",
+                    "is_active": True,
+                },
+            ],
+        })
+
+        resp = await app_client.get("/api/llm/keys")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["data"] == [
+            {
+                "id": 1,
+                "provider": "deepseek",
+                "name": "default",
+                "is_active": True,
+            },
+        ]

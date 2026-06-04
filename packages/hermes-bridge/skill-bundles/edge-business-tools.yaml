@@ -1,0 +1,55 @@
+name: edge-business-tools
+description: CentaurAI Edge 业务工具集
+skills:
+  # content (9)
+  - poster-generator
+  - moments-copy-generator
+  - xiaohongshu-note-generator
+  - wechat-article-generator
+  - short-video-script-generator
+  - social-calendar-planner
+  - event-planner
+  - product-intro-generator
+  - job-posting-generator
+  # sales (6)
+  - customer-followup-generator
+  - objection-handler
+  - quotation-generator
+  - batch-greeting-generator
+  - professional-service-proposal-generator
+  - weekly-report-generator
+  # knowledge (4)
+  - faq-builder
+  - tax-client-file-checklist-generator
+  - legal-consultation-intake-generator
+  - contract-risk-summary-generator
+  # review (2)
+  - content-review-loop
+  - accounting-monthly-report-generator
+  # store (17)
+  - store-menu-generator
+  - group-buy-package-generator
+  - store-poster-generator
+  - store-xiaohongshu-note-generator
+  - store-short-video-script-generator
+  - review-reply-assistant
+  - old-customer-recall-generator
+  - community-activity-script-generator
+  - store-job-posting-generator
+  - daily-store-review-assistant
+  - store-notice-generator
+  - appointment-confirmation-generator
+  - store-directions-helper
+  - membership-card-planner
+  - inventory-clearance-planner
+  - weather-day-promo-generator
+  - after-sales-comfort-assistant
+  # design (8)
+  - business-card-designer
+  - logo-design-brief-generator
+  - flyer-brochure-designer
+  - rollup-banner-designer
+  - signage-design-planner
+  - label-sticker-designer
+  - document-cover-designer
+  - brand-kit-generator
