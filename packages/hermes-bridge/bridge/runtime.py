@@ -105,9 +105,10 @@ class HermesRuntime:
             "quiet_mode": True,
             "model": settings.hermes_model,
             "provider": settings.hermes_provider,
-            "api_key": settings.deepseek_api_key,
             "load_soul_identity": True,
         }
+        if settings.deepseek_api_key:
+            kwargs["api_key"] = settings.deepseek_api_key
         if ephemeral_system_prompt is not None:
             kwargs["ephemeral_system_prompt"] = ephemeral_system_prompt
         if stream_delta_callback is not None:

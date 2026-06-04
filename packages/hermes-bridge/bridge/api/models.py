@@ -80,6 +80,9 @@ class CompatInvokeRequest(BaseModel):
     max_tokens: int | None = Field(None, description="最大 token 数（透传给 hermes-agent）")
     temperature: float | None = Field(None, description="温度（透传给 hermes-agent）")
     system_prompt: str | None = Field(None, description="覆盖 scenario 的自定义 system prompt")
+    skill_command: str | None = Field(None, description="Hermes slash skill command，不含或可含 / 前缀")
+    task_id: str | None = Field(None, description="Hermes skill invocation task id")
+    runtime_note: str | None = Field(None, description="Hermes skill invocation runtime note")
 
 
 class CompatUsage(BaseModel):

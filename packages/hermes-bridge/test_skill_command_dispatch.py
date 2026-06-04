@@ -135,7 +135,7 @@ def _write_skill(home: Path, name: str, description: str):
     )
 
 
-def _install_fakes(monkeypatch, bridge, resolve_result="/moments-copywriter", built_message="[skill] write copy"):
+def _install_fakes(monkeypatch, bridge, resolve_result="/moments-copy-generator", built_message="[skill] write copy"):
     sm = _FakeSessionManager()
     pool = _FakePool()
     monkeypatch.setattr(bridge, "get_agent_pool", lambda: pool)
@@ -184,18 +184,18 @@ def test_invoke_uses_explicit_skill_command_dispatch(tmp_path, monkeypatch):
     handler, payload = _invoke(bridge, {
         "prompt": "新品上市",
         "agent_profile": "spark",
-        "skill_command": "moments-copywriter",
+        "skill_command": "moments-copy-generator",
         "task_id": "task-1",
     })
 
     assert handler.status == 200
-    assert payload["_skill_command"] == "moments-copywriter"
-    assert payload["_skill_command_resolved"] == "/moments-copywriter"
+    assert payload["_skill_command"] == "moments-copy-generator"
+    assert payload["_skill_command_resolved"] == "/moments-copy-generator"
     assert pool.invocations[0]["prompt"] == "[skill] write copy"
     assert calls == [
         ("scan", profile_home),
-        ("resolve", "moments-copywriter", profile_home),
-        ("build", "/moments-copywriter", "新品上市", "task-1", "", profile_home),
+        ("resolve", "moments-copy-generator", profile_home),
+        ("build", "/moments-copy-generator", "新品上市", "task-1", "", profile_home),
     ]
 
 
@@ -206,18 +206,18 @@ def test_invoke_uses_slash_prompt_dispatch(tmp_path, monkeypatch):
     monkeypatch.setattr(pool, "_ensure_profile_home", lambda profile_name: str(tmp_path / "profiles" / profile_name), raising=False)
 
     handler, payload = _invoke(bridge, {
-        "prompt": "/moments-copywriter 新品上市",
+        "prompt": "/moments-copy-generator 新品上市",
         "agent_profile": "spark",
     })
 
     assert handler.status == 200
-    assert payload["_skill_command"] == "moments-copywriter"
-    assert payload["_skill_command_resolved"] == "/moments-copywriter"
+    assert payload["_skill_command"] == "moments-copy-generator"
+    assert payload["_skill_command_resolved"] == "/moments-copy-generator"
     assert pool.invocations[0]["prompt"] == "[skill] write copy"
     assert calls == [
         ("scan", profile_home),
-        ("resolve", "moments-copywriter", profile_home),
-        ("build", "/moments-copywriter", "新品上市", None, "", profile_home),
+        ("resolve", "moments-copy-generator", profile_home),
+        ("build", "/moments-copy-generator", "新品上市", None, "", profile_home),
     ]
 
 
@@ -255,7 +255,7 @@ def test_platform_model_route_uses_bridge_invoke_when_skill_metadata_present(tmp
     bridge = _load_bridge(monkeypatch, tmp_path)
     body = json.dumps({
         "prompt": "新品上市",
-        "skill_command": "moments-copywriter",
+        "skill_command": "moments-copy-generator",
     }).encode("utf-8")
     handler = _FakeRouteHandler(body)
 
@@ -310,15 +310,15 @@ def test_real_hermes_skill_resolution_uses_requested_profile_home(tmp_path, monk
 def test_edge_supervisor_profile_resolves_installed_edge_skill_commands(tmp_path, monkeypatch):
     bridge = _load_bridge_with_hermes(monkeypatch, tmp_path)
     profile_home = tmp_path / "profiles" / "edge_supervisor"
-    _write_skill(profile_home, "moments-copywriter", "Moments copy")
-    _write_skill(profile_home, "xiaohongshu-note-writer", "Xiaohongshu note")
+    _write_skill(profile_home, "moments-copy-generator", "Moments copy")
+    _write_skill(profile_home, "xiaohongshu-note-generator", "Xiaohongshu note")
 
     os.environ["HERMES_HOME"] = str(profile_home)
     import agent.skill_commands as skill_commands
 
     skill_commands.scan_skill_commands()
-    assert skill_commands.resolve_skill_command_key("moments-copywriter") == "/moments-copywriter"
-    assert skill_commands.resolve_skill_command_key("xiaohongshu-note-writer") == "/xiaohongshu-note-writer"
+    assert skill_commands.resolve_skill_command_key("moments-copy-generator") == "/moments-copy-generator"
+    assert skill_commands.resolve_skill_command_key("xiaohongshu-note-generator") == "/xiaohongshu-note-generator"
 
 
 def test_agent_pool_creates_edge_profile_home_without_installing_execution_skills(tmp_path, monkeypatch):
@@ -330,5 +330,5 @@ def test_agent_pool_creates_edge_profile_home_without_installing_execution_skill
 
     assert profile_home.name == "edge_supervisor"
     assert profile_home.is_dir()
-    assert not (profile_home / "skills" / "moments-copywriter" / "SKILL.md").exists()
-    assert not (profile_home / "skills" / "xiaohongshu-note-writer" / "SKILL.md").exists()
+    assert not (profile_home / "skills" / "moments-copy-generator" / "SKILL.md").exists()
+    assert not (profile_home / "skills" / "xiaohongshu-note-generator" / "SKILL.md").exists()

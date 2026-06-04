@@ -15,6 +15,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from bridge.api.models import CompatInvokeRequest, CompatInvokeResponse, CompatUsage
+from bridge.invocation import resolve_skill_dispatch
 from bridge.scenarios import get_system_prompt
 
 logger = logging.getLogger(__name__)
@@ -45,9 +46,18 @@ async def invoke_compat(req: CompatInvokeRequest, request: Request) -> JSONRespo
     agent_profile = req.agent_profile or "default"
 
     try:
+        dispatch = resolve_skill_dispatch(
+            req.prompt,
+            skill_command=req.skill_command,
+            task_id=req.task_id,
+            runtime_note=req.runtime_note,
+        )
+        if dispatch.error:
+            return JSONResponse(status_code=400, content={"error": dispatch.error})
+
         result = await runtime.invoke_raw(
             session_id=session_id,
-            user_text=req.prompt,
+            user_text=dispatch.user_text,
             agent_profile=agent_profile,
             system_prompt=_resolve_system_prompt(req),
         )
@@ -77,12 +87,16 @@ async def invoke_compat(req: CompatInvokeRequest, request: Request) -> JSONRespo
         total_tokens=result.get("total_tokens", 0),
     )
 
-    return JSONResponse(
-        status_code=200,
-        content=CompatInvokeResponse(
-            text=text,
-            model=result.get("model", ""),
-            provider=result.get("provider", ""),
-            usage=usage,
-        ).model_dump(),
-    )
+    content = CompatInvokeResponse(
+        text=text,
+        model=result.get("model", ""),
+        provider=result.get("provider", ""),
+        usage=usage,
+    ).model_dump()
+    content["session_id"] = session_id
+    content["agent_profile"] = agent_profile
+    if dispatch.skill_command:
+        content["_skill_command"] = dispatch.skill_command
+        content["_skill_command_resolved"] = dispatch.skill_command_resolved
+
+    return JSONResponse(status_code=200, content=content)

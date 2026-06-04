@@ -9,6 +9,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 
 import pytest
 
@@ -85,6 +87,128 @@ class TestInvokeCompat:
         assert constructor_kwargs["session_id"] == "compat:edge:supervisor:edge_supervisor"
         assert constructor_kwargs["load_soul_identity"] is True
         assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_invoke_keeps_model_config_env_driven(self, app_client, mock_agent_class, monkeypatch):
+        """当前 release 阶段模型配置由启动 env 注入，不从 Hermes credential pool 派生。"""
+        fake_credential_pool = types.ModuleType("agent.credential_pool")
+        fake_credential_pool.load_pool = lambda provider: (_ for _ in ()).throw(AssertionError("must not load pool"))
+        monkeypatch.setitem(sys.modules, "agent.credential_pool", fake_credential_pool)
+        monkeypatch.setattr("bridge.runtime.settings.deepseek_api_key", "")
+
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "你好",
+                "session_id": "edge:supervisor",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+
+        assert resp.status_code == 200
+        constructor_kwargs = mock_agent_class.call_args.kwargs
+        assert "api_key" not in constructor_kwargs
+        assert "credential_pool" not in constructor_kwargs
+
+    @pytest.mark.asyncio
+    async def test_invoke_dispatches_explicit_skill_command(self, app_client, mock_agent_class, monkeypatch):
+        """兼容 /invoke 必须把显式 skill_command 交给 Hermes 原生 skill dispatch。"""
+        calls = []
+
+        def resolve(command):
+            calls.append(("resolve", command))
+            return "/moments-copy-generator"
+
+        def build(cmd_key, user_instruction, task_id=None, runtime_note=""):
+            calls.append(("build", cmd_key, user_instruction, task_id, runtime_note))
+            return "[skill invocation] 写朋友圈"
+
+        fake_skill_commands = types.ModuleType("agent.skill_commands")
+        fake_skill_commands.resolve_skill_command_key = resolve
+        fake_skill_commands.build_skill_invocation_message = build
+        monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "新品上市",
+                "session_id": "skill-app:moments-copy-app",
+                "agent_profile": "edge_supervisor",
+                "skill_command": "moments-copy-generator",
+                "task_id": "task-1",
+                "runtime_note": "edge skill app",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["text"] == "测试回复"
+        assert body["session_id"] == "skill-app:moments-copy-app"
+        assert body["agent_profile"] == "edge_supervisor"
+        assert body["_skill_command"] == "moments-copy-generator"
+        assert body["_skill_command_resolved"] == "/moments-copy-generator"
+        assert calls == [
+            ("resolve", "moments-copy-generator"),
+            ("build", "/moments-copy-generator", "新品上市", "task-1", "edge skill app"),
+        ]
+        run_kwargs = mock_agent_class.return_value.run_conversation.call_args.kwargs
+        assert run_kwargs["user_message"] == "[skill invocation] 写朋友圈"
+
+    @pytest.mark.asyncio
+    async def test_invoke_dispatches_slash_skill_prompt(self, app_client, mock_agent_class, monkeypatch):
+        """兼容 /invoke 也必须解析以 slash command 开头的 prompt。"""
+        calls = []
+
+        def resolve(command):
+            calls.append(("resolve", command))
+            return "/moments-copy-generator"
+
+        def build(cmd_key, user_instruction, task_id=None, runtime_note=""):
+            calls.append(("build", cmd_key, user_instruction, task_id, runtime_note))
+            return "[skill invocation] slash"
+
+        fake_skill_commands = types.ModuleType("agent.skill_commands")
+        fake_skill_commands.resolve_skill_command_key = resolve
+        fake_skill_commands.build_skill_invocation_message = build
+        monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "/moments-copy-generator 新品上市",
+                "session_id": "skill-app:moments-copy-app",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert calls == [
+            ("resolve", "moments-copy-generator"),
+            ("build", "/moments-copy-generator", "新品上市", None, ""),
+        ]
+        run_kwargs = mock_agent_class.return_value.run_conversation.call_args.kwargs
+        assert run_kwargs["user_message"] == "[skill invocation] slash"
+
+    @pytest.mark.asyncio
+    async def test_invoke_returns_unknown_skill_command(self, app_client, monkeypatch):
+        """未知 skill command 应返回可诊断错误，而不是当普通 prompt 执行。"""
+        fake_skill_commands = types.ModuleType("agent.skill_commands")
+        fake_skill_commands.resolve_skill_command_key = lambda command: None
+        fake_skill_commands.build_skill_invocation_message = lambda *args, **kwargs: ""
+        monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "新品上市",
+                "skill_command": "missing-skill",
+            },
+        )
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["error"]["code"] == "unknown_skill_command"
+        assert body["error"]["skill_command"] == "missing-skill"
 
     @pytest.mark.asyncio
     async def test_invoke_missing_prompt(self, app_client):
