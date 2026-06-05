@@ -570,28 +570,90 @@ def _build_wechat_date_context() -> str:
     )
 
 
+def _record_wechat_conversation_turn(text: str, reply: str, sender_id: str, chat_id: str) -> None:
+    """将微信收发消息写入本地会话历史，供 Edge conversations 读取。"""
+    try:
+        from session_manager import get_session_manager
+
+        sm = get_session_manager()
+        agent_profile = os.environ.get("WEIXIN_AGENT_PROFILE", "default")
+        session_id = f"wechat:{chat_id}"
+        session = sm.get_or_create_session(
+            session_id=session_id,
+            user_id=sender_id,
+            agent_profile=agent_profile,
+        )
+        session.metadata.update({
+            "source": "wechat",
+            "channel_id": "wechat_personal_openclaw",
+            "chat_id": chat_id,
+            "sender_id": sender_id,
+            "room_name": "微信个人号",
+        })
+        now = time.time()
+        existing_pair = (
+            len(session.messages) >= 2
+            and session.messages[-2].get("role") == "user"
+            and session.messages[-2].get("content") == text
+            and session.messages[-1].get("role") == "assistant"
+            and session.messages[-1].get("content") == reply
+        )
+        if existing_pair:
+            session.messages[-2].update({
+                "created_at": now,
+                "source": "wechat",
+                "channel_id": "wechat_personal_openclaw",
+                "chat_id": chat_id,
+            })
+            session.messages[-1].update({
+                "created_at": time.time(),
+                "source": "wechat",
+                "channel_id": "wechat_personal_openclaw",
+                "chat_id": chat_id,
+            })
+        else:
+            session.add_message("user", text)
+            if session.messages:
+                session.messages[-1].update({
+                    "created_at": now,
+                    "source": "wechat",
+                    "channel_id": "wechat_personal_openclaw",
+                    "chat_id": chat_id,
+                })
+            session.add_message("assistant", reply)
+            if session.messages:
+                session.messages[-1].update({
+                    "created_at": time.time(),
+                    "source": "wechat",
+                    "channel_id": "wechat_personal_openclaw",
+                    "chat_id": chat_id,
+                })
+        sm._persist_session(session)
+    except Exception as e:
+        logger.warning(f"[wechat] Failed to record conversation history: {e}")
+
+
 def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:
     import json as json_module
     import urllib.request
 
     bridge_url = os.environ.get(
         "WEIXIN_AI_INVOKE_URL",
-        "http://127.0.0.1:21747/api/platform/models/invoke",
+        "http://127.0.0.1:21747/invoke",
     )
-    agent_profile = os.environ.get("WEIXIN_AGENT_PROFILE", "default")
+    agent_profile = os.environ.get("WEIXIN_AGENT_PROFILE", "edge_supervisor")
     request_data = {
         "prompt": text,
-        "system_prompt": (
-            "你是 qeeshu-centaurai-edge 的 AI 老板秘书，运行在用户本地 QeeClaw Server。"
-            "请用简洁、可靠、可执行的方式回复微信消息。\n\n"
-            f"{_build_wechat_date_context()}"
-        ),
         "session_id": f"wechat:{chat_id}",
         "user_id": sender_id,
         "agent_profile": agent_profile,
-        "use_knowledge": True,
-        "use_memory": True,
     }
+    if os.environ.get("WEIXIN_AI_SYSTEM_PROMPT"):
+        request_data["system_prompt"] = (
+            os.environ["WEIXIN_AI_SYSTEM_PROMPT"]
+            + "\n\n"
+            + _build_wechat_date_context()
+        )
 
     model = os.environ.get("WEIXIN_AI_MODEL") or os.environ.get("HERMES_MODEL")
     provider = os.environ.get("WEIXIN_AI_PROVIDER") or os.environ.get("HERMES_PROVIDER") or os.environ.get("QEECLAW_MODEL_PROVIDER")
@@ -600,6 +662,7 @@ def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:
     if provider:
         request_data["provider"] = provider
 
+    logger.info(f"[wechat] Invoking Hermes via {bridge_url} profile={agent_profile} session=wechat:{chat_id}")
     req = urllib.request.Request(
         bridge_url,
         data=json_module.dumps(request_data).encode("utf-8"),
@@ -607,8 +670,12 @@ def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:
         method="POST",
     )
 
-    with urllib.request.urlopen(req, timeout=float(os.environ.get("WEIXIN_AI_TIMEOUT", "60"))) as response:
-        result = json_module.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(req, timeout=float(os.environ.get("WEIXIN_AI_TIMEOUT", "60"))) as response:
+            result = json_module.loads(response.read().decode("utf-8"))
+    except Exception as e:
+        logger.error(f"[wechat] Hermes invoke failed url={bridge_url} profile={agent_profile}: {e}")
+        raise
 
     if result.get("code") == 0:
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
@@ -642,6 +709,8 @@ async def _handle_incoming_message(event):
             logger.error(f"[wechat] AI invocation error: {e}")
             traceback.print_exc()
             reply = "抱歉，AI 老板秘书暂时无法处理这条消息。本地模型服务正在恢复中，请稍后再试。"
+
+        _record_wechat_conversation_turn(text, reply, sender_id, chat_id)
 
         # 发送回复
         account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")

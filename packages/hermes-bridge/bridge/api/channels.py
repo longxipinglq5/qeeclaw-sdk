@@ -22,12 +22,23 @@ def _err(status: int, message: str):
     return JSONResponse({"success": False, "data": None, "error": {"message": message}}, status_code=status)
 
 
+def _query_value(value, fallback):
+    return value if value is not None else fallback
+
+
 def _make_channel_item(channel_id: str, display_name: str, category: str, adapter_key: str, **kw):
     return {
         "channel_id": channel_id,
+        "channelKey": channel_id,
         "display_name": display_name,
+        "channel_name": display_name,
+        "channelName": display_name,
         "category": category,
+        "channel_group": category,
+        "channelGroup": category,
         "adapter_key": adapter_key,
+        "channel_kernel": adapter_key,
+        "channelKernel": adapter_key,
         **kw,
     }
 
@@ -59,12 +70,16 @@ async def channels_list():
                 "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
                 configured=bool(stored_plugin.get("configured")),
                 enabled=bool(stored_plugin.get("enabled")),
+                binding_enabled=bool(stored_plugin.get("binding_enabled")),
+                bindingEnabled=bool(stored_plugin.get("binding_enabled")),
             ),
             _make_channel_item(
                 "wechat_personal_openclaw", "微信个人号(OpenClaw)", "personal_reach",
                 "openclaw_wechat_plugin",
                 configured=True,
                 enabled=False,
+                binding_enabled=True,
+                bindingEnabled=True,
             ),
         ]
         return _ok(channels)
@@ -357,14 +372,18 @@ async def openclaw_qr_start(request: Request):
 
 @router.get("/api/platform/channels/bindings")
 async def bindings_list(
-    team_id: int = Query(default=1),
-    channel_key: str = Query(default="wechat_personal_plugin"),
+    team_id: int | None = Query(default=None),
+    channel_key: str | None = Query(default=None),
+    teamId: int | None = Query(default=None),
+    channelKey: str | None = Query(default=None),
 ):
     try:
         import bridge_server as _bs
+        resolved_team_id = int(_query_value(team_id, _query_value(teamId, 1)))
+        resolved_channel_key = _query_value(channel_key, _query_value(channelKey, "wechat_personal_plugin"))
         bindings = [
             item for item in _bs._load_channel_bindings()
-            if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
+            if int(item.get("team_id", 1)) == resolved_team_id and item.get("channel_key") == resolved_channel_key
             and item.get("binding_target_id") != _bs._CHANNELS_BINDINGS_VALIDATE_PROBE_TARGET
         ]
         return _ok({"items": bindings, "total": len(bindings)})
@@ -375,12 +394,16 @@ async def bindings_list(
 
 @router.get("/api/platform/channels/bindings/validate")
 async def bindings_validate(
-    team_id: int = Query(default=1),
-    channel_key: str = Query(default="wechat_personal_plugin"),
+    team_id: int | None = Query(default=None),
+    channel_key: str | None = Query(default=None),
+    teamId: int | None = Query(default=None),
+    channelKey: str | None = Query(default=None),
 ):
     try:
         import bridge_server as _bs
         import os
+        resolved_team_id = int(_query_value(team_id, _query_value(teamId, 1)))
+        resolved_channel_key = _query_value(channel_key, _query_value(channelKey, "wechat_personal_plugin"))
         storage_dir = os.path.dirname(_bs._CHANNELS_BINDINGS_FILE)
         storage_parent = os.path.dirname(storage_dir) or storage_dir
         storage_file_exists = os.path.isfile(_bs._CHANNELS_BINDINGS_FILE)
@@ -393,12 +416,12 @@ async def bindings_validate(
         )
         bindings = [
             item for item in _bs._load_channel_bindings()
-            if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
+            if int(item.get("team_id", 1)) == resolved_team_id and item.get("channel_key") == resolved_channel_key
             and item.get("binding_target_id") != _bs._CHANNELS_BINDINGS_VALIDATE_PROBE_TARGET
         ]
-        probe_result = _bs._probe_channel_bindings_write_path(team_id, channel_key) if storage_writable else {"ok": False, "error": "bindings storage is not writable", "cleanup_error": None}
+        probe_result = _bs._probe_channel_bindings_write_path(resolved_team_id, resolved_channel_key) if storage_writable else {"ok": False, "error": "bindings storage is not writable", "cleanup_error": None}
         return _ok({
-            "team_id": team_id, "channel_key": channel_key,
+            "team_id": resolved_team_id, "channel_key": resolved_channel_key,
             "ready": bool(storage_writable and probe_result.get("ok")),
             "storage_file": _bs._CHANNELS_BINDINGS_FILE, "storage_file_exists": storage_file_exists,
             "storage_dir": storage_dir, "storage_dir_exists": storage_dir_exists,
@@ -421,7 +444,7 @@ async def binding_create(request: Request):
     try:
         import bridge_server as _bs
         body = await request.json()
-        channel_key = body.get("channel_key", "wechat_personal_plugin")
+        channel_key = _bs._body_value(body, "channel_key", "channelKey", default="wechat_personal_plugin")
         if channel_key == "wechat_personal_plugin":
             plugin_config = _bs._load_wechat_personal_plugin_channel_config()
             if not bool(plugin_config.get("configured")):
@@ -442,7 +465,7 @@ async def binding_disable(request: Request):
     try:
         import bridge_server as _bs
         body = await request.json()
-        binding_id = int(body.get("binding_id", 0))
+        binding_id = int(_bs._body_value(body, "binding_id", "bindingId", default=0) or 0)
         binding = _bs._disable_channel_binding_record(binding_id)
         if binding is None:
             return _err(404, f"binding {binding_id} not found")
@@ -457,8 +480,8 @@ async def binding_regenerate_code(request: Request):
     try:
         import bridge_server as _bs
         body = await request.json()
-        expires_hours = int(body.get("expires_in_hours", 72))
-        binding_id = int(body.get("binding_id", 0))
+        expires_hours = int(_bs._body_value(body, "expires_in_hours", "expiresInHours", default=72) or 72)
+        binding_id = int(_bs._body_value(body, "binding_id", "bindingId", default=0) or 0)
         binding = _bs._regenerate_channel_binding_code_record(binding_id, expires_hours=expires_hours)
         if binding is None:
             return _err(404, f"binding {binding_id} not found")

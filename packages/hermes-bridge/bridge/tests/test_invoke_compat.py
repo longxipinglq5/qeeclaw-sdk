@@ -89,6 +89,25 @@ class TestInvokeCompat:
         assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio
+    async def test_invoke_accepts_channel_session_id(self, app_client, mock_agent_class):
+        """channel 消息的真实 IM chat_id 可能包含 @，也必须能走 Edge /invoke。"""
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "你是谁",
+                "session_id": "wechat:o9cq801XYVYaJw46kI5EnPhGqVKY@im.wechat",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["session_id"] == "wechat:o9cq801XYVYaJw46kI5EnPhGqVKY@im.wechat"
+        assert body["agent_profile"] == "edge_supervisor"
+        constructor_kwargs = mock_agent_class.call_args.kwargs
+        assert constructor_kwargs["session_id"] == "compat:wechat:o9cq801XYVYaJw46kI5EnPhGqVKY@im.wechat:edge_supervisor"
+
+    @pytest.mark.asyncio
     async def test_invoke_keeps_model_config_env_driven(self, app_client, mock_agent_class, monkeypatch):
         """当前 release 阶段模型配置由启动 env 注入，不从 Hermes credential pool 派生。"""
         fake_credential_pool = types.ModuleType("agent.credential_pool")

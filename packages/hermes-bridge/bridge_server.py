@@ -652,6 +652,14 @@ def _body_value(body: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
+def _query_value(params: Dict[str, List[str]], *keys: str, default: Any = None) -> Any:
+    for key in keys:
+        values = params.get(key)
+        if values and values[0] is not None:
+            return values[0]
+    return default
+
+
 def _truthy_body_flag(body: Dict[str, Any], *keys: str, default: bool = True) -> bool:
     value = _body_value(body, *keys, default=default)
     if isinstance(value, bool):
@@ -2496,25 +2504,26 @@ def _restore_channel_bindings_snapshot(items: List[Dict[str, Any]], file_existed
 def _create_channel_binding_record(body: Dict[str, Any]) -> Dict[str, Any]:
     with _CHANNELS_BINDINGS_LOCK:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        expires_hours = int(body.get("expires_in_hours") or 72)
+        expires_hours = int(_body_value(body, "expires_in_hours", "expiresInHours", default=72) or 72)
+        channel_key = _body_value(body, "channel_key", "channelKey", default="wechat_personal_plugin")
         binding = {
             "id": int(time.time() * 1000),
-            "team_id": body.get("team_id", 1),
-            "channel_key": body.get("channel_key", "wechat_personal_plugin"),
-            "binding_type": body.get("binding_type", ""),
-            "binding_target_id": body.get("binding_target_id", ""),
-            "binding_target_name": body.get("binding_target_name"),
+            "team_id": _body_value(body, "team_id", "teamId", default=1),
+            "channel_key": channel_key,
+            "binding_type": _body_value(body, "binding_type", "bindingType", default=""),
+            "binding_target_id": _body_value(body, "binding_target_id", "bindingTargetId", default=""),
+            "binding_target_name": _body_value(body, "binding_target_name", "bindingTargetName"),
             "binding_code": f"bind_{uuid.uuid4().hex[:10]}",
             "code_expires_at": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ",
                 time.gmtime(time.time() + expires_hours * 3600),
             ),
             "status": "pending",
-            "created_by_user_id": int(body.get("created_by_user_id", 1) or 1),
-            "bound_by_user_id": body.get("bound_by_user_id"),
+            "created_by_user_id": int(_body_value(body, "created_by_user_id", "createdByUserId", default=1) or 1),
+            "bound_by_user_id": _body_value(body, "bound_by_user_id", "boundByUserId"),
             "binding_enabled_snapshot": bool(_load_wechat_personal_plugin_channel_config().get("binding_enabled", True)),
             "notes": body.get("notes"),
-            "bound_at": body.get("bound_at"),
+            "bound_at": _body_value(body, "bound_at", "boundAt"),
             "created_time": now,
             "updated_time": now,
             "identity": body.get("identity"),
@@ -7062,8 +7071,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            team_id = int((params.get("team_id") or ["1"])[0])
-            channel_key = (params.get("channel_key") or ["wechat_personal_plugin"])[0]
+            team_id = int(_query_value(params, "team_id", "teamId", default=1) or 1)
+            channel_key = _query_value(params, "channel_key", "channelKey", default="wechat_personal_plugin")
             bindings = [
                 item for item in _load_channel_bindings()
                 if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
@@ -7082,8 +7091,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            team_id = int((params.get("team_id") or ["1"])[0])
-            channel_key = (params.get("channel_key") or ["wechat_personal_plugin"])[0]
+            team_id = int(_query_value(params, "team_id", "teamId", default=1) or 1)
+            channel_key = _query_value(params, "channel_key", "channelKey", default="wechat_personal_plugin")
             storage_dir = os.path.dirname(_CHANNELS_BINDINGS_FILE)
             storage_parent = os.path.dirname(storage_dir) or storage_dir
             storage_file_exists = os.path.isfile(_CHANNELS_BINDINGS_FILE)
@@ -7133,7 +7142,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/create — 创建绑定。"""
         try:
             body = _read_json_body(self)
-            channel_key = body.get("channel_key", "wechat_personal_plugin")
+            channel_key = _body_value(body, "channel_key", "channelKey", default="wechat_personal_plugin")
             if channel_key == "wechat_personal_plugin":
                 plugin_config = _load_wechat_personal_plugin_channel_config()
                 if not bool(plugin_config.get("configured")):
@@ -7161,7 +7170,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/disable — 禁用绑定。"""
         try:
             body = _read_json_body(self)
-            binding_id = int(body.get("binding_id", 0))
+            binding_id = int(_body_value(body, "binding_id", "bindingId", default=0) or 0)
             binding = _disable_channel_binding_record(binding_id)
             if binding is None:
                 _platform_json_response(self, 404, None, f"binding {binding_id} not found")
@@ -7175,8 +7184,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/regenerate-code — 重新生成绑定码。"""
         try:
             body = _read_json_body(self)
-            expires_hours = int(body.get("expires_in_hours", 72))
-            binding_id = int(body.get("binding_id", 0))
+            expires_hours = int(_body_value(body, "expires_in_hours", "expiresInHours", default=72) or 72)
+            binding_id = int(_body_value(body, "binding_id", "bindingId", default=0) or 0)
             binding = _regenerate_channel_binding_code_record(binding_id, expires_hours=expires_hours)
             if binding is None:
                 _platform_json_response(self, 404, None, f"binding {binding_id} not found")

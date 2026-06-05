@@ -7,6 +7,7 @@ import os
 import time
 import traceback
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
@@ -21,6 +22,59 @@ def _ok(data):
 
 def _err(status: int, message: str):
     return JSONResponse({"success": False, "data": None, "error": {"message": message}}, status_code=status)
+
+
+def _agent_id(agent_profile: str) -> int | None:
+    ids = {
+        "default": 1,
+        "coder": 2,
+        "writer": 3,
+        "analyst": 4,
+        "wechat": 5,
+        "edge_supervisor": 6,
+        "edge_consultant": 7,
+    }
+    return ids.get(agent_profile)
+
+
+def _iso_time(timestamp: float | None) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(timestamp or time.time()))
+
+
+def _session_to_group(session: Any) -> dict[str, Any]:
+    try:
+        from session_manager import get_session_manager
+        profile = get_session_manager().get_profile(session.agent_profile)
+        room_name = profile.display_name if profile else session.agent_profile
+    except Exception:
+        room_name = session.agent_profile
+    return {
+        "room_id": session.session_id,
+        "room_name": session.metadata.get("room_name") or room_name,
+        "last_active": _iso_time(session.updated_at),
+        "msg_count": len(session.messages),
+        "member_count": 2,
+        "channel_id": session.metadata.get("channel_id"),
+        "source": session.metadata.get("source"),
+    }
+
+
+def _message_to_history(msg: dict[str, Any], idx: int, session: Any) -> dict[str, Any]:
+    role = msg.get("role", "user")
+    created_at = msg.get("created_at") or session.updated_at
+    channel_id = msg.get("channel_id") or session.metadata.get("channel_id")
+    return {
+        "id": msg.get("id") or f"{session.session_id}:{idx}",
+        "sender_id": session.user_id if role == "user" else None,
+        "agent_id": _agent_id(session.agent_profile) if role == "assistant" else None,
+        "channel_id": channel_id,
+        "direction": "user_to_agent" if role == "user" else "agent_to_user",
+        "content": msg.get("content", ""),
+        "created_time": _iso_time(created_at),
+        "session_id": session.session_id,
+        "source": msg.get("source") or session.metadata.get("source"),
+        "chat_id": msg.get("chat_id") or session.metadata.get("chat_id"),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -550,19 +604,95 @@ async def device_delete(device_id: str):
 
 @router.get("/api/platform/conversations/stats")
 async def conversations_stats():
-    return _ok({"total_conversations": 0, "active_conversations": 0})
+    try:
+        from session_manager import get_session_manager
+        sessions = get_session_manager().list_sessions()
+        msg_count = 0
+        for item in sessions:
+            session = get_session_manager().get_session(item["session_id"])
+            if session:
+                msg_count += len(session.messages)
+        return _ok({
+            "group_count": len(sessions),
+            "msg_count": msg_count,
+            "entity_count": 0,
+            "history_count": msg_count,
+            "total_conversations": len(sessions),
+            "active_conversations": len(sessions),
+        })
+    except Exception as exc:
+        traceback.print_exc()
+        return _err(500, str(exc))
 
 
 @router.get("/api/platform/conversations/groups")
-async def conversations_groups():
-    return _ok([])
+async def conversations_groups(limit: int = Query(default=50)):
+    try:
+        from session_manager import get_session_manager
+        sm = get_session_manager()
+        groups = []
+        for item in sm.list_sessions()[:limit]:
+            session = sm.get_session(item["session_id"])
+            if session:
+                groups.append(_session_to_group(session))
+        return _ok(groups)
+    except Exception as exc:
+        traceback.print_exc()
+        return _err(500, str(exc))
 
 
 @router.get("/api/platform/conversations/history")
-async def conversations_history():
-    return _ok([])
+async def conversations_history(limit: int = Query(default=50)):
+    try:
+        from session_manager import get_session_manager
+        sm = get_session_manager()
+        all_messages: list[dict[str, Any]] = []
+        for item in sm.list_sessions():
+            session = sm.get_session(item["session_id"])
+            if not session:
+                continue
+            for idx, msg in enumerate(session.messages):
+                history_item = _message_to_history(msg, idx, session)
+                history_item["_sort_time"] = float(msg.get("created_at") or session.updated_at) + (idx * 0.000001)
+                all_messages.append(history_item)
+        all_messages.sort(key=lambda msg: msg.get("_sort_time", 0), reverse=True)
+        for item in all_messages:
+            item.pop("_sort_time", None)
+        return _ok(all_messages[:limit])
+    except Exception as exc:
+        traceback.print_exc()
+        return _err(500, str(exc))
 
 
 @router.post("/api/platform/conversations/messages")
 async def conversations_send(request: Request):
-    return _err(501, "Conversations relay not available on bridge")
+    try:
+        from session_manager import get_session_manager
+        sm = get_session_manager()
+        body = await request.json()
+        content = body.get("content", "")
+        direction = body.get("direction", "user_to_agent")
+        agent_profile = body.get("agent_profile") or body.get("agentProfile") or "default"
+        session_id = body.get("session_id") or body.get("sessionId")
+        user_id = body.get("user_id") or body.get("userId") or "anonymous"
+        channel_id = body.get("channel_id") or body.get("channelId")
+        role = "user" if direction == "user_to_agent" else "assistant"
+
+        session = sm.get_or_create_session(
+            session_id=session_id,
+            user_id=user_id,
+            agent_profile=agent_profile,
+        )
+        if channel_id:
+            session.metadata["channel_id"] = channel_id
+        session.add_message(role, content)
+        if session.messages:
+            session.messages[-1].update({
+                "created_at": time.time(),
+                "channel_id": channel_id,
+            })
+        sm._persist_session(session)
+        return _ok(_message_to_history(session.messages[-1], len(session.messages) - 1, session))
+    except Exception as exc:
+        traceback.print_exc()
+        return _err(500, str(exc))
