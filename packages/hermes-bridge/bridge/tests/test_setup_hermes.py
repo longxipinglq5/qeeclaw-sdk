@@ -8,6 +8,7 @@ import pytest
 from bridge.setup_hermes import (
     HermesAgentVersionError,
     _migrate_legacy_memories,
+    _register_bundled_plugins,
     validate_hermes_agent_version,
 )
 
@@ -134,6 +135,39 @@ class TestHermesHomeMigration:
         _migrate_legacy_memories(home)
 
         assert (target_memory / "USER.md").read_text(encoding="utf-8") == "新记忆"
+
+
+class TestHermesPluginRegistration:
+    def test_registers_qeeclaw_nexus_image_plugin_and_selects_provider(self, tmp_path):
+        _register_bundled_plugins(tmp_path)
+
+        plugin_dir = tmp_path / "plugins" / "image_gen" / "qeeclaw_nexus"
+        assert (plugin_dir / "__init__.py").is_file()
+        assert (plugin_dir / "plugin.yaml").is_file()
+
+        config = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        assert "provider: qeeclaw-nexus" in config
+        assert "model: gpt-image-2" in config
+        assert "image_gen/qeeclaw_nexus" in config
+
+    def test_registering_plugin_preserves_existing_config(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n"
+            "  enabled:\n"
+            "    - custom-plugin\n"
+            "image_gen:\n"
+            "  provider: custom-provider\n"
+            "  model: custom-model\n",
+            encoding="utf-8",
+        )
+
+        _register_bundled_plugins(tmp_path)
+
+        config = (tmp_path / "config.yaml").read_text(encoding="utf-8")
+        assert "custom-plugin" in config
+        assert "image_gen/qeeclaw_nexus" in config
+        assert "provider: custom-provider" in config
+        assert "model: custom-model" in config
 
 
 class TestHermesAgentVersionLock:
