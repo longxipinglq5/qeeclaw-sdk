@@ -1,0 +1,7 @@
+name: qeeclaw-nexus
+version: 1.0.0
+description: "QeeClaw Nexus image generation backend. Uses the existing /api/llm/images/generations endpoint."
+author: QeeClaw
+kind: backend
+requires_env:
+  - NEXUS_URL

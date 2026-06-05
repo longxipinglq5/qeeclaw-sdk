@@ -50,6 +50,9 @@ py-modules = ["bridge_server", "bailian_image", "wechat_gateway", "knowledge_sto
 [tool.setuptools.packages.find]
 include = ["bridge*"]
 
+[tool.setuptools.package-data]
+"bridge.hermes_plugins.image_gen.qeeclaw_nexus" = ["plugin.yaml"]
+
 [tool.pytest.ini_options]
 testpaths = ["bridge/tests"]
 asyncio_mode = "auto"
