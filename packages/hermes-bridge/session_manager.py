@@ -498,7 +498,9 @@ class SessionManager:
         """启动时从磁盘恢复未过期会话。"""
         now = time.time()
         restored = 0
-        for filepath in self._storage_dir.glob("ses_*.json"):
+        for filepath in self._storage_dir.glob("*.json"):
+            if filepath.name.startswith("_"):
+                continue
             try:
                 data = json.loads(filepath.read_text(encoding="utf-8"))
                 session = Session.from_dict(data)
