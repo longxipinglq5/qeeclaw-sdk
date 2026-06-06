@@ -8,6 +8,7 @@ from bridge.runtime_facade.event_bus import EventBus
 from bridge.runtime_facade.models import (
     CreateRunRequest,
     CreateRunResponse,
+    PromptCacheUsage,
     RunKind,
     RunStatus,
     RunUrls,
@@ -33,6 +34,7 @@ class HermesRuntimeFacade:
         self.events = EventBus(self.store)
         self.sessions = SessionStore(self.store)
         self.runs = RunManager(store=self.store, event_bus=self.events)
+        self._last_prompt_prefix_hash_by_session: dict[str, str] = {}
 
     async def invoke_raw(
         self,
@@ -89,17 +91,38 @@ class HermesRuntimeFacade:
             self.runs.fail_run(run.run_id, error=str(exc))
             raise
 
+        usage = self._normalize_prompt_cache_usage(
+            result,
+            session_id=session_id,
+            context_length=len(conversation_history) + 1,
+        )
+        previous_prompt_prefix_hash = self._last_prompt_prefix_hash_by_session.get(session_id)
+        cache_prefix_changed = (
+            previous_prompt_prefix_hash is not None
+            and previous_prompt_prefix_hash != usage["prompt_prefix_hash"]
+        )
+        self._last_prompt_prefix_hash_by_session[session_id] = usage["prompt_prefix_hash"]
         self.events.append(
             session_id=session_id,
             run_id=run.run_id,
             type="metering",
-            payload=self._usage_from_result(result),
+            payload={
+                "usage": usage,
+                "cache_prefix_changed": cache_prefix_changed,
+                "previous_prompt_prefix_hash": previous_prompt_prefix_hash
+                if cache_prefix_changed
+                else None,
+            },
             trace_id=run.trace_id,
         )
         self.runs.complete_run(
             run.run_id,
             result_text=str(result.get("final_response") or ""),
-            usage=self._usage_from_result(result),
+            usage=usage,
+            done_payload={
+                "text": str(result.get("final_response") or ""),
+                "usage": usage,
+            },
         )
         self.sessions.append_turn(
             session_id,
@@ -223,3 +246,70 @@ class HermesRuntimeFacade:
             "output_tokens": result.get("output_tokens", 0),
             "total_tokens": result.get("total_tokens", 0),
         }
+
+    def _normalize_prompt_cache_usage(
+        self,
+        result: dict[str, Any],
+        *,
+        session_id: str,
+        context_length: int,
+    ) -> dict[str, Any]:
+        prompt_details = result.get("prompt_tokens_details") or {}
+        input_tokens = (
+            result.get("input_tokens")
+            or result.get("prompt_tokens")
+            or 0
+        )
+        output_tokens = (
+            result.get("output_tokens")
+            or result.get("completion_tokens")
+            or 0
+        )
+        cache_read_tokens = (
+            result.get("cache_read_tokens")
+            or result.get("cache_read_input_tokens")
+            or result.get("prompt_cache_hit_tokens")
+            or prompt_details.get("cached_tokens")
+            or 0
+        )
+        cache_write_tokens = (
+            result.get("cache_write_tokens")
+            or result.get("cache_creation_input_tokens")
+            or result.get("prompt_cache_miss_tokens")
+            or 0
+        )
+        total_cache_tokens = cache_read_tokens + cache_write_tokens
+        cache_hit_percent = (
+            round(cache_read_tokens / total_cache_tokens * 100, 2)
+            if total_cache_tokens
+            else 0.0
+        )
+        usage = PromptCacheUsage(
+            prompt_prefix_hash=self._prompt_prefix_hash_for_session(session_id),
+            input_tokens=int(input_tokens),
+            output_tokens=int(output_tokens),
+            cache_read_tokens=int(cache_read_tokens),
+            cache_write_tokens=int(cache_write_tokens),
+            cache_hit_percent=cache_hit_percent,
+            turn_cache_hit_percent=cache_hit_percent,
+            context_length=context_length,
+            threshold_tokens=0,
+            last_prompt_tokens=int(input_tokens),
+        )
+        return usage.model_dump(mode="json")
+
+    def _prompt_prefix_hash_for_session(self, session_id: str) -> str:
+        from bridge.runtime_facade.context_builder import ContextBuilder
+
+        session = self.sessions.get(session_id)
+        metadata = session.metadata if session else {}
+        builder = ContextBuilder()
+        prefix = builder.build_prefix(
+            profile_prompt=str(metadata.get("profile_prompt", "")),
+            product_boundary=str(metadata.get("product_boundary", "")),
+            capability_manifest=list(metadata.get("capability_manifest", [])),
+            business_summary=str(metadata.get("business_summary", "")),
+            memory_summary=str(metadata.get("memory_summary", "")),
+            knowledge_summary=str(metadata.get("knowledge_summary", "")),
+        )
+        return prefix.prompt_prefix_hash

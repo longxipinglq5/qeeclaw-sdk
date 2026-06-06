@@ -71,6 +71,7 @@ class RunManager:
         *,
         result_text: str,
         usage: dict[str, Any] | None = None,
+        done_payload: dict[str, Any] | None = None,
     ) -> RuntimeRun:
         run = self._require_run(run_id)
         updated = run.model_copy(
@@ -86,7 +87,7 @@ class RunManager:
             session_id=updated.session_id,
             run_id=updated.run_id,
             type="done",
-            payload={"text": result_text, "usage": updated.usage},
+            payload=done_payload or {"text": result_text, "usage": updated.usage},
             trace_id=updated.trace_id,
         )
         return updated

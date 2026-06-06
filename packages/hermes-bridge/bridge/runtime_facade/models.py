@@ -113,3 +113,16 @@ class CreateRunResponse(BaseModel):
     status: RunStatus
     trace_id: str | None = None
     urls: RunUrls
+
+
+class PromptCacheUsage(BaseModel):
+    prompt_prefix_hash: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    cache_hit_percent: float = 0.0
+    turn_cache_hit_percent: float = 0.0
+    context_length: int = 0
+    threshold_tokens: int = 0
+    last_prompt_tokens: int = 0

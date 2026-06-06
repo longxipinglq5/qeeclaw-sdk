@@ -261,13 +261,14 @@ def test_run_manager_creates_runs_and_emits_lifecycle_events():
 
 
 class FakeLegacyRuntime:
-    def __init__(self):
+    def __init__(self, response_overrides=None):
         self.invoke_calls = []
         self.stream_calls = []
+        self.response_overrides = response_overrides or {}
 
     async def invoke_raw(self, **kwargs):
         self.invoke_calls.append(kwargs)
-        return {
+        response = {
             "final_response": "测试回复",
             "completed": True,
             "failed": False,
@@ -277,6 +278,8 @@ class FakeLegacyRuntime:
             "output_tokens": 50,
             "total_tokens": 150,
         }
+        response.update(self.response_overrides)
+        return response
 
     async def stream_raw(self, **kwargs):
         from bridge.runtime import StreamHandle
@@ -473,3 +476,78 @@ async def test_run_event_sse_stream_replays_events_and_honors_last_event_id():
     assert "id: evt_000001" not in replay_resp.text
     assert "id: evt_000002" in replay_resp.text
     assert "id: evt_000003" in replay_resp.text
+
+
+async def test_facade_normalizes_prompt_cache_usage_in_metering_and_done_events():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime(
+        {
+            "prompt_cache_hit_tokens": 80,
+            "prompt_cache_miss_tokens": 20,
+            "prompt_tokens": 100,
+            "completion_tokens": 25,
+        }
+    )
+    facade = HermesRuntimeFacade(legacy)
+
+    await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="你好",
+        agent_profile="edge_supervisor",
+    )
+
+    events = facade.get_run_events("run_000001")
+    metering = next(event for event in events if event.type == "metering")
+    done = next(event for event in events if event.type == "done")
+
+    assert metering.payload["usage"]["cache_read_tokens"] == 80
+    assert metering.payload["usage"]["cache_write_tokens"] == 20
+    assert metering.payload["usage"]["cache_hit_percent"] == 80.0
+    assert metering.payload["usage"]["prompt_prefix_hash"].startswith("sha256:")
+    assert metering.payload["cache_prefix_changed"] is False
+    assert done.payload["usage"] == metering.payload["usage"]
+
+
+async def test_facade_marks_cache_prefix_changed_when_stable_inputs_change():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime()
+    facade = HermesRuntimeFacade(legacy)
+    facade.sessions.get_or_create(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        agent_profile="edge_supervisor",
+        metadata={
+            "capability_manifest": [
+                {"capability_id": "xiaohongshu_note_writer", "version": "2026-06-06"}
+            ]
+        },
+    )
+
+    await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="第一轮",
+        agent_profile="edge_supervisor",
+    )
+    first_metering = next(event for event in facade.get_run_events("run_000001") if event.type == "metering")
+
+    facade.sessions.update_metadata(
+        "edge:owner_1:supervisor:conv_abc",
+        {
+            "capability_manifest": [
+                {"capability_id": "xiaohongshu_note_writer", "version": "2026-06-07"}
+            ]
+        },
+    )
+    await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="第二轮",
+        agent_profile="edge_supervisor",
+    )
+    second_metering = next(event for event in facade.get_run_events("run_000002") if event.type == "metering")
+
+    assert second_metering.payload["cache_prefix_changed"] is True
+    assert (
+        second_metering.payload["previous_prompt_prefix_hash"]
+        == first_metering.payload["usage"]["prompt_prefix_hash"]
+    )
