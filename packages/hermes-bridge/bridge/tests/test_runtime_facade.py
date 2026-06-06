@@ -88,3 +88,24 @@ def test_runtime_model_enums_cover_plan_values():
         "automation_run",
         "channel_run",
     }
+
+
+def test_session_id_builder_creates_canonical_ids():
+    from bridge.runtime_facade.session_ids import SessionIdBuilder
+
+    assert (
+        SessionIdBuilder.supervisor("owner_1", "conv_abc")
+        == "edge:owner_1:supervisor:conv_abc"
+    )
+    assert (
+        SessionIdBuilder.expert("owner_1", "marketing_strategy_expert")
+        == "edge:owner_1:expert:marketing_strategy_expert"
+    )
+    assert (
+        SessionIdBuilder.channel("owner_1", "wechat", "room_42")
+        == "edge:owner_1:channel:wechat:room_42"
+    )
+    assert (
+        SessionIdBuilder.automation("owner_1", "marketing_employee", "goal_001")
+        == "edge:owner_1:automation:marketing_employee:goal_001"
+    )
