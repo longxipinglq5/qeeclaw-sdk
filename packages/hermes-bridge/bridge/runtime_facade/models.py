@@ -156,6 +156,21 @@ class CapabilityManifest(BaseModel):
     approval_policy: str = "preview"
 
 
+class CapabilitySelection(BaseModel):
+    selection_id: str
+    capability_id: str | None = None
+    input: dict[str, Any] = Field(default_factory=dict)
+    context_refs: list[str] = Field(default_factory=list)
+    output_contract: str | None = None
+    confidence: float = 0.0
+    reasoning_summary: str = ""
+    missing_inputs: list[str] = Field(default_factory=list)
+    requires_clarification: bool = False
+    fallback_behavior: Literal["run_capability", "ask_clarification", "invoke_default"] = "invoke_default"
+    source: str = "deterministic_rule"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class RuntimeArtifact(BaseModel):
     artifact_id: str
     session_id: str

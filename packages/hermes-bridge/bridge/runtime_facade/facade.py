@@ -13,7 +13,9 @@ from bridge.runtime_facade.cards import build_result_preview_card
 from bridge.runtime_facade.event_bus import EventBus
 from bridge.runtime_facade.models import (
     CapabilityManifest,
+    CapabilitySelection,
     CreateRunRequest,
+    CreateRunInput,
     CreateRunResponse,
     PromptCacheUsage,
     RunKind,
@@ -156,6 +158,21 @@ class HermesRuntimeFacade:
         if request.kind != RunKind.INVOKE:
             raise ValueError("RUN_KIND_UNSUPPORTED")
 
+        if request.agent_profile == "edge_supervisor":
+            selection = self.supervisor_route_to_capability(
+                session_id=request.session_id,
+                user_text=request.input.text or "",
+                context={
+                    "context_refs": request.context_refs,
+                    "metadata": request.metadata,
+                },
+            )
+            if selection.fallback_behavior == "run_capability" and selection.capability_id:
+                return await self._create_supervisor_skill_child_run(
+                    request=request,
+                    selection=selection,
+                )
+
         trace_id = f"trc_{self.runs.next_run_number:06d}"
         result = await self._invoke_raw_with_run_metadata(
             session_id=request.session_id,
@@ -178,6 +195,135 @@ class HermesRuntimeFacade:
             parent_run_id=request.parent_run_id,
             urls=RunUrls.for_run(result["run_id"], request.session_id),
         )
+
+    def supervisor_route_to_capability(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        context: dict[str, Any],
+    ) -> CapabilitySelection:
+        normalized = user_text.strip()
+        if "小红书" in normalized and ("生成" in normalized or "写" in normalized):
+            return CapabilitySelection(
+                selection_id=f"sel_{self.runs.next_run_number:06d}",
+                capability_id="xiaohongshu_note_writer",
+                input={
+                    "product": self._extract_product_for_xhs(normalized),
+                    "tone": "真实种草",
+                    "platform": "xiaohongshu",
+                },
+                context_refs=list(context.get("context_refs") or []),
+                output_contract="skill_app_card",
+                confidence=0.9,
+                reasoning_summary="用户明确要求生成小红书内容。",
+                requires_clarification=False,
+                fallback_behavior="run_capability",
+                source="deterministic_rule",
+                metadata={"matched_terms": ["小红书"]},
+            )
+        return CapabilitySelection(
+            selection_id=f"sel_{self.runs.next_run_number:06d}",
+            confidence=0.0,
+            reasoning_summary="未命中可确定的 Skill App 路由规则。",
+            requires_clarification=False,
+            fallback_behavior="invoke_default",
+            source="deterministic_rule",
+        )
+
+    async def _create_supervisor_skill_child_run(
+        self,
+        *,
+        request: CreateRunRequest,
+        selection: CapabilitySelection,
+    ) -> CreateRunResponse:
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+        self.sessions.get_or_create(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+        )
+        parent_run = self.runs.start_run(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+            kind=RunKind.INVOKE,
+            input_text=request.input.text,
+            trace_id=trace_id,
+            created_by=request.metadata.get("created_by"),
+            source=request.metadata.get("source"),
+            metadata=request.metadata,
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=parent_run.run_id,
+            type="capability_selected",
+            payload={"selection": selection.model_dump(mode="json", exclude_none=True)},
+            trace_id=parent_run.trace_id,
+        )
+        child_response = await self._create_skill_run(
+            CreateRunRequest(
+                kind=RunKind.SKILL_RUN,
+                session_id=request.session_id,
+                parent_run_id=parent_run.run_id,
+                capability_id=selection.capability_id,
+                input=CreateRunInput.model_validate(selection.input),
+                output_contract=selection.output_contract,
+                context_refs=selection.context_refs,
+                metadata=request.metadata,
+            )
+        )
+        artifact_id = child_response.artifact_id
+        child_run_id = child_response.run_id
+        artifact_refs = [artifact_id] if artifact_id else []
+        child_run_ids = [child_run_id]
+        self.runs.complete_run(
+            parent_run.run_id,
+            result_text="",
+            usage={},
+            done_payload={
+                "artifact_refs": artifact_refs,
+                "child_run_ids": child_run_ids,
+            },
+        )
+        if artifact_id:
+            artifact = self.artifacts.get_artifact(artifact_id)
+            if artifact:
+                self._store_artifact_summary(
+                    request.session_id,
+                    {
+                        "artifact_id": artifact.artifact_id,
+                        "kind": artifact.kind,
+                        "title": artifact.title,
+                        "summary": str(artifact.content.get("body") or "")[:120],
+                        "capability_id": selection.capability_id,
+                    },
+                )
+        return CreateRunResponse(
+            run_id=parent_run.run_id,
+            session_id=request.session_id,
+            kind=request.kind,
+            status=RunStatus.COMPLETED,
+            trace_id=trace_id,
+            artifact_id=artifact_id,
+            urls=RunUrls.for_run(parent_run.run_id, request.session_id),
+        )
+
+    def _store_artifact_summary(
+        self,
+        session_id: str,
+        summary: dict[str, Any],
+    ) -> None:
+        session = self.sessions.get(session_id)
+        existing = list((session.metadata if session else {}).get("artifact_summaries") or [])
+        existing.append(summary)
+        self.sessions.update_metadata(session_id, {"artifact_summaries": existing})
+
+    @staticmethod
+    def _extract_product_for_xhs(user_text: str) -> str:
+        text = user_text
+        for marker in ("帮我生成", "帮我写", "生成", "写"):
+            text = text.replace(marker, "")
+        text = text.replace("的小红书", "").replace("小红书", "")
+        return text.strip(" ，。") or "待确认产品"
 
     async def _create_skill_run(self, request: CreateRunRequest) -> CreateRunResponse:
         validation_error = self._validate_skill_run_fields(request)
