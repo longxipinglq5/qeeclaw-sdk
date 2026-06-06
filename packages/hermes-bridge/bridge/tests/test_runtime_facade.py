@@ -109,3 +109,28 @@ def test_session_id_builder_creates_canonical_ids():
         SessionIdBuilder.automation("owner_1", "marketing_employee", "goal_001")
         == "edge:owner_1:automation:marketing_employee:goal_001"
     )
+
+
+def test_in_memory_store_contract_for_phase_one():
+    from bridge.runtime_facade.store import InMemoryStore
+
+    store = InMemoryStore()
+    store.set("sessions", "session_1", {"message_count": 1})
+    store.set("sessions", "session_2", {"message_count": 2})
+
+    assert store.get("sessions", "session_1") == {"message_count": 1}
+    assert store.get("sessions", "missing") is None
+    assert store.list("sessions") == [
+        {"message_count": 1},
+        {"message_count": 2},
+    ]
+    assert store.persist() == {
+        "persisted": False,
+        "reason": "in_memory_store",
+    }
+    assert store.restore() == {
+        "restored": False,
+        "reason": "in_memory_store",
+    }
+    assert store.retention.event_retention_after_terminal_hours == 24
+    assert store.retention.timeline_retention_days is None
