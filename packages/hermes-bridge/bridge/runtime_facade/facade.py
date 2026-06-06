@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -80,6 +81,45 @@ class HermesRuntimeFacade:
             user_text=user_text,
             agent_profile=agent_profile,
             system_prompt=system_prompt,
+        )
+
+    async def invoke_app_im_free_text(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        agent_profile: str = "edge_supervisor",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if agent_profile == "edge_supervisor":
+            selection = self.supervisor_route_to_capability(
+                session_id=session_id,
+                user_text=user_text,
+                context={
+                    "context_refs": [],
+                    "metadata": metadata or {},
+                },
+            )
+            if selection.fallback_behavior == "run_capability" and selection.capability_id:
+                response = await self._create_supervisor_skill_child_run(
+                    request=CreateRunRequest(
+                        kind=RunKind.INVOKE,
+                        session_id=session_id,
+                        agent_profile=agent_profile,
+                        input=CreateRunInput(text=user_text),
+                        metadata=metadata or {},
+                    ),
+                    selection=selection,
+                )
+                return self._sync_reply_from_create_run_response(
+                    response,
+                    agent_profile=agent_profile,
+                )
+
+        return await self.invoke_raw(
+            session_id=session_id,
+            user_text=user_text,
+            agent_profile=agent_profile,
         )
 
     async def _invoke_raw_with_run_metadata(
@@ -164,9 +204,35 @@ class HermesRuntimeFacade:
 
         return {
             **result,
+            "renderable_reply_text": self._renderable_reply_text(result),
             "run_id": run.run_id,
             "session_id": session_id,
             "agent_profile": agent_profile,
+        }
+
+    def _sync_reply_from_create_run_response(
+        self,
+        response: CreateRunResponse,
+        *,
+        agent_profile: str,
+    ) -> dict[str, Any]:
+        artifact = self.artifacts.get_artifact(response.artifact_id) if response.artifact_id else None
+        result_text = ""
+        if artifact:
+            result_text = str(artifact.content.get("body") or "")
+        run = self.runs.get(response.run_id)
+        return {
+            "final_response": result_text,
+            "renderable_reply_text": self._result_preview_reply_text(
+                title=artifact.title if artifact else "生成结果",
+                body=result_text,
+                speech="内容已生成，请查看结果。",
+            ) if result_text else "",
+            "run_id": response.run_id,
+            "session_id": response.session_id,
+            "agent_profile": agent_profile,
+            "artifact_id": response.artifact_id,
+            "status": (run.status.value if run else response.status.value),
         }
 
     async def create_run(self, request: CreateRunRequest) -> CreateRunResponse:
@@ -344,6 +410,117 @@ class HermesRuntimeFacade:
             return "儿童护眼台灯"
         return "产品"
 
+    @classmethod
+    def _renderable_reply_text(cls, result: dict[str, Any]) -> str:
+        final_response = str(result.get("final_response") or "").strip()
+        tool_outputs = cls._extract_tool_outputs(result)
+        if not tool_outputs:
+            return final_response
+
+        latest_tool = tool_outputs[-1]
+        tool_text = latest_tool["content"].strip()
+        title = cls._title_from_tool_output(tool_text, latest_tool["tool_name"])
+        full_output = tool_text
+        if final_response:
+            full_output = f"{tool_text}\n\n---\n{final_response}"
+
+        return cls._result_preview_reply_text(
+            title=title,
+            body=full_output,
+            speech=final_response or "工具结果已生成。",
+            tool_name=latest_tool["tool_name"],
+        )
+
+    @staticmethod
+    def _result_preview_reply_text(
+        *,
+        title: str,
+        body: str,
+        speech: str,
+        tool_name: str | None = None,
+    ) -> str:
+        preview = body[:220]
+        return json.dumps(
+            {
+                "card_type": "result_preview",
+                "speech": speech,
+                "data": {
+                    "title": title,
+                    "preview": preview,
+                    "full_output": body,
+                    **({"tool_name": tool_name} if tool_name else {}),
+                },
+            },
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _extract_tool_outputs(result: dict[str, Any]) -> list[dict[str, str]]:
+        messages = result.get("messages")
+        if not isinstance(messages, list):
+            return []
+        outputs: list[dict[str, str]] = []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "tool":
+                continue
+            content = HermesRuntimeFacade._coerce_tool_content_to_text(message.get("content"))
+            if not content.strip():
+                continue
+            outputs.append(
+                {
+                    "tool_name": str(
+                        message.get("tool_name")
+                        or message.get("name")
+                        or "tool"
+                    ),
+                    "content": content,
+                }
+            )
+        return outputs
+
+    @staticmethod
+    def _coerce_tool_content_to_text(content: Any) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if text:
+                        parts.append(str(text))
+            return "\n".join(parts)
+        if isinstance(content, dict):
+            text_summary = content.get("text_summary")
+            if text_summary:
+                return str(text_summary)
+            for key in ("text", "body", "output", "result", "content"):
+                value = content.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+            return json.dumps(content, ensure_ascii=False, default=str)
+        return str(content)
+
+    @staticmethod
+    def _title_from_tool_output(tool_text: str, tool_name: str) -> str:
+        for raw_line in tool_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            for prefix in ("标题：", "标题:", "Title:", "title:"):
+                if line.startswith(prefix):
+                    title = line[len(prefix):].strip()
+                    if title:
+                        return title[:80]
+            return line[:80]
+        return f"{tool_name} 结果"
+
     def supervisor_route_to_capability(
         self,
         *,
@@ -352,6 +529,24 @@ class HermesRuntimeFacade:
         context: dict[str, Any],
     ) -> CapabilitySelection:
         normalized = user_text.strip()
+        if "小红书" in normalized and ("生成" in normalized or "写" in normalized):
+            return CapabilitySelection(
+                selection_id=f"sel_{self.runs.next_run_number:06d}",
+                capability_id="xiaohongshu_note_writer",
+                input={
+                    "product": self._extract_product_for_xhs(normalized),
+                    "tone": "真实种草",
+                    "platform": "xiaohongshu",
+                },
+                context_refs=list(context.get("context_refs") or []),
+                output_contract="skill_app_card",
+                confidence=0.9,
+                reasoning_summary="用户明确要求生成小红书内容。",
+                requires_clarification=False,
+                fallback_behavior="run_capability",
+                source="deterministic_rule",
+                metadata={"matched_terms": ["小红书"]},
+            )
         if "发布" in normalized or "发给客户群" in normalized:
             source_artifact_id = self._latest_artifact_ref(
                 session_id=session_id,
@@ -407,24 +602,6 @@ class HermesRuntimeFacade:
                 fallback_behavior="run_capability" if source_artifact_id else "ask_clarification",
                 source="deterministic_rule",
                 metadata={"matched_terms": ["朋友圈", "配图"]},
-            )
-        if "小红书" in normalized and ("生成" in normalized or "写" in normalized):
-            return CapabilitySelection(
-                selection_id=f"sel_{self.runs.next_run_number:06d}",
-                capability_id="xiaohongshu_note_writer",
-                input={
-                    "product": self._extract_product_for_xhs(normalized),
-                    "tone": "真实种草",
-                    "platform": "xiaohongshu",
-                },
-                context_refs=list(context.get("context_refs") or []),
-                output_contract="skill_app_card",
-                confidence=0.9,
-                reasoning_summary="用户明确要求生成小红书内容。",
-                requires_clarification=False,
-                fallback_behavior="run_capability",
-                source="deterministic_rule",
-                metadata={"matched_terms": ["小红书"]},
             )
         return CapabilitySelection(
             selection_id=f"sel_{self.runs.next_run_number:06d}",
@@ -774,9 +951,17 @@ class HermesRuntimeFacade:
 
     @staticmethod
     def _extract_product_for_xhs(user_text: str) -> str:
-        text = user_text
+        text = user_text.strip()
+        for pattern in (
+            r"为(.+?)(?:生成|写|产出|做)(?:一段|一篇|一份)?(?:种草文|小红书|笔记|内容)",
+            r"针对(.+?)(?:生成|写|产出|做)(?:一段|一篇|一份)?(?:种草文|小红书|笔记|内容)",
+        ):
+            match = re.search(pattern, text)
+            if match and match.group(1).strip():
+                return match.group(1).strip(" ，。、“”\"'")
         for marker in ("帮我生成", "帮我写", "生成", "写"):
             text = text.replace(marker, "")
+        text = re.sub(r"请用AI工具箱的?小红书笔记生成器[，,]?", "", text)
         text = text.replace("的小红书", "").replace("小红书", "")
         return text.strip(" ，。") or "待确认产品"
 
@@ -911,7 +1096,7 @@ class HermesRuntimeFacade:
         self._emit_skill_tool_events(request=request, capability=capability, run=run)
 
         final_response = str(result.get("final_response") or "")
-        artifact_id = f"art_{run.run_id}"
+        artifact_id = self.artifacts.next_available_artifact_id(f"art_{run.run_id}")
         artifact = self.artifacts.create_artifact(
             artifact_id=artifact_id,
             session_id=request.session_id,

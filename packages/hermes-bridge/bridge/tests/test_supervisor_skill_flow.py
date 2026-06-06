@@ -27,6 +27,28 @@ def test_supervisor_route_to_capability_selects_xhs_note_writer(tmp_path):
     assert selection.source == "deterministic_rule"
 
 
+def test_supervisor_route_to_capability_treats_directly_publishable_xhs_as_generation(tmp_path):
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    facade = HermesRuntimeFacade(FakeLegacyRuntime(), artifact_root_dir=tmp_path)
+
+    selection = facade.supervisor_route_to_capability(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="请用AI工具箱的小红书笔记生成器，为便携护眼台灯生成一段种草文，要求输出可直接发布的结果",
+        context={},
+    )
+
+    assert selection.capability_id == "xiaohongshu_note_writer"
+    assert selection.input == {
+        "product": "便携护眼台灯",
+        "tone": "真实种草",
+        "platform": "xiaohongshu",
+    }
+    assert selection.fallback_behavior == "run_capability"
+    assert selection.requires_clarification is False
+
+
 def test_supervisor_route_to_capability_asks_clarification_for_ambiguous_content(tmp_path):
     from bridge.runtime_facade.facade import HermesRuntimeFacade
     from bridge.tests.test_runtime_facade import FakeLegacyRuntime

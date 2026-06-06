@@ -267,6 +267,125 @@ async def test_app_im_free_text_invokes_supervisor_and_returns_renderable_reply(
     ]
 
 
+async def test_app_im_free_text_returns_tool_output_as_renderable_result_card(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        {
+            "final_response": "生成结果如上，可以直接发布。",
+            "messages": [
+                {"role": "user", "content": "请生成小红书笔记"},
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_skill_view_001",
+                            "function": {"name": "skill_view", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "skill_view",
+                    "name": "skill_view",
+                    "content": "标题：护眼台灯真的救了我的晚间工作\n正文：这盏便携护眼台灯亮度柔和，适合睡前阅读和加班。",
+                    "tool_call_id": "call_skill_view_001",
+                },
+                {"role": "assistant", "content": "生成结果如上，可以直接发布。"},
+            ],
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_free_text_tool_001", "请调用工具生成内容"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {"type": "free_text", "text": "请调用工具生成内容"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "sync_reply"
+    reply_text = body["reply"]["text"]
+    assert '"card_type": "result_preview"' in reply_text
+    assert "护眼台灯真的救了我的晚间工作" in reply_text
+    assert "生成结果如上，可以直接发布。" in reply_text
+
+
+async def test_app_im_free_text_routes_clear_xhs_request_to_skill_result_card(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        {
+            "final_response": "标题：护眼台灯真的救了我的晚间工作\n正文：这盏便携护眼台灯亮度柔和，适合睡前阅读和加班。",
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event(
+                    "app_msg_free_text_xhs_001",
+                    "请用AI工具箱的小红书笔记生成器，为便携护眼台灯生成一段种草文",
+                ),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {
+                        "type": "free_text",
+                        "text": "请用AI工具箱的小红书笔记生成器，为便携护眼台灯生成一段种草文",
+                    },
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "sync_reply"
+    assert body["run_id"] == "run_000001"
+    assert body["artifact_id"] == "art_run_000002"
+    reply_text = body["reply"]["text"]
+    assert '"card_type": "result_preview"' in reply_text
+    assert "护眼台灯真的救了我的晚间工作" in reply_text
+    assert app.state.runtime.invoke_calls == [
+        {
+            "session_id": supervisor_session_id,
+            "user_text": '/xhs-note-generator {"platform": "xiaohongshu", "product": "便携护眼台灯", "tone": "真实种草"}',
+            "agent_profile": "edge_supervisor",
+            "system_prompt": None,
+            "conversation_history": [],
+        }
+    ]
+
+
 async def test_channel_status_api_reports_adapter_availability(tmp_path):
     from httpx import ASGITransport, AsyncClient
 

@@ -51,16 +51,23 @@ async def post_channel_event(request: Request) -> JSONResponse:
 
     action = ((body.get("metadata") or {}).get("action") or {}) if isinstance(body.get("metadata"), dict) else {}
     if _is_app_im_free_text(body, action):
-        result = await facade.invoke_raw(
+        result = await facade.invoke_app_im_free_text(
             session_id=session_id,
             user_text=str(body.get("content") or ""),
             agent_profile="edge_supervisor",
+            metadata={
+                "owner_id": str(body.get("sender_id") or ""),
+                "conversation_id": str(body.get("conversation_key") or ""),
+                "channel_key": str(body.get("channel_key") or ""),
+                "external_message_id": str(body.get("external_message_id") or ""),
+            },
         )
         return JSONResponse(
             {
                 "mode": "sync_reply",
                 "run_id": result.get("run_id"),
-                "reply": {"text": str(result.get("final_response") or "")},
+                "artifact_id": result.get("artifact_id"),
+                "reply": {"text": str(result.get("renderable_reply_text") or result.get("final_response") or "")},
             }
         )
 

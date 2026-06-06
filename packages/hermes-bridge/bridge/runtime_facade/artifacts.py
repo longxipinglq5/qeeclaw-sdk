@@ -72,6 +72,16 @@ class JsonArtifactStore:
             return None
         return RuntimeArtifact.model_validate_json(path.read_text(encoding="utf-8"))
 
+    def next_available_artifact_id(self, preferred_artifact_id: str) -> str:
+        if not self._path_for(preferred_artifact_id).exists():
+            return preferred_artifact_id
+        suffix = 2
+        while True:
+            candidate = f"{preferred_artifact_id}_{suffix:03d}"
+            if not self._path_for(candidate).exists():
+                return candidate
+            suffix += 1
+
     def list_for_run(self, run_id: str) -> list[RuntimeArtifact]:
         artifacts: list[RuntimeArtifact] = []
         for path in sorted(self.artifacts_dir.glob("*.json")):

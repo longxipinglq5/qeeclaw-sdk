@@ -108,6 +108,56 @@ async def test_post_api_runs_skill_run_creates_artifact_and_card_events(tmp_path
     assert artifact.content["body"] == "测试回复"
 
 
+async def test_post_api_runs_skill_run_uses_next_artifact_id_when_previous_file_exists(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+    app.state.runtime_facade.artifacts.create_artifact(
+        artifact_id="art_run_000001",
+        session_id="edge:owner_1:supervisor:conv_abc",
+        run_id="run_000001",
+        kind="xiaohongshu_note",
+        title="旧结果",
+        content={"body": "旧结果"},
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "skill_run",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "parent_run_id": "run_sup_001",
+                "capability_id": "xiaohongshu_note_writer",
+                "input": {
+                    "product": "儿童护眼台灯",
+                    "tone": "真实种草",
+                    "platform": "xiaohongshu",
+                },
+                "output_contract": "skill_app_card",
+                "metadata": {"owner_id": "owner_1"},
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["artifact_id"] == "art_run_000001_002"
+    assert app.state.runtime_facade.artifacts.get_artifact("art_run_000001").title == "旧结果"
+    artifact = app.state.runtime_facade.artifacts.get_artifact("art_run_000001_002")
+    assert artifact.run_id == "run_000001"
+    assert artifact.content["body"] == "测试回复"
+
+
 async def test_post_api_runs_skill_run_fails_closed_for_mismatched_fields(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
