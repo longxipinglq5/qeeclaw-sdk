@@ -250,3 +250,57 @@ def test_run_manager_creates_runs_and_emits_lifecycle_events():
         "run_started",
         "error",
     ]
+
+
+class FakeLegacyRuntime:
+    def __init__(self):
+        self.invoke_calls = []
+
+    async def invoke_raw(self, **kwargs):
+        self.invoke_calls.append(kwargs)
+        return {
+            "final_response": "测试回复",
+            "completed": True,
+            "failed": False,
+            "model": "deepseek-v4-pro",
+            "provider": "deepseek",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "total_tokens": 150,
+        }
+
+
+async def test_facade_invoke_raw_wraps_legacy_runtime_and_records_events():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime()
+    facade = HermesRuntimeFacade(legacy)
+
+    result = await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="你好",
+        agent_profile="edge_supervisor",
+        system_prompt="你是主管",
+    )
+
+    assert legacy.invoke_calls == [
+        {
+            "session_id": "edge:owner_1:supervisor:conv_abc",
+            "user_text": "你好",
+            "agent_profile": "edge_supervisor",
+            "system_prompt": "你是主管",
+        }
+    ]
+    assert result["final_response"] == "测试回复"
+    assert result["run_id"] == "run_000001"
+    assert result["session_id"] == "edge:owner_1:supervisor:conv_abc"
+    assert result["agent_profile"] == "edge_supervisor"
+
+    run = facade.get_run("run_000001")
+    assert run is not None
+    assert run.result_text == "测试回复"
+    assert [event.type for event in facade.get_run_events("run_000001")] == [
+        "run_started",
+        "metering",
+        "done",
+    ]
