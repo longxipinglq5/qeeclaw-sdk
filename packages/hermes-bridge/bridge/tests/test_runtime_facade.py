@@ -169,3 +169,38 @@ def test_event_bus_appends_and_reads_ordered_run_events():
     assert [event.event_id for event in bus.list_by_run("run_1", after_event_id=first.event_id)] == [
         "evt_000002",
     ]
+
+
+def test_session_store_creates_updates_and_preserves_message_order():
+    from bridge.runtime_facade.session_store import SessionStore
+    from bridge.runtime_facade.store import InMemoryStore
+
+    sessions = SessionStore(InMemoryStore())
+    session = sessions.get_or_create(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        agent_profile="edge_supervisor",
+        metadata={"owner_id": "owner_1"},
+    )
+
+    assert session.session_id == "edge:owner_1:supervisor:conv_abc"
+    assert session.agent_profile == "edge_supervisor"
+    assert session.metadata == {"owner_id": "owner_1"}
+
+    updated = sessions.get_or_create(
+        session_id=session.session_id,
+        agent_profile="edge_supervisor",
+        metadata={"conversation_id": "conv_abc"},
+    )
+    assert updated.metadata == {
+        "owner_id": "owner_1",
+        "conversation_id": "conv_abc",
+    }
+    assert updated.updated_at >= session.updated_at
+
+    sessions.append_message(session.session_id, role="user", text="第一句")
+    sessions.append_message(session.session_id, role="assistant", text="第二句")
+
+    assert sessions.list_messages(session.session_id) == [
+        {"role": "user", "text": "第一句"},
+        {"role": "assistant", "text": "第二句"},
+    ]
