@@ -32,6 +32,7 @@ from bridge.runtime_facade.run_manager import RunManager
 from bridge.runtime_facade.session_store import SessionStore
 from bridge.runtime_facade.session_ids import SessionIdBuilder
 from bridge.runtime_facade.store import InMemoryStore
+from bridge.runtime_facade.timeline import TimelineStore
 
 
 class HermesRuntimeFacade:
@@ -45,7 +46,8 @@ class HermesRuntimeFacade:
     def __init__(self, legacy_runtime: Any, artifact_root_dir: str | Path | None = None) -> None:
         self._legacy_runtime = legacy_runtime
         self.store = InMemoryStore()
-        self.events = EventBus(self.store)
+        self.timeline = TimelineStore()
+        self.events = EventBus(self.store, timeline_store=self.timeline)
         self.sessions = SessionStore(self.store)
         self.runs = RunManager(store=self.store, event_bus=self.events)
         self.capabilities = CapabilityRegistry.with_builtin_capabilities()

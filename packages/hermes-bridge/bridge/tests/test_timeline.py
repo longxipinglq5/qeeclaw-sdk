@@ -169,3 +169,108 @@ def test_event_bus_can_project_runtime_events_to_timeline_store():
     )
 
     assert [event.artifact_id for event in timeline.list_session("session_1").events] == ["art_001"]
+
+
+async def test_timeline_api_lists_events_with_cursor_pagination(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    facade = app.state.runtime_facade
+    facade.events.append(session_id="edge:owner_1:supervisor:conv_abc", run_id="run_001", type="artifact_created", payload={"artifact_id": "art_001"})
+    facade.events.append(session_id="edge:owner_1:supervisor:conv_abc", run_id="run_001", type="app_result", payload={"card": {"card_type": "result_preview", "summary": "done", "artifact_ids": ["art_001"]}})
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.get("/api/sessions/edge:owner_1:supervisor:conv_abc/timeline?limit=1")
+        second = await client.get(
+            "/api/sessions/edge:owner_1:supervisor:conv_abc/timeline?cursor=tl_000001&limit=50",
+            headers={"Last-Event-ID": "tl_999999"},
+        )
+
+    assert first.status_code == 200
+    assert first.json()["events"][0]["event_id"] == "tl_000001"
+    assert first.json()["next_cursor"] == "tl_000001"
+    assert first.json()["has_more"] is True
+    assert second.status_code == 200
+    assert [event["event_id"] for event in second.json()["events"]] == ["tl_000002"]
+
+
+async def test_timeline_read_receipts_only_update_receipt_fields(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    session_id = "edge:owner_1:supervisor:conv_abc"
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    facade = app.state.runtime_facade
+    facade.events.append(session_id=session_id, run_id="run_001", type="artifact_created", payload={"artifact_id": "art_001"})
+    before = facade.timeline.list_session(session_id).events[0].model_dump(mode="json")
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/sessions/{session_id}/timeline/read-receipts",
+            json={"reader_id": "owner_1", "event_ids": ["tl_000001"], "read_at": "2026-06-06T10:00:00+00:00"},
+        )
+
+    assert response.status_code == 200
+    updated = response.json()["events"][0]
+    assert updated["read_at"] == "2026-06-06T10:00:00+00:00"
+    assert updated["seen_by"] == ["owner_1"]
+    for key in ["event_id", "source_event_id", "cursor", "artifact_id", "kind"]:
+        assert updated[key] == before[key]
+
+
+async def test_timeline_read_receipts_reject_cross_owner_reader(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    session_id = "edge:owner_1:supervisor:conv_abc"
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    app.state.runtime_facade.events.append(session_id=session_id, run_id="run_001", type="artifact_created", payload={"artifact_id": "art_001"})
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/api/sessions/{session_id}/timeline/read-receipts",
+            json={"reader_id": "other_owner", "event_ids": ["tl_000001"]},
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "TIMELINE_READER_MISMATCH"
+
+
+async def test_timeline_stream_starts_with_keep_alive_and_stays_open(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    session_id = "edge:owner_1:supervisor:conv_abc"
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream("GET", f"/api/sessions/{session_id}/timeline/stream") as response:
+            body = await response.aread()
+
+    assert response.status_code == 200
+    assert body.decode().startswith(": keep-alive")

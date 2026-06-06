@@ -103,6 +103,32 @@ class TimelineStore:
             has_more=len(events) > len(page_events),
         )
 
+    def mark_read(
+        self,
+        *,
+        session_id: str,
+        reader_id: str,
+        read_at: str,
+        event_ids: list[str] | None = None,
+        cursor: str | None = None,
+    ) -> list[TimelineEvent]:
+        marked: list[TimelineEvent] = []
+        for index, event in enumerate(self._events):
+            if event.session_id != session_id:
+                continue
+            if event_ids is not None and event.event_id not in event_ids:
+                continue
+            if cursor is not None and int(event.cursor.removeprefix("tl_")) > int(cursor.removeprefix("tl_")):
+                continue
+            seen_by = list(event.seen_by)
+            if reader_id not in seen_by:
+                seen_by.append(reader_id)
+            updated = event.model_copy(update={"read_at": read_at, "seen_by": seen_by})
+            self._events[index] = updated
+            self._events_by_source_event_id[event.source_event_id] = updated
+            marked.append(updated)
+        return marked
+
     def _project_event(self, event: RuntimeEvent, timeline_event_id: str) -> TimelineEvent:
         kind = self._kind_for(event)
         return TimelineEvent(

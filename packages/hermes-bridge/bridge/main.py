@@ -26,6 +26,7 @@ from bridge.api.runs import router as runs_router
 from bridge.api.sessions import router as sessions_router
 from bridge.api.stream import router as stream_router
 from bridge.api.stream_compat import router as stream_compat_router
+from bridge.api.timeline import router as timeline_router
 from bridge.api.tools_list import router as tools_list_router
 from bridge.config import settings
 from bridge.runtime import HermesRuntime
@@ -100,6 +101,7 @@ def create_app() -> FastAPI:
     # routers. Existing non-/api routes remain legacy until explicitly migrated.
     app.include_router(runs_router, tags=["runs"])
     app.include_router(automation_router, tags=["automation"])
+    app.include_router(timeline_router, tags=["timeline"])
     app.include_router(approvals_router, tags=["approvals"])
     app.include_router(capabilities_router, tags=["capabilities"])
     app.include_router(invoke_router, tags=["chat"])
