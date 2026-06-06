@@ -4,11 +4,13 @@ from typing import Any
 
 from bridge.runtime_facade.models import RuntimeEvent
 from bridge.runtime_facade.store import BaseStore
+from bridge.runtime_facade.timeline import TimelineStore
 
 
 class EventBus:
-    def __init__(self, store: BaseStore) -> None:
+    def __init__(self, store: BaseStore, timeline_store: TimelineStore | None = None) -> None:
         self._store = store
+        self._timeline_store = timeline_store
         self._next_event_number = 1
 
     def append(
@@ -29,6 +31,8 @@ class EventBus:
             payload=payload or {},
         )
         self._store.set("events", event.event_id, event)
+        if self._timeline_store is not None:
+            self._timeline_store.append_from_runtime_event(event)
         return event
 
     def list_by_run(
