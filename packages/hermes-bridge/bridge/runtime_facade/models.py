@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -52,9 +52,63 @@ class RuntimeRun(BaseModel):
     agent_profile: str
     kind: RunKind = RunKind.INVOKE
     status: RunStatus = RunStatus.QUEUED
+    trace_id: str | None = None
+    parent_run_id: str | None = None
+    created_by: str | None = None
+    source: str | None = None
     input_text: str | None = None
     result_text: str | None = None
     error: str | None = None
     usage: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+
+
+class CreateRunInput(BaseModel):
+    text: str
+
+
+class CreateRunRequest(BaseModel):
+    kind: RunKind
+    session_id: str
+    agent_profile: str = "default"
+    input: CreateRunInput
+    context_refs: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_owner_matches_session(self) -> "CreateRunRequest":
+        owner_id = self.metadata.get("owner_id")
+        if owner_id is None:
+            return self
+
+        parts = self.session_id.split(":")
+        if len(parts) >= 2 and parts[0] == "edge" and parts[1] != owner_id:
+            raise ValueError("metadata.owner_id conflicts with session_id owner")
+        return self
+
+
+class RunUrls(BaseModel):
+    status_url: str
+    events_url: str
+    stream_url: str
+    timeline_url: str | None = None
+
+    @classmethod
+    def for_run(cls, run_id: str, session_id: str) -> "RunUrls":
+        return cls(
+            status_url=f"/api/runs/{run_id}",
+            events_url=f"/api/runs/{run_id}/events",
+            stream_url=f"/api/runs/{run_id}/events/stream",
+            timeline_url=f"/api/sessions/{session_id}/timeline",
+        )
+
+
+class CreateRunResponse(BaseModel):
+    run_id: str
+    session_id: str
+    kind: RunKind
+    status: RunStatus
+    trace_id: str | None = None
+    urls: RunUrls
