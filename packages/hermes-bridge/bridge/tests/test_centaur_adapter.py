@@ -149,6 +149,52 @@ async def test_centaur_adapter_emits_initial_events_and_pauses_on_plan_approval(
     assert status["pending_approval_id"] == "appr_plan_001"
 
 
+async def test_automation_plan_approval_can_be_approved(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_resp = await client.post(
+            "/api/runs",
+            json={
+                "kind": "automation_run",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {
+                    "goal": "本周主推儿童护眼台灯",
+                    "employee_id": "marketing_employee",
+                    "goal_id": "goal_lamp_001",
+                },
+                "metadata": {"owner_id": "owner_1", "conversation_id": "conv_abc"},
+            },
+        )
+        run_id = create_resp.json()["run_id"]
+        approve_resp = await client.post(
+            f"/api/runs/{run_id}/approvals/appr_plan_001/approve",
+            json={"decided_by": "owner_1", "note": "计划可以执行"},
+        )
+        events_resp = await client.get(f"/api/runs/{run_id}/events")
+
+    assert approve_resp.status_code == 200
+    assert approve_resp.json()["approval_id"] == "appr_plan_001"
+    assert approve_resp.json()["status"] == "approved"
+    events = events_resp.json()["events"]
+    assert "approval_decision" in [event["type"] for event in events]
+    assert events[-2]["payload"]["approval_id"] == "appr_plan_001"
+    assert events[-2]["payload"]["decision"] == "approved"
+
+
 def test_centaur_adapter_falls_back_when_reviewer_omits_memory_decision(tmp_path):
     from bridge.runtime_facade.centaur_adapter import CentaurLoopRuntimeAdapter
     from bridge.runtime_facade.event_bus import EventBus

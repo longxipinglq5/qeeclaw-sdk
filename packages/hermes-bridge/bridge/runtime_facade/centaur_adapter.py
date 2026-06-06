@@ -7,6 +7,7 @@ from bridge.runtime_facade.event_bus import EventBus
 from bridge.runtime_facade.loops import LoopRegistry, LoopScheduler, create_marketing_growth_fixture
 from bridge.runtime_facade.models import RuntimeRun
 from bridge.runtime_facade.run_manager import RunManager
+from bridge.runtime_facade.approvals import ApprovalStore
 
 
 class CentaurLoopRuntimeAdapter:
@@ -15,10 +16,12 @@ class CentaurLoopRuntimeAdapter:
         *,
         event_bus: EventBus,
         run_manager: RunManager,
+        approval_store: ApprovalStore | None = None,
         missing_memory_decision_policy: Literal["emit_no_memory_candidate", "pause"] = "emit_no_memory_candidate",
     ) -> None:
         self._events = event_bus
         self._runs = run_manager
+        self._approvals = approval_store
         self._missing_memory_decision_policy = missing_memory_decision_policy
 
     def start_run(
@@ -71,6 +74,16 @@ class CentaurLoopRuntimeAdapter:
             },
         )
         approval_id = "appr_plan_001"
+        if self._approvals is not None:
+            self._approvals.create_approval(
+                approval_id=approval_id,
+                run_id=run.run_id,
+                session_id=run.session_id,
+                action_kind="plan_review",
+                gate_type="plan",
+                summary="先确认内容生成计划，再执行后续营销环节",
+                effect={"action_kind": "plan_review"},
+            )
         self._append(
             run,
             "work_plan",

@@ -187,6 +187,42 @@ async def test_channel_event_structured_action_wins_over_conflicting_content(tmp
     assert len(app.state.runtime_facade.timeline.list_session("edge:owner_1:channel:app_im:conv_abc").events) == 1
 
 
+async def test_app_im_action_uses_supervisor_timeline_binding(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_supervisor_001", "不要发，先取消"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {"type": "confirm", "approval_id": "appr_publish_001"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["accepted_action"] == "confirm"
+    supervisor_events = app.state.runtime_facade.timeline.list_session(supervisor_session_id).events
+    channel_events = app.state.runtime_facade.timeline.list_session("edge:owner_1:channel:app_im:conv_abc").events
+    assert [event.kind for event in supervisor_events] == ["action_content_conflict"]
+    assert channel_events == []
+
+
 async def test_channel_status_api_reports_adapter_availability(tmp_path):
     from httpx import ASGITransport, AsyncClient
 

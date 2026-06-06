@@ -63,6 +63,7 @@ class HermesRuntimeFacade:
         self.centaur_adapter = CentaurLoopRuntimeAdapter(
             event_bus=self.events,
             run_manager=self.runs,
+            approval_store=self.approvals,
         )
         self._last_prompt_prefix_hash_by_session: dict[str, str] = {}
 

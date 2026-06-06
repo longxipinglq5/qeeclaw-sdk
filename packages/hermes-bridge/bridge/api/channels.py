@@ -125,10 +125,14 @@ async def retry_channel_outbox(outbox_id: str, request: Request, adapter_availab
 def _session_id_for_channel_event(body: dict) -> str:
     channel_key = str(body["channel_key"])
     conversation_key = str(body["conversation_key"])
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    supervisor_session_id = str(metadata.get("supervisor_session_id") or "")
+    if channel_key == "app_im" and supervisor_session_id:
+        return supervisor_session_id
     if channel_key == "app_im":
         owner_id = str(body.get("sender_id") or "owner")
     else:
-        owner_id = str((body.get("metadata") or {}).get("owner_id") or "owner_1")
+        owner_id = str(metadata.get("owner_id") or "owner_1")
     return SessionIdBuilder.channel(owner_id, channel_key, conversation_key)
 
 
