@@ -27,7 +27,7 @@ from bridge.api.tools_list import router as tools_list_router
 from bridge.config import settings
 from bridge.runtime import HermesRuntime
 from bridge.runtime_facade.facade import HermesRuntimeFacade
-from bridge.runtime_facade.store import warn_if_in_memory_store_multi_worker
+from bridge.runtime_facade.store import check_store_readiness, warn_if_in_memory_store_multi_worker
 from bridge.setup_hermes import ensure_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,14 @@ async def lifespan(app: FastAPI):
     app.state.runtime = legacy_runtime
     app.state.runtime_facade = HermesRuntimeFacade(legacy_runtime)
     warn_if_in_memory_store_multi_worker(app.state.runtime_facade.store)
+    readiness = check_store_readiness(
+        app.state.runtime_facade.store,
+        environment="local",
+    )
+    if not readiness.ready:
+        raise RuntimeError(readiness.error)
+    if readiness.warning:
+        logger.warning(readiness.warning)
 
     logger.info(
         "Bridge 启动: port=%d, agent_dir=%s, hermes_home=%s",

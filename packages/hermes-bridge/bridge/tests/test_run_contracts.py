@@ -237,3 +237,47 @@ async def test_cancel_and_resume_run_apis_use_explicit_state_contracts():
     assert resume_resp.json()["run"]["status"] == "running"
     assert terminal_cancel_resp.status_code == 409
     assert terminal_cancel_resp.json()["error"]["code"] == "RUN_TERMINAL"
+
+
+def test_in_memory_store_capabilities_are_not_production_durable():
+    from bridge.runtime_facade.store import InMemoryStore
+
+    capabilities = InMemoryStore().capabilities
+
+    assert capabilities.durable is False
+    assert capabilities.supports_retention is True
+    assert capabilities.supports_replay is False
+    assert capabilities.supports_cross_worker is False
+    assert capabilities.safe_for_external_channels is False
+
+
+def test_store_readiness_blocks_unsafe_production_external_channels():
+    from bridge.runtime_facade.store import InMemoryStore, check_store_readiness
+
+    local_result = check_store_readiness(
+        InMemoryStore(),
+        environment="local",
+        uvicorn_workers=2,
+        external_channels=True,
+        outbox_retry=True,
+    )
+    production_result = check_store_readiness(
+        InMemoryStore(),
+        environment="production",
+        uvicorn_workers=2,
+        external_channels=True,
+        outbox_retry=True,
+    )
+
+    assert local_result.ready is True
+    assert local_result.warning is not None
+    assert production_result.ready is False
+    assert production_result.error == {
+        "code": "STORE_NOT_PRODUCTION_READY",
+        "message": "InMemoryStore cannot run external channels or outbox retry in production",
+        "details": {
+            "durable": False,
+            "supports_cross_worker": False,
+            "safe_for_external_channels": False,
+        },
+    }
