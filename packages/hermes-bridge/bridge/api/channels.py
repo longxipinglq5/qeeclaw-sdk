@@ -10,6 +10,13 @@ import traceback
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from bridge.api.errors import api_error
+from bridge.runtime_facade.channel_stores import (
+    ChannelUnavailableError,
+    OutboxNotFoundError,
+    OutboxNotRetryableError,
+)
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -20,6 +27,26 @@ def _ok(data):
 
 def _err(status: int, message: str):
     return JSONResponse({"success": False, "data": None, "error": {"message": message}}, status_code=status)
+
+
+def _facade(request: Request):
+    return request.app.state.runtime_facade
+
+
+@router.post("/api/channels/outbox/{outbox_id}/retry")
+async def retry_channel_outbox(outbox_id: str, request: Request, adapter_available: bool = True) -> JSONResponse:
+    try:
+        record = _facade(request).outbox.retry(
+            outbox_id,
+            adapter_available=adapter_available,
+        )
+    except OutboxNotFoundError:
+        return api_error("OUTBOX_NOT_FOUND", "Outbox message not found", 404, {"outbox_id": outbox_id})
+    except OutboxNotRetryableError:
+        return api_error("OUTBOX_NOT_RETRYABLE", "Outbox message is not retryable", 409, {"outbox_id": outbox_id})
+    except ChannelUnavailableError:
+        return api_error("CHANNEL_UNAVAILABLE", "Channel adapter is unavailable", 503, {"outbox_id": outbox_id})
+    return JSONResponse(record.model_dump(mode="json"))
 
 
 def _make_channel_item(channel_id: str, display_name: str, category: str, adapter_key: str, **kw):

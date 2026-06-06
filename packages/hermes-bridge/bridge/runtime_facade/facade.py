@@ -13,6 +13,7 @@ from bridge.runtime_facade.automation_status import AutomationRunStatus, Automat
 from bridge.runtime_facade.capabilities import CapabilityRegistry
 from bridge.runtime_facade.cards import build_result_preview_card
 from bridge.runtime_facade.centaur_adapter import CentaurLoopRuntimeAdapter
+from bridge.runtime_facade.channel_stores import InboxStore, OutboxStore
 from bridge.runtime_facade.event_bus import EventBus
 from bridge.runtime_facade.experts import ExpertRegistry
 from bridge.runtime_facade.models import (
@@ -53,6 +54,8 @@ class HermesRuntimeFacade:
         self.capabilities = CapabilityRegistry.with_builtin_capabilities()
         self.experts = ExpertRegistry.with_builtin_experts()
         self.approvals = ApprovalStore()
+        self.inbox = InboxStore()
+        self.outbox = OutboxStore()
         self.artifacts = JsonArtifactStore(
             artifact_root_dir or (settings.hermes_home_path / "bridge-state")
         )
