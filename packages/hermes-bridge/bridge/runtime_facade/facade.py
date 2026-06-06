@@ -11,6 +11,7 @@ from bridge.runtime_facade.artifacts import JsonArtifactStore
 from bridge.runtime_facade.capabilities import CapabilityRegistry
 from bridge.runtime_facade.cards import build_result_preview_card
 from bridge.runtime_facade.event_bus import EventBus
+from bridge.runtime_facade.experts import ExpertRegistry
 from bridge.runtime_facade.models import (
     CapabilityManifest,
     CapabilitySelection,
@@ -44,6 +45,7 @@ class HermesRuntimeFacade:
         self.sessions = SessionStore(self.store)
         self.runs = RunManager(store=self.store, event_bus=self.events)
         self.capabilities = CapabilityRegistry.with_builtin_capabilities()
+        self.experts = ExpertRegistry.with_builtin_experts()
         self.artifacts = JsonArtifactStore(
             artifact_root_dir or (settings.hermes_home_path / "bridge-state")
         )
@@ -154,6 +156,8 @@ class HermesRuntimeFacade:
     async def create_run(self, request: CreateRunRequest) -> CreateRunResponse:
         if request.kind == RunKind.SKILL_RUN:
             return await self._create_skill_run(request)
+        if request.kind == RunKind.EXPERT_RUN:
+            return await self._create_expert_run(request)
 
         if request.kind != RunKind.INVOKE:
             raise ValueError("RUN_KIND_UNSUPPORTED")
@@ -428,6 +432,153 @@ class HermesRuntimeFacade:
             urls=RunUrls.for_run(run.run_id, request.session_id),
         )
 
+    async def _create_expert_run(self, request: CreateRunRequest) -> CreateRunResponse:
+        validation_error = self._validate_expert_run_fields(request)
+        if validation_error:
+            raise ValueError(json.dumps(validation_error))
+
+        expert = self.experts.get_expert(str(request.expert_id))
+        owner_id = str(request.metadata["owner_id"])
+        conversation_id = str(request.metadata["conversation_id"])
+        linked_session_id = expert.session_id_for(
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+        )
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+        user_text = request.input.text or ""
+        self.sessions.get_or_create(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+        )
+        self.sessions.get_or_create(
+            session_id=linked_session_id,
+            agent_profile=expert.hermes_profile,
+            metadata={
+                "linked_session": {
+                    "source_session_id": request.session_id,
+                    "linked_session_id": linked_session_id,
+                    "expert_id": expert.expert_id,
+                    "metadata": {
+                        "owner_id": owner_id,
+                        "conversation_id": conversation_id,
+                    },
+                }
+            },
+        )
+        conversation_history = self.sessions.get_recent_messages(linked_session_id)
+        run = self.runs.start_run(
+            session_id=request.session_id,
+            agent_profile=expert.hermes_profile,
+            kind=RunKind.EXPERT_RUN,
+            input_text=user_text,
+            trace_id=trace_id,
+            parent_run_id=request.parent_run_id,
+            created_by=request.metadata.get("created_by"),
+            source=request.metadata.get("source"),
+            metadata={
+                **request.metadata,
+                "expert_id": expert.expert_id,
+                "linked_session_id": linked_session_id,
+            },
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="expert_selected",
+            payload={
+                "expert_id": expert.expert_id,
+                "linked_session_id": linked_session_id,
+            },
+            trace_id=run.trace_id,
+        )
+        artifact_id = self._input_field(request.input, "artifact_id")
+        required_context = [f"artifact:{artifact_id}"] if artifact_id else []
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="readiness_check",
+            payload={"status": "ready", "required_context": required_context},
+            trace_id=run.trace_id,
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="work_plan",
+            payload={"summary": "先判断语气，再给出两版修改建议"},
+            trace_id=run.trace_id,
+        )
+        try:
+            result = await self._legacy_runtime.invoke_raw(
+                session_id=linked_session_id,
+                user_text=user_text,
+                agent_profile=expert.hermes_profile,
+                system_prompt=None,
+                conversation_history=conversation_history,
+            )
+        except Exception as exc:
+            self.runs.fail_run(run.run_id, error=str(exc))
+            raise
+
+        final_response = str(result.get("final_response") or "")
+        self.runs.complete_run(
+            run.run_id,
+            result_text=final_response,
+            usage=self._usage_from_result(result),
+            done_payload={"summary": final_response},
+        )
+        self.sessions.append_turn(
+            linked_session_id,
+            user_text=user_text,
+            assistant_text=final_response,
+            metadata={"run_id": run.run_id, "expert_id": expert.expert_id},
+        )
+        self._store_expert_summary(
+            request.session_id,
+            {
+                "linked_session_id": linked_session_id,
+                "expert_id": expert.expert_id,
+                "expert_summary": final_response,
+                "source_run_id": run.run_id,
+            },
+        )
+        return CreateRunResponse(
+            run_id=run.run_id,
+            session_id=request.session_id,
+            kind=request.kind,
+            status=RunStatus.COMPLETED,
+            trace_id=trace_id,
+            urls=RunUrls.for_run(run.run_id, request.session_id),
+        )
+
+    def _validate_expert_run_fields(self, request: CreateRunRequest) -> dict[str, Any] | None:
+        missing: list[str] = []
+        if not request.expert_id:
+            missing.append("expert_id")
+        if not request.metadata.get("owner_id"):
+            missing.append("owner_id")
+        if not request.metadata.get("conversation_id"):
+            missing.append("conversation_id")
+        if not missing:
+            return None
+        return {
+            "code": "RUN_KIND_UNSUPPORTED",
+            "details": {
+                "kind": request.kind.value,
+                "missing": missing,
+                "unexpected": [],
+            },
+        }
+
+    def _store_expert_summary(
+        self,
+        session_id: str,
+        summary: dict[str, Any],
+    ) -> None:
+        session = self.sessions.get(session_id)
+        existing = list((session.metadata if session else {}).get("expert_summaries") or [])
+        existing.append(summary)
+        self.sessions.update_metadata(session_id, {"expert_summaries": existing})
+
     def _create_supervisor_clarification_run(
         self,
         *,
@@ -699,6 +850,10 @@ class HermesRuntimeFacade:
         payload = input_payload.model_dump(exclude_none=True)
         source_artifact_id = payload.get("source_artifact_id")
         return {"source_artifact_id": source_artifact_id} if source_artifact_id else {}
+
+    @staticmethod
+    def _input_field(input_payload: CreateRunInput, field_name: str) -> Any:
+        return input_payload.model_dump(exclude_none=True).get(field_name)
 
     def _emit_skill_tool_events(
         self,
