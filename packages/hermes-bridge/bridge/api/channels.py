@@ -50,6 +50,20 @@ async def post_channel_event(request: Request) -> JSONResponse:
         return JSONResponse({"mode": "suppressed", "reply": {"suppressed": True}})
 
     action = ((body.get("metadata") or {}).get("action") or {}) if isinstance(body.get("metadata"), dict) else {}
+    if _is_app_im_free_text(body, action):
+        result = await facade.invoke_raw(
+            session_id=session_id,
+            user_text=str(body.get("content") or ""),
+            agent_profile="edge_supervisor",
+        )
+        return JSONResponse(
+            {
+                "mode": "sync_reply",
+                "run_id": result.get("run_id"),
+                "reply": {"text": str(result.get("final_response") or "")},
+            }
+        )
+
     if action:
         response = {
             "mode": "accepted_async",
@@ -140,6 +154,10 @@ def _action_conflicts_with_content(action_type: str, content: str) -> bool:
     if action_type == "confirm" and any(term in content for term in ["不要", "取消", "别发"]):
         return True
     return False
+
+
+def _is_app_im_free_text(body: dict, action: dict) -> bool:
+    return str(body.get("channel_key") or "") == "app_im" and str(action.get("type") or "") == "free_text"
 
 
 def _append_timeline_conflict(facade, session_id: str, body: dict, action: dict) -> None:

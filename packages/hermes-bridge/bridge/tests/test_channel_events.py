@@ -223,6 +223,50 @@ async def test_app_im_action_uses_supervisor_timeline_binding(tmp_path):
     assert channel_events == []
 
 
+async def test_app_im_free_text_invokes_supervisor_and_returns_renderable_reply(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime({"final_response": "收到，我会继续推进。"})
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_free_text_001", "请用一句话回复收到"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {"type": "free_text", "text": "请用一句话回复收到"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "sync_reply"
+    assert response.json()["reply"] == {"text": "收到，我会继续推进。"}
+    assert response.json()["run_id"] == "run_000001"
+    assert "accepted_action" not in response.json()
+    assert app.state.runtime.invoke_calls == [
+        {
+            "session_id": supervisor_session_id,
+            "user_text": "请用一句话回复收到",
+            "agent_profile": "edge_supervisor",
+            "system_prompt": None,
+            "conversation_history": [],
+        }
+    ]
+
+
 async def test_channel_status_api_reports_adapter_availability(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
