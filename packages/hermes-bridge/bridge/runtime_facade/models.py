@@ -176,6 +176,29 @@ class CapabilitySelection(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExpertManifest(BaseModel):
+    expert_id: str
+    title: str
+    description: str
+    context_scope: Literal["owner", "conversation"]
+    hermes_profile: str
+    permissions: list[str] = Field(default_factory=list)
+
+    def session_id_for(self, *, owner_id: str, conversation_id: str) -> str:
+        base = f"edge:{owner_id}:expert:{self.expert_id}"
+        if self.context_scope == "conversation":
+            return f"{base}:conv:{conversation_id}"
+        return base
+
+
+class LinkedSession(BaseModel):
+    source_session_id: str
+    linked_session_id: str
+    expert_id: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class RuntimeArtifact(BaseModel):
     artifact_id: str
     session_id: str
