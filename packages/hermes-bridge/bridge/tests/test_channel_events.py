@@ -115,3 +115,110 @@ async def test_outbox_retry_errors_and_success(tmp_path):
     assert body["status"] == "sent"
     assert body["attempt_count"] == 2
     assert body["dedupe_key"] == failed.dedupe_key
+
+
+async def test_channel_event_api_response_modes(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        accepted = await client.post("/api/channels/events", json=_external_event("wx_msg_async", "护眼台灯现在有什么优惠？"))
+        sync = await client.post("/api/channels/events", json={**_external_event("wx_msg_sync", "ping"), "sync_reply_timeout_ms": 1000})
+        duplicate = await client.post("/api/channels/events", json=_external_event("wx_msg_async", "重复消息"))
+        approval = await client.post("/api/channels/events", json={**_external_event("wx_msg_approval", "请帮我发布朋友圈"), "requires_approval": True})
+
+    assert accepted.status_code == 200
+    assert accepted.json()["mode"] == "accepted_async"
+    assert accepted.json()["reply"] == {"text": "收到，正在处理"}
+    assert accepted.json()["outbox_followup"] is True
+    assert sync.json()["mode"] == "sync_reply"
+    assert sync.json()["reply"] == {"text": "pong"}
+    assert duplicate.json()["mode"] == "suppressed"
+    assert approval.json()["mode"] == "requires_approval"
+
+
+async def test_channel_event_structured_action_wins_over_conflicting_content(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        conflict = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_001", "不要发，先取消"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {"action": {"type": "confirm", "approval_id": "appr_publish_001"}},
+            },
+        )
+        compatible = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_002", "请修改得更自然"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {"action": {"type": "modify", "approval_id": "appr_draft_001"}},
+            },
+        )
+
+    assert conflict.json()["accepted_action"] == "confirm"
+    assert conflict.json()["audit_note"] == "不要发，先取消"
+    timeline_events = app.state.runtime_facade.timeline.list_session("edge:owner_1:channel:app_im:conv_abc").events
+    assert [event.kind for event in timeline_events] == ["action_content_conflict"]
+    assert compatible.json()["accepted_action"] == "modify"
+    assert len(app.state.runtime_facade.timeline.list_session("edge:owner_1:channel:app_im:conv_abc").events) == 1
+
+
+async def test_channel_status_api_reports_adapter_availability(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/channels/status")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "adapters": {
+            "app_im": {"available": True},
+            "wechat": {"available": True},
+        }
+    }
+
+
+def _external_event(external_message_id: str, content: str) -> dict:
+    return {
+        "external_message_id": external_message_id,
+        "channel_key": "wechat",
+        "conversation_key": "wechat:user:openid_123",
+        "sender_id": "openid_123",
+        "sender_name": "张女士",
+        "direction": "inbound",
+        "content": content,
+        "timestamp": "2026-06-06T10:15:00+00:00",
+    }

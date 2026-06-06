@@ -16,6 +16,8 @@ from bridge.runtime_facade.channel_stores import (
     OutboxNotFoundError,
     OutboxNotRetryableError,
 )
+from bridge.runtime_facade.models import RunKind
+from bridge.runtime_facade.session_ids import SessionIdBuilder
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,6 +35,77 @@ def _facade(request: Request):
     return request.app.state.runtime_facade
 
 
+@router.post("/api/channels/events")
+async def post_channel_event(request: Request) -> JSONResponse:
+    body = await request.json()
+    facade = _facade(request)
+    session_id = _session_id_for_channel_event(body)
+    inbox = facade.inbox.record_inbound(
+        channel_key=str(body["channel_key"]),
+        external_message_id=str(body["external_message_id"]),
+        session_id=session_id,
+        content=str(body.get("content") or ""),
+    )
+    if inbox.deduped:
+        return JSONResponse({"mode": "suppressed", "reply": {"suppressed": True}})
+
+    action = ((body.get("metadata") or {}).get("action") or {}) if isinstance(body.get("metadata"), dict) else {}
+    if action:
+        response = {
+            "mode": "accepted_async",
+            "accepted_action": str(action.get("type") or ""),
+            "audit_note": str(body.get("content") or ""),
+        }
+        if _action_conflicts_with_content(str(action.get("type") or ""), str(body.get("content") or "")):
+            _append_timeline_conflict(facade, session_id, body, action)
+        return JSONResponse(response)
+
+    if body.get("requires_approval"):
+        return JSONResponse({"mode": "requires_approval", "reply": {"text": "需要审批后处理"}})
+
+    if str(body.get("content") or "").lower() == "ping" and int(body.get("sync_reply_timeout_ms") or 0) > 0:
+        return JSONResponse({"mode": "sync_reply", "reply": {"text": "pong"}})
+
+    run = facade.runs.start_run(
+        session_id=session_id,
+        agent_profile="edge_channel",
+        kind=RunKind.CHANNEL_RUN,
+        input_text=str(body.get("content") or ""),
+        metadata={
+            "channel_key": body.get("channel_key"),
+            "conversation_key": body.get("conversation_key"),
+            "external_message_id": body.get("external_message_id"),
+        },
+    )
+    facade.events.append(
+        session_id=session_id,
+        run_id=run.run_id,
+        type="channel_message",
+        payload={"role": "user", "text": str(body.get("content") or "")},
+        trace_id=run.trace_id,
+    )
+    return JSONResponse(
+        {
+            "mode": "accepted_async",
+            "run_id": run.run_id,
+            "reply": {"text": "收到，正在处理"},
+            "outbox_followup": True,
+        }
+    )
+
+
+@router.get("/api/channels/status")
+async def get_channels_status() -> JSONResponse:
+    return JSONResponse(
+        {
+            "adapters": {
+                "app_im": {"available": True},
+                "wechat": {"available": True},
+            }
+        }
+    )
+
+
 @router.post("/api/channels/outbox/{outbox_id}/retry")
 async def retry_channel_outbox(outbox_id: str, request: Request, adapter_available: bool = True) -> JSONResponse:
     try:
@@ -47,6 +120,38 @@ async def retry_channel_outbox(outbox_id: str, request: Request, adapter_availab
     except ChannelUnavailableError:
         return api_error("CHANNEL_UNAVAILABLE", "Channel adapter is unavailable", 503, {"outbox_id": outbox_id})
     return JSONResponse(record.model_dump(mode="json"))
+
+
+def _session_id_for_channel_event(body: dict) -> str:
+    channel_key = str(body["channel_key"])
+    conversation_key = str(body["conversation_key"])
+    if channel_key == "app_im":
+        owner_id = str(body.get("sender_id") or "owner")
+    else:
+        owner_id = str((body.get("metadata") or {}).get("owner_id") or "owner_1")
+    return SessionIdBuilder.channel(owner_id, channel_key, conversation_key)
+
+
+def _action_conflicts_with_content(action_type: str, content: str) -> bool:
+    if action_type == "confirm" and any(term in content for term in ["不要", "取消", "别发"]):
+        return True
+    return False
+
+
+def _append_timeline_conflict(facade, session_id: str, body: dict, action: dict) -> None:
+    facade.timeline.append_manual_event(
+        source_event_id=str(body["external_message_id"]),
+        source_event_type="channel_action",
+        session_id=session_id,
+        run_id=str(body.get("binding_target_id") or ""),
+        source="channel",
+        kind="action_content_conflict",
+        role="user",
+        payload={
+            "action": action,
+            "content": body.get("content"),
+        },
+    )
 
 
 def _make_channel_item(channel_id: str, display_name: str, category: str, adapter_key: str, **kw):

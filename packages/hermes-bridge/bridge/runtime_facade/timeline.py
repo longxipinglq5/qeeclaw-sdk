@@ -129,6 +129,35 @@ class TimelineStore:
             marked.append(updated)
         return marked
 
+    def append_manual_event(
+        self,
+        *,
+        source_event_id: str,
+        source_event_type: str,
+        session_id: str,
+        run_id: str,
+        source: str,
+        kind: str,
+        role: str,
+        payload: dict[str, Any],
+    ) -> TimelineEvent:
+        event_id = self._create_timeline_event_id()
+        event = TimelineEvent(
+            event_id=event_id,
+            source_event_id=source_event_id,
+            source_event_type=source_event_type,
+            session_id=session_id,
+            run_id=run_id,
+            source=source,
+            kind=kind,
+            role=role,
+            cursor=event_id,
+            payload=payload,
+        )
+        self._events.append(event)
+        self._events_by_source_event_id[source_event_id] = event
+        return event
+
     def _project_event(self, event: RuntimeEvent, timeline_event_id: str) -> TimelineEvent:
         kind = self._kind_for(event)
         return TimelineEvent(
