@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+from typing import Any
+
+from bridge.runtime_facade.event_bus import EventBus
+from bridge.runtime_facade.models import RunKind, RuntimeRun, RunStatus, utc_now
+from bridge.runtime_facade.store import BaseStore
+
+
+class RunManager:
+    def __init__(self, *, store: BaseStore, event_bus: EventBus) -> None:
+        self._store = store
+        self._event_bus = event_bus
+        self._next_run_number = 1
+
+    def start_run(
+        self,
+        *,
+        session_id: str,
+        agent_profile: str,
+        kind: RunKind = RunKind.INVOKE,
+        input_text: str | None = None,
+    ) -> RuntimeRun:
+        run = RuntimeRun(
+            run_id=self._create_run_id(),
+            session_id=session_id,
+            agent_profile=agent_profile,
+            kind=kind,
+            status=RunStatus.RUNNING,
+            input_text=input_text,
+        )
+        self._store.set("runs", run.run_id, run)
+        self._event_bus.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="run_started",
+            payload={"kind": kind.value, "status": run.status.value},
+        )
+        return run
+
+    def get(self, run_id: str) -> RuntimeRun | None:
+        run = self._store.get("runs", run_id)
+        return run if isinstance(run, RuntimeRun) else None
+
+    def complete_run(
+        self,
+        run_id: str,
+        *,
+        result_text: str,
+        usage: dict[str, Any] | None = None,
+    ) -> RuntimeRun:
+        run = self._require_run(run_id)
+        updated = run.model_copy(
+            update={
+                "status": RunStatus.COMPLETED,
+                "result_text": result_text,
+                "usage": usage or {},
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.set("runs", run_id, updated)
+        self._event_bus.append(
+            session_id=updated.session_id,
+            run_id=updated.run_id,
+            type="done",
+            payload={"text": result_text, "usage": updated.usage},
+        )
+        return updated
+
+    def fail_run(self, run_id: str, *, error: str) -> RuntimeRun:
+        run = self._require_run(run_id)
+        updated = run.model_copy(
+            update={
+                "status": RunStatus.FAILED,
+                "error": error,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.set("runs", run_id, updated)
+        self._event_bus.append(
+            session_id=updated.session_id,
+            run_id=updated.run_id,
+            type="error",
+            payload={"error": error},
+        )
+        return updated
+
+    def _require_run(self, run_id: str) -> RuntimeRun:
+        run = self.get(run_id)
+        if run is None:
+            raise KeyError(f"Run not found: {run_id}")
+        return run
+
+    def _create_run_id(self) -> str:
+        run_id = f"run_{self._next_run_number:06d}"
+        self._next_run_number += 1
+        return run_id

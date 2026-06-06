@@ -204,3 +204,49 @@ def test_session_store_creates_updates_and_preserves_message_order():
         {"role": "user", "text": "第一句"},
         {"role": "assistant", "text": "第二句"},
     ]
+
+
+def test_run_manager_creates_runs_and_emits_lifecycle_events():
+    from bridge.runtime_facade.event_bus import EventBus
+    from bridge.runtime_facade.models import RunStatus
+    from bridge.runtime_facade.run_manager import RunManager
+    from bridge.runtime_facade.store import InMemoryStore
+
+    store = InMemoryStore()
+    events = EventBus(store)
+    runs = RunManager(store=store, event_bus=events)
+
+    run = runs.start_run(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        agent_profile="edge_supervisor",
+        input_text="帮我总结",
+    )
+    assert run.run_id == "run_000001"
+    assert run.status == RunStatus.RUNNING
+    assert run.input_text == "帮我总结"
+    assert [event.type for event in events.list_by_run(run.run_id)] == ["run_started"]
+
+    completed = runs.complete_run(
+        run.run_id,
+        result_text="总结完成",
+        usage={"input_tokens": 12, "output_tokens": 4},
+    )
+    assert completed.status == RunStatus.COMPLETED
+    assert completed.result_text == "总结完成"
+    assert completed.usage == {"input_tokens": 12, "output_tokens": 4}
+    assert [event.type for event in events.list_by_run(run.run_id)] == [
+        "run_started",
+        "done",
+    ]
+
+    failed = runs.start_run(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        agent_profile="edge_supervisor",
+    )
+    failed = runs.fail_run(failed.run_id, error="provider failed")
+    assert failed.status == RunStatus.FAILED
+    assert failed.error == "provider failed"
+    assert [event.type for event in events.list_by_run(failed.run_id)] == [
+        "run_started",
+        "error",
+    ]
