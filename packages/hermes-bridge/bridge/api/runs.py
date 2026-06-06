@@ -77,6 +77,14 @@ async def get_run(run_id: str, request: Request) -> JSONResponse:
     return JSONResponse({"run": run.model_dump(mode="json")})
 
 
+@router.get("/api/runs/{run_id}/status")
+async def get_run_status(run_id: str, request: Request) -> JSONResponse:
+    status = _facade(request).get_automation_status_for_run(run_id)
+    if status is None:
+        return api_error("RUN_NOT_FOUND", "Run not found", 404, {"run_id": run_id})
+    return JSONResponse(status.model_dump(mode="json"))
+
+
 @router.post("/api/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, request: Request) -> JSONResponse:
     try:

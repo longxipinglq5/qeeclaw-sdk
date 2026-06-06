@@ -9,6 +9,7 @@ from bridge.config import settings
 from bridge.runtime import StreamHandle
 from bridge.runtime_facade.approvals import ApprovalStore
 from bridge.runtime_facade.artifacts import JsonArtifactStore
+from bridge.runtime_facade.automation_status import AutomationRunStatus, AutomationStatusProjector
 from bridge.runtime_facade.capabilities import CapabilityRegistry
 from bridge.runtime_facade.cards import build_result_preview_card
 from bridge.runtime_facade.event_bus import EventBus
@@ -51,6 +52,7 @@ class HermesRuntimeFacade:
         self.artifacts = JsonArtifactStore(
             artifact_root_dir or (settings.hermes_home_path / "bridge-state")
         )
+        self.automation_status = AutomationStatusProjector()
         self._last_prompt_prefix_hash_by_session: dict[str, str] = {}
 
     async def invoke_raw(
@@ -211,6 +213,42 @@ class HermesRuntimeFacade:
             parent_run_id=request.parent_run_id,
             urls=RunUrls.for_run(result["run_id"], request.session_id),
         )
+
+    def get_automation_status_for_run(self, run_id: str) -> AutomationRunStatus | None:
+        run = self.runs.get(run_id)
+        if run is None:
+            return None
+        return self.automation_status.project(self.events.list_by_run(run_id))
+
+    def get_automation_status_for_goal(self, goal_id: str) -> AutomationRunStatus | None:
+        for run in self.store.list("runs"):
+            if not isinstance(run, RuntimeRun):
+                continue
+            if run.metadata.get("goal_id") != goal_id:
+                continue
+            return self.get_automation_status_for_run(run.run_id)
+        return None
+
+    def request_automation_resume(self, goal_id: str) -> dict[str, Any] | None:
+        for run in self.store.list("runs"):
+            if not isinstance(run, RuntimeRun):
+                continue
+            if run.metadata.get("goal_id") != goal_id:
+                continue
+            event = self.events.append(
+                session_id=run.session_id,
+                run_id=run.run_id,
+                type="automation_resume_requested",
+                payload={"goal_id": goal_id, "manual": True},
+                trace_id=run.trace_id,
+            )
+            return {
+                "status": "resume_requested",
+                "goal_id": goal_id,
+                "run_id": run.run_id,
+                "event_id": event.event_id,
+            }
+        return None
 
     def supervisor_route_to_capability(
         self,

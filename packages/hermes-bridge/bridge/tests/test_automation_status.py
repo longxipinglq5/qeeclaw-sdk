@@ -172,3 +172,170 @@ def test_automation_status_detects_stale_heartbeat_with_configurable_timeout():
 
     assert fresh.is_stale is False
     assert stale.is_stale is True
+
+
+async def test_run_status_api_projects_automation_status(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.runtime_facade.models import RunKind
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+    facade = app.state.runtime_facade
+    run = facade.runs.start_run(
+        session_id="edge:owner_1:automation:marketing_employee:goal_lamp_001",
+        agent_profile="edge_automation",
+        kind=RunKind.AUTOMATION_RUN,
+        trace_id="trc_auto_001",
+        metadata={"goal_id": "goal_lamp_001"},
+    )
+    _append_marketing_status_events(facade, run.run_id, run.session_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(f"/api/runs/{run.run_id}/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["run_id"] == run.run_id
+    assert body["goal_id"] == "goal_lamp_001"
+    assert body["state"] == "waiting_approval"
+    assert body["current_cycle_id"] == "cycle_content_001"
+    assert body["pending_approval_id"] == "appr_plan_001"
+
+
+async def test_goal_automation_read_apis_expose_status_loops_and_cycles(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.runtime_facade.models import RunKind
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+    facade = app.state.runtime_facade
+    run = facade.runs.start_run(
+        session_id="edge:owner_1:automation:marketing_employee:goal_lamp_001",
+        agent_profile="edge_automation",
+        kind=RunKind.AUTOMATION_RUN,
+        trace_id="trc_auto_001",
+        metadata={"goal_id": "goal_lamp_001"},
+    )
+    _append_marketing_status_events(facade, run.run_id, run.session_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        status = await client.get("/api/automation/goal_lamp_001/status")
+        loops = await client.get("/api/automation/goal_lamp_001/loops")
+        cycles = await client.get("/api/automation/goal_lamp_001/cycles")
+
+    assert status.status_code == 200
+    assert status.json()["run_id"] == run.run_id
+    assert loops.status_code == 200
+    assert loops.json()["loops"] == [
+        {"loop_id": "content_generation", "cycle_id": "cycle_content_001"},
+    ]
+    assert cycles.status_code == 200
+    assert cycles.json()["cycles"][0]["stage"] == "awaiting_plan_review"
+
+
+async def test_manual_resume_is_required_for_next_wakeup_and_does_not_auto_run(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.runtime_facade.models import RunKind
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+    facade = app.state.runtime_facade
+    run = facade.runs.start_run(
+        session_id="edge:owner_1:automation:marketing_employee:goal_lamp_001",
+        agent_profile="edge_automation",
+        kind=RunKind.AUTOMATION_RUN,
+        trace_id="trc_auto_001",
+        metadata={"goal_id": "goal_lamp_001"},
+    )
+    facade.events.append(
+        session_id=run.session_id,
+        run_id=run.run_id,
+        type="automation_started",
+        payload={"goal_id": "goal_lamp_001"},
+        trace_id=run.trace_id,
+    )
+    facade.events.append(
+        session_id=run.session_id,
+        run_id=run.run_id,
+        type="next_cycle_planned",
+        payload={"next_wakeup_at": "2026-06-13T09:00:00+00:00"},
+        trace_id=run.trace_id,
+    )
+    events_before = facade.events.list_by_run(run.run_id)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/api/automation/goal_lamp_001/resume")
+
+    events_after = facade.events.list_by_run(run.run_id)
+    assert [event.type for event in events_before] == [
+        "run_started",
+        "automation_started",
+        "next_cycle_planned",
+    ]
+    assert response.status_code == 200
+    assert response.json()["status"] == "resume_requested"
+    assert events_after[-1].type == "automation_resume_requested"
+    assert events_after[-1].payload["manual"] is True
+
+
+def _append_marketing_status_events(facade, run_id: str, session_id: str) -> None:
+    facade.events.append(
+        session_id=session_id,
+        run_id=run_id,
+        type="automation_started",
+        payload={"goal_id": "goal_lamp_001", "current_step": "启动营销半人马环"},
+        trace_id="trc_auto_001",
+    )
+    facade.events.append(
+        session_id=session_id,
+        run_id=run_id,
+        type="cycle_planned",
+        payload={"cycle_id": "cycle_content_001", "loop_id": "content_generation"},
+        trace_id="trc_auto_001",
+    )
+    facade.events.append(
+        session_id=session_id,
+        run_id=run_id,
+        type="loop_stage_changed",
+        payload={"cycle_id": "cycle_content_001", "stage": "awaiting_plan_review"},
+        trace_id="trc_auto_001",
+    )
+    facade.events.append(
+        session_id=session_id,
+        run_id=run_id,
+        type="approval_required",
+        payload={
+            "cycle_id": "cycle_content_001",
+            "approval_id": "appr_plan_001",
+            "action_kind": "plan_review",
+            "current_step": "等待确认内容生成计划",
+        },
+        trace_id="trc_auto_001",
+    )
