@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
+from typing import Literal
 
 
 def utc_now() -> datetime:
@@ -126,3 +127,16 @@ class PromptCacheUsage(BaseModel):
     context_length: int = 0
     threshold_tokens: int = 0
     last_prompt_tokens: int = 0
+
+
+class CapabilityManifest(BaseModel):
+    capability_id: str
+    kind: Literal["skill_app", "tool", "expert", "automation"]
+    title: str
+    description: str
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    output_contract: str
+    hermes_profile: str
+    slash_command: str
+    permissions: list[str] = Field(default_factory=list)
+    approval_policy: str = "preview"
