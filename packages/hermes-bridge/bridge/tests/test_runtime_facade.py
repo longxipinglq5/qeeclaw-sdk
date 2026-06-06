@@ -134,3 +134,38 @@ def test_in_memory_store_contract_for_phase_one():
     }
     assert store.retention.event_retention_after_terminal_hours == 24
     assert store.retention.timeline_retention_days is None
+
+
+def test_event_bus_appends_and_reads_ordered_run_events():
+    from bridge.runtime_facade.event_bus import EventBus
+    from bridge.runtime_facade.store import InMemoryStore
+
+    bus = EventBus(InMemoryStore())
+    first = bus.append(
+        session_id="session_1",
+        run_id="run_1",
+        type="run_started",
+        payload={"status": "running"},
+    )
+    second = bus.append(
+        session_id="session_1",
+        run_id="run_1",
+        type="token",
+        payload={"text": "第一句"},
+    )
+    bus.append(
+        session_id="session_1",
+        run_id="run_2",
+        type="run_started",
+        payload={},
+    )
+
+    assert first.event_id == "evt_000001"
+    assert second.event_id == "evt_000002"
+    assert [event.type for event in bus.list_by_run("run_1")] == [
+        "run_started",
+        "token",
+    ]
+    assert [event.event_id for event in bus.list_by_run("run_1", after_event_id=first.event_id)] == [
+        "evt_000002",
+    ]
