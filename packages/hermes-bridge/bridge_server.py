@@ -2496,25 +2496,25 @@ def _restore_channel_bindings_snapshot(items: List[Dict[str, Any]], file_existed
 def _create_channel_binding_record(body: Dict[str, Any]) -> Dict[str, Any]:
     with _CHANNELS_BINDINGS_LOCK:
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        expires_hours = int(body.get("expires_in_hours") or 72)
+        expires_hours = int(body.get("expires_in_hours") or body.get("expiresInHours") or 72)
         binding = {
             "id": int(time.time() * 1000),
-            "team_id": body.get("team_id", 1),
-            "channel_key": body.get("channel_key", "wechat_personal_plugin"),
-            "binding_type": body.get("binding_type", ""),
-            "binding_target_id": body.get("binding_target_id", ""),
-            "binding_target_name": body.get("binding_target_name"),
+            "team_id": body.get("team_id", body.get("teamId", 1)),
+            "channel_key": body.get("channel_key", body.get("channelKey", "wechat_personal_plugin")),
+            "binding_type": body.get("binding_type", body.get("bindingType", "")),
+            "binding_target_id": body.get("binding_target_id", body.get("bindingTargetId", "")),
+            "binding_target_name": body.get("binding_target_name", body.get("bindingTargetName")),
             "binding_code": f"bind_{uuid.uuid4().hex[:10]}",
             "code_expires_at": time.strftime(
                 "%Y-%m-%dT%H:%M:%SZ",
                 time.gmtime(time.time() + expires_hours * 3600),
             ),
             "status": "pending",
-            "created_by_user_id": int(body.get("created_by_user_id", 1) or 1),
-            "bound_by_user_id": body.get("bound_by_user_id"),
+            "created_by_user_id": int(body.get("created_by_user_id", body.get("createdByUserId", 1)) or 1),
+            "bound_by_user_id": body.get("bound_by_user_id", body.get("boundByUserId")),
             "binding_enabled_snapshot": bool(_load_wechat_personal_plugin_channel_config().get("binding_enabled", True)),
             "notes": body.get("notes"),
-            "bound_at": body.get("bound_at"),
+            "bound_at": body.get("bound_at", body.get("boundAt")),
             "created_time": now,
             "updated_time": now,
             "identity": body.get("identity"),

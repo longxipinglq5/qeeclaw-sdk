@@ -18,6 +18,7 @@ _STANDARD_EVENT_TYPES = {
     "loop_stage_changed",
     "feedback_request",
     "review_card",
+    "channel_message",
     "error",
     "cancelled",
 }
@@ -198,6 +199,8 @@ class TimelineStore:
             return "card"
         if event.type == "human_review":
             return "approval"
+        if event.type == "channel_message":
+            return "message"
         if event.type in {"error", "cancelled"}:
             return "system"
         return "debug"
@@ -206,6 +209,8 @@ class TimelineStore:
     def _source_for(event: RuntimeEvent) -> str:
         if event.run_id.startswith("run_skill") or event.type in {"app_result", "artifact_created"}:
             return "skill"
+        if event.type == "channel_message":
+            return "channel"
         if event.run_id.startswith("run_auto") or "cycle_id" in event.payload:
             return "automation"
         return "runtime"
@@ -214,10 +219,14 @@ class TimelineStore:
     def _role_for(event: RuntimeEvent) -> str:
         if event.type == "human_review":
             return "user"
+        if event.type == "channel_message":
+            return str(event.payload.get("role") or "user")
         return "assistant"
 
     @staticmethod
     def _text_for(event: RuntimeEvent) -> str | None:
+        if event.type == "channel_message":
+            return str(event.payload.get("text") or "")
         if event.type in {"error", "cancelled", "done"}:
             return str(event.payload.get("text") or event.payload.get("error") or event.type)
         return None

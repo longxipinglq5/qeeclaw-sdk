@@ -518,11 +518,14 @@ async def openclaw_qr_start(request: Request):
 
 @router.get("/api/platform/channels/bindings")
 async def bindings_list(
+    request: Request,
     team_id: int = Query(default=1),
     channel_key: str = Query(default="wechat_personal_plugin"),
 ):
     try:
         import bridge_server as _bs
+        team_id = int(request.query_params.get("team_id") or request.query_params.get("teamId") or team_id)
+        channel_key = request.query_params.get("channel_key") or request.query_params.get("channelKey") or channel_key
         bindings = [
             item for item in _bs._load_channel_bindings()
             if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
@@ -536,12 +539,15 @@ async def bindings_list(
 
 @router.get("/api/platform/channels/bindings/validate")
 async def bindings_validate(
+    request: Request,
     team_id: int = Query(default=1),
     channel_key: str = Query(default="wechat_personal_plugin"),
 ):
     try:
         import bridge_server as _bs
         import os
+        team_id = int(request.query_params.get("team_id") or request.query_params.get("teamId") or team_id)
+        channel_key = request.query_params.get("channel_key") or request.query_params.get("channelKey") or channel_key
         storage_dir = os.path.dirname(_bs._CHANNELS_BINDINGS_FILE)
         storage_parent = os.path.dirname(storage_dir) or storage_dir
         storage_file_exists = os.path.isfile(_bs._CHANNELS_BINDINGS_FILE)
@@ -582,7 +588,7 @@ async def binding_create(request: Request):
     try:
         import bridge_server as _bs
         body = await request.json()
-        channel_key = body.get("channel_key", "wechat_personal_plugin")
+        channel_key = body.get("channel_key") or body.get("channelKey") or "wechat_personal_plugin"
         if channel_key == "wechat_personal_plugin":
             plugin_config = _bs._load_wechat_personal_plugin_channel_config()
             if not bool(plugin_config.get("configured")):

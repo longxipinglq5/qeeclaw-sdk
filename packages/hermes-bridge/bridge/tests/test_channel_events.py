@@ -117,6 +117,78 @@ async def test_outbox_retry_errors_and_success(tmp_path):
     assert body["dedupe_key"] == failed.dedupe_key
 
 
+async def test_openclaw_binding_create_accepts_camel_case_payload(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/platform/channels/bindings/create",
+            json={
+                "teamId": 1,
+                "channelKey": "wechat_personal_openclaw",
+                "bindingType": "agent",
+                "bindingTargetId": "owner_secretary",
+                "bindingTargetName": "AI助理",
+                "expiresInHours": 72,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["success"] is True
+    binding = body["data"]
+    assert binding["team_id"] == 1
+    assert binding["channel_key"] == "wechat_personal_openclaw"
+    assert binding["binding_type"] == "agent"
+    assert binding["binding_target_id"] == "owner_secretary"
+    assert binding["binding_target_name"] == "AI助理"
+    assert binding["binding_code"].startswith("bind_")
+    assert binding["status"] == "pending"
+
+
+async def test_openclaw_binding_list_and_validate_accept_camel_case_query(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/api/platform/channels/bindings/create",
+            json={
+                "teamId": 1,
+                "channelKey": "wechat_personal_openclaw",
+                "bindingType": "agent",
+                "bindingTargetId": "owner_secretary",
+            },
+        )
+        listed = await client.get(
+            "/api/platform/channels/bindings",
+            params={"teamId": 1, "channelKey": "wechat_personal_openclaw"},
+        )
+        validated = await client.get(
+            "/api/platform/channels/bindings/validate",
+            params={"teamId": 1, "channelKey": "wechat_personal_openclaw"},
+        )
+
+    assert created.status_code == 200
+    binding = created.json()["data"]
+    assert listed.status_code == 200
+    list_body = listed.json()["data"]
+    assert list_body["total"] >= 1
+    assert any(item["id"] == binding["id"] for item in list_body["items"])
+    assert validated.status_code == 200
+    validate_body = validated.json()["data"]
+    assert validate_body["team_id"] == 1
+    assert validate_body["channel_key"] == "wechat_personal_openclaw"
+    assert validate_body["ready"] is True
+
+
 async def test_channel_event_api_response_modes(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
@@ -143,6 +215,46 @@ async def test_channel_event_api_response_modes(tmp_path):
     assert sync.json()["reply"] == {"text": "pong"}
     assert duplicate.json()["mode"] == "suppressed"
     assert approval.json()["mode"] == "requires_approval"
+
+
+async def test_wechat_personal_channel_message_projects_to_timeline(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    session_id = "edge:owner_default:channel:wechat_personal_openclaw:wechat:user:test_openid_001"
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        accepted = await client.post(
+            "/api/channels/events",
+            json={
+                "external_message_id": "wx_openclaw_msg_001",
+                "channel_key": "wechat_personal_openclaw",
+                "conversation_key": "wechat:user:test_openid_001",
+                "sender_id": "wx_user_001",
+                "direction": "inbound",
+                "content": "你好，帮我看看现在能做什么",
+                "metadata": {"owner_id": "owner_default", "binding_target_id": "owner_secretary"},
+            },
+        )
+        timeline = await client.get(f"/api/sessions/{session_id}/timeline")
+
+    assert accepted.status_code == 200
+    assert accepted.json()["mode"] == "accepted_async"
+    assert timeline.status_code == 200
+    events = timeline.json()["events"]
+    assert len(events) == 1
+    assert events[0]["source_event_type"] == "channel_message"
+    assert events[0]["source"] == "channel"
+    assert events[0]["kind"] == "message"
+    assert events[0]["role"] == "user"
+    assert events[0]["text"] == "你好，帮我看看现在能做什么"
 
 
 async def test_channel_event_structured_action_wins_over_conflicting_content(tmp_path):
