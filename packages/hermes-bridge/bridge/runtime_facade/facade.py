@@ -7,6 +7,7 @@ from typing import Any
 
 from bridge.config import settings
 from bridge.runtime import StreamHandle
+from bridge.runtime_facade.approvals import ApprovalStore
 from bridge.runtime_facade.artifacts import JsonArtifactStore
 from bridge.runtime_facade.capabilities import CapabilityRegistry
 from bridge.runtime_facade.cards import build_result_preview_card
@@ -46,6 +47,7 @@ class HermesRuntimeFacade:
         self.runs = RunManager(store=self.store, event_bus=self.events)
         self.capabilities = CapabilityRegistry.with_builtin_capabilities()
         self.experts = ExpertRegistry.with_builtin_experts()
+        self.approvals = ApprovalStore()
         self.artifacts = JsonArtifactStore(
             artifact_root_dir or (settings.hermes_home_path / "bridge-state")
         )
