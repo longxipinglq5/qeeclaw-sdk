@@ -204,6 +204,30 @@ class HermesRuntimeFacade:
         context: dict[str, Any],
     ) -> CapabilitySelection:
         normalized = user_text.strip()
+        if "朋友圈" in normalized and ("配图" in normalized or "图" in normalized):
+            source_artifact_id = self._latest_artifact_ref(
+                session_id=session_id,
+                context_refs=list(context.get("context_refs") or []),
+            )
+            return CapabilitySelection(
+                selection_id=f"sel_{self.runs.next_run_number:06d}",
+                capability_id="moments_copywriter_with_image",
+                input={
+                    "product": "这个产品",
+                    "tone": "真实、亲切、适合朋友圈",
+                    "need_image": True,
+                    "source_artifact_id": source_artifact_id,
+                },
+                context_refs=[f"artifact:{source_artifact_id}"] if source_artifact_id else [],
+                output_contract="copy_plus_image_card",
+                confidence=0.86 if source_artifact_id else 0.55,
+                reasoning_summary="用户要求基于已有产品内容生成朋友圈并配图。",
+                missing_inputs=[] if source_artifact_id else ["product"],
+                requires_clarification=source_artifact_id is None,
+                fallback_behavior="run_capability" if source_artifact_id else "ask_clarification",
+                source="deterministic_rule",
+                metadata={"matched_terms": ["朋友圈", "配图"]},
+            )
         if "小红书" in normalized and ("生成" in normalized or "写" in normalized):
             return CapabilitySelection(
                 selection_id=f"sel_{self.runs.next_run_number:06d}",
@@ -324,6 +348,23 @@ class HermesRuntimeFacade:
             text = text.replace(marker, "")
         text = text.replace("的小红书", "").replace("小红书", "")
         return text.strip(" ，。") or "待确认产品"
+
+    def _latest_artifact_ref(
+        self,
+        *,
+        session_id: str,
+        context_refs: list[str],
+    ) -> str | None:
+        for ref in reversed(context_refs):
+            if ref.startswith("artifact:"):
+                return ref.removeprefix("artifact:")
+        session = self.sessions.get(session_id)
+        summaries = list((session.metadata if session else {}).get("artifact_summaries") or [])
+        for summary in reversed(summaries):
+            artifact_id = summary.get("artifact_id")
+            if artifact_id:
+                return str(artifact_id)
+        return None
 
     async def _create_skill_run(self, request: CreateRunRequest) -> CreateRunResponse:
         validation_error = self._validate_skill_run_fields(request)
@@ -446,7 +487,10 @@ class HermesRuntimeFacade:
             kind=self._artifact_kind_for_capability(capability),
             title=capability.title,
             content={"body": final_response},
-            metadata={"capability_id": capability.capability_id},
+            metadata={
+                "capability_id": capability.capability_id,
+                **self._artifact_metadata_from_input(request.input),
+            },
         )
         self.events.append(
             session_id=request.session_id,
@@ -502,6 +546,12 @@ class HermesRuntimeFacade:
         if capability.capability_id.startswith("moments_copywriter"):
             return "moments_copy"
         return capability.capability_id
+
+    @staticmethod
+    def _artifact_metadata_from_input(input_payload: CreateRunInput) -> dict[str, Any]:
+        payload = input_payload.model_dump(exclude_none=True)
+        source_artifact_id = payload.get("source_artifact_id")
+        return {"source_artifact_id": source_artifact_id} if source_artifact_id else {}
 
     def get_run(self, run_id: str) -> RuntimeRun | None:
         return self.runs.get(run_id)

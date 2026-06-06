@@ -99,3 +99,70 @@ async def test_supervisor_invoke_creates_child_xhs_skill_run_and_refs(tmp_path):
             "capability_id": "xiaohongshu_note_writer",
         }
     ]
+
+
+async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "帮我生成儿童护眼台灯的小红书"},
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "再帮我生成这个产品的朋友圈，并配一张图"},
+                "context_refs": ["artifact:art_run_000002"],
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        parent_events_resp = await client.get("/api/runs/run_000003/events")
+        child_events_resp = await client.get("/api/runs/run_000004/events")
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run_000003"
+    assert response.json()["artifact_id"] == "art_run_000004"
+
+    parent_events = parent_events_resp.json()["events"]
+    selected = next(event for event in parent_events if event["type"] == "capability_selected")
+    selection = selected["payload"]["selection"]
+    assert selection["capability_id"] == "moments_copywriter_with_image"
+    assert selection["input"]["source_artifact_id"] == "art_run_000002"
+    assert selection["output_contract"] == "copy_plus_image_card"
+
+    child_events = child_events_resp.json()["events"]
+    assert [event["type"] for event in child_events] == [
+        "run_started",
+        "app_started",
+        "metering",
+        "artifact_created",
+        "app_result",
+        "done",
+    ]
+
+    artifact = app.state.runtime_facade.artifacts.get_artifact("art_run_000004")
+    assert artifact.kind == "moments_copy"
+    assert artifact.metadata["source_artifact_id"] == "art_run_000002"
+    assert artifact.metadata["capability_id"] == "moments_copywriter_with_image"
