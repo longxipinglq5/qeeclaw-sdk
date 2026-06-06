@@ -181,3 +181,59 @@ async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tm
     assert artifact.kind == "moments_copy"
     assert artifact.metadata["source_artifact_id"] == "art_run_000002"
     assert artifact.metadata["capability_id"] == "moments_copywriter_with_image"
+
+
+async def test_supervisor_publish_followup_requires_approval_without_child_run(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "帮我生成儿童护眼台灯的小红书"},
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "把这个内容发布"},
+                "context_refs": ["artifact:art_run_000002"],
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        events_resp = await client.get("/api/runs/run_000003/events")
+        missing_child_resp = await client.get("/api/runs/run_000004")
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run_000003"
+    assert "artifact_id" not in response.json()
+
+    events = events_resp.json()["events"]
+    assert [event["type"] for event in events] == [
+        "run_started",
+        "approval_required",
+        "done",
+    ]
+    approval = events[1]["payload"]
+    assert approval["action_kind"] == "publish_content"
+    assert approval["artifact_refs"] == ["art_run_000002"]
+    assert missing_child_resp.status_code == 404

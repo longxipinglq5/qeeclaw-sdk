@@ -166,7 +166,12 @@ class CapabilitySelection(BaseModel):
     reasoning_summary: str = ""
     missing_inputs: list[str] = Field(default_factory=list)
     requires_clarification: bool = False
-    fallback_behavior: Literal["run_capability", "ask_clarification", "invoke_default"] = "invoke_default"
+    fallback_behavior: Literal[
+        "run_capability",
+        "ask_clarification",
+        "invoke_default",
+        "require_approval",
+    ] = "invoke_default"
     source: str = "deterministic_rule"
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -172,6 +172,11 @@ class HermesRuntimeFacade:
                     request=request,
                     selection=selection,
                 )
+            if selection.fallback_behavior == "require_approval":
+                return self._create_supervisor_approval_run(
+                    request=request,
+                    selection=selection,
+                )
 
         trace_id = f"trc_{self.runs.next_run_number:06d}"
         result = await self._invoke_raw_with_run_metadata(
@@ -204,6 +209,27 @@ class HermesRuntimeFacade:
         context: dict[str, Any],
     ) -> CapabilitySelection:
         normalized = user_text.strip()
+        if "发布" in normalized or "发给客户群" in normalized:
+            source_artifact_id = self._latest_artifact_ref(
+                session_id=session_id,
+                context_refs=list(context.get("context_refs") or []),
+            )
+            return CapabilitySelection(
+                selection_id=f"sel_{self.runs.next_run_number:06d}",
+                context_refs=[f"artifact:{source_artifact_id}"] if source_artifact_id else [],
+                confidence=0.88 if source_artifact_id else 0.5,
+                reasoning_summary="用户请求发布或触达客户，必须先获得审批。",
+                missing_inputs=[] if source_artifact_id else ["artifact"],
+                requires_clarification=source_artifact_id is None,
+                fallback_behavior="require_approval" if source_artifact_id else "ask_clarification",
+                source="deterministic_rule",
+                metadata={
+                    "action_kind": "contact_customer"
+                    if "客户群" in normalized
+                    else "publish_content",
+                    "matched_terms": ["发布"] if "发布" in normalized else ["客户群"],
+                },
+            )
         if "朋友圈" in normalized and ("配图" in normalized or "图" in normalized):
             source_artifact_id = self._latest_artifact_ref(
                 session_id=session_id,
@@ -329,6 +355,61 @@ class HermesRuntimeFacade:
             trace_id=trace_id,
             artifact_id=artifact_id,
             urls=RunUrls.for_run(parent_run.run_id, request.session_id),
+        )
+
+    def _create_supervisor_approval_run(
+        self,
+        *,
+        request: CreateRunRequest,
+        selection: CapabilitySelection,
+    ) -> CreateRunResponse:
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+        self.sessions.get_or_create(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+        )
+        run = self.runs.start_run(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+            kind=RunKind.INVOKE,
+            input_text=request.input.text,
+            trace_id=trace_id,
+            created_by=request.metadata.get("created_by"),
+            source=request.metadata.get("source"),
+            metadata=request.metadata,
+        )
+        artifact_refs = [
+            ref.removeprefix("artifact:")
+            for ref in selection.context_refs
+            if ref.startswith("artifact:")
+        ]
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="approval_required",
+            payload={
+                "approval_id": f"appr_{run.run_id}",
+                "action_kind": selection.metadata.get("action_kind"),
+                "artifact_refs": artifact_refs,
+            },
+            trace_id=run.trace_id,
+        )
+        self.runs.complete_run(
+            run.run_id,
+            result_text="",
+            usage={},
+            done_payload={
+                "approval_id": f"appr_{run.run_id}",
+                "artifact_refs": artifact_refs,
+            },
+        )
+        return CreateRunResponse(
+            run_id=run.run_id,
+            session_id=request.session_id,
+            kind=request.kind,
+            status=RunStatus.COMPLETED,
+            trace_id=trace_id,
+            urls=RunUrls.for_run(run.run_id, request.session_id),
         )
 
     def _store_artifact_summary(
