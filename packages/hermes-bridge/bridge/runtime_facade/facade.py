@@ -12,6 +12,7 @@ from bridge.runtime_facade.artifacts import JsonArtifactStore
 from bridge.runtime_facade.automation_status import AutomationRunStatus, AutomationStatusProjector
 from bridge.runtime_facade.capabilities import CapabilityRegistry
 from bridge.runtime_facade.cards import build_result_preview_card
+from bridge.runtime_facade.centaur_adapter import CentaurLoopRuntimeAdapter
 from bridge.runtime_facade.event_bus import EventBus
 from bridge.runtime_facade.experts import ExpertRegistry
 from bridge.runtime_facade.models import (
@@ -29,6 +30,7 @@ from bridge.runtime_facade.models import (
 )
 from bridge.runtime_facade.run_manager import RunManager
 from bridge.runtime_facade.session_store import SessionStore
+from bridge.runtime_facade.session_ids import SessionIdBuilder
 from bridge.runtime_facade.store import InMemoryStore
 
 
@@ -53,6 +55,10 @@ class HermesRuntimeFacade:
             artifact_root_dir or (settings.hermes_home_path / "bridge-state")
         )
         self.automation_status = AutomationStatusProjector()
+        self.centaur_adapter = CentaurLoopRuntimeAdapter(
+            event_bus=self.events,
+            run_manager=self.runs,
+        )
         self._last_prompt_prefix_hash_by_session: dict[str, str] = {}
 
     async def invoke_raw(
@@ -162,6 +168,8 @@ class HermesRuntimeFacade:
             return await self._create_skill_run(request)
         if request.kind == RunKind.EXPERT_RUN:
             return await self._create_expert_run(request)
+        if request.kind == RunKind.AUTOMATION_RUN:
+            return self._create_automation_run(request)
 
         if request.kind != RunKind.INVOKE:
             raise ValueError("RUN_KIND_UNSUPPORTED")
@@ -214,6 +222,73 @@ class HermesRuntimeFacade:
             urls=RunUrls.for_run(result["run_id"], request.session_id),
         )
 
+    def _create_automation_run(self, request: CreateRunRequest) -> CreateRunResponse:
+        payload = request.input.model_dump(exclude_none=True)
+        owner_id = self._owner_id_from_supervisor_session(request.session_id)
+        metadata_owner_id = request.metadata.get("owner_id")
+        if metadata_owner_id and metadata_owner_id != owner_id:
+            raise ValueError("SESSION_OWNER_MISMATCH")
+        employee_id = str(payload.get("employee_id") or request.employee_id or "marketing_employee")
+        goal_id = str(payload.get("goal_id") or request.goal_id or f"goal_{self.runs.next_run_number:06d}")
+        automation_session_id = SessionIdBuilder.automation(owner_id, employee_id, goal_id)
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+
+        self.sessions.get_or_create(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+        )
+        self.sessions.get_or_create(
+            session_id=automation_session_id,
+            agent_profile="edge_automation",
+            metadata={
+                "origin_session_id": request.session_id,
+                "owner_id": owner_id,
+                "employee_id": employee_id,
+                "goal_id": goal_id,
+            },
+        )
+        run = self.runs.start_run(
+            session_id=automation_session_id,
+            agent_profile="edge_automation",
+            kind=RunKind.AUTOMATION_RUN,
+            input_text=str(payload.get("goal") or request.input.text or ""),
+            trace_id=trace_id,
+            parent_run_id=request.parent_run_id,
+            created_by=request.metadata.get("created_by"),
+            source=request.metadata.get("source"),
+            metadata={
+                **request.metadata,
+                "owner_id": owner_id,
+                "employee_id": employee_id,
+                "goal_id": goal_id,
+                "origin_session_id": request.session_id,
+            },
+        )
+        self.centaur_adapter.start_run(
+            run=run,
+            employee_id=employee_id,
+            goal_id=goal_id,
+            input={
+                "product": self._input_product_from_goal(str(payload.get("goal") or "")),
+                "campaign_goal": str(payload.get("goal") or ""),
+            },
+        )
+        run = self.runs.get(run.run_id) or run
+        return CreateRunResponse(
+            run_id=run.run_id,
+            session_id=automation_session_id,
+            kind=RunKind.AUTOMATION_RUN,
+            status=run.status,
+            trace_id=trace_id,
+            parent_run_id=request.parent_run_id,
+            urls=RunUrls(
+                status_url=f"/api/runs/{run.run_id}",
+                events_url=f"/api/runs/{run.run_id}/events",
+                stream_url=f"/api/runs/{run.run_id}/events/stream",
+                timeline_url=f"/api/sessions/{request.session_id}/timeline",
+            ),
+        )
+
     def get_automation_status_for_run(self, run_id: str) -> AutomationRunStatus | None:
         run = self.runs.get(run_id)
         if run is None:
@@ -249,6 +324,19 @@ class HermesRuntimeFacade:
                 "event_id": event.event_id,
             }
         return None
+
+    @staticmethod
+    def _owner_id_from_supervisor_session(session_id: str) -> str:
+        parts = session_id.split(":")
+        if len(parts) >= 2 and parts[0] == "edge":
+            return parts[1]
+        raise ValueError("SESSION_OWNER_MISMATCH")
+
+    @staticmethod
+    def _input_product_from_goal(goal: str) -> str:
+        if "儿童护眼台灯" in goal:
+            return "儿童护眼台灯"
+        return "产品"
 
     def supervisor_route_to_capability(
         self,

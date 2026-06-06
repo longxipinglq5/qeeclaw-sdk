@@ -155,6 +155,17 @@ class RunManager:
         )
         return updated
 
+    def mark_waiting_approval(self, run_id: str) -> RuntimeRun:
+        run = self._require_run(run_id)
+        updated = run.model_copy(
+            update={
+                "status": RunStatus.WAITING_APPROVAL,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.set("runs", run_id, updated)
+        return updated
+
     def _require_run(self, run_id: str) -> RuntimeRun:
         run = self.get(run_id)
         if run is None:

@@ -36,6 +36,12 @@ async def create_run(request: Request) -> JSONResponse:
         response = await _facade(request).create_run(req)
     except ValueError as exc:
         error = _parse_value_error(exc)
+        if error["code"] == "SESSION_OWNER_MISMATCH":
+            return api_error(
+                "SESSION_OWNER_MISMATCH",
+                "metadata.owner_id conflicts with session_id owner",
+                400,
+            )
         if error["code"] == "RUN_KIND_UNSUPPORTED":
             return api_error(
                 "RUN_KIND_UNSUPPORTED",
