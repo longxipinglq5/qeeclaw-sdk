@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 
 def _json_datetime(value):
     return value.isoformat().replace("+00:00", "Z")
@@ -255,6 +257,7 @@ def test_run_manager_creates_runs_and_emits_lifecycle_events():
 class FakeLegacyRuntime:
     def __init__(self):
         self.invoke_calls = []
+        self.stream_calls = []
 
     async def invoke_raw(self, **kwargs):
         self.invoke_calls.append(kwargs)
@@ -268,6 +271,19 @@ class FakeLegacyRuntime:
             "output_tokens": 50,
             "total_tokens": 150,
         }
+
+    async def stream_raw(self, **kwargs):
+        from bridge.runtime import StreamHandle
+
+        self.stream_calls.append(kwargs)
+        queue = asyncio.Queue()
+
+        async def _run():
+            await queue.put(("delta", "第一句"))
+            await queue.put(("delta", "第二句"))
+            await queue.put(("done", "最终回复"))
+
+        return StreamHandle(queue=queue, task=asyncio.create_task(_run()))
 
 
 async def test_facade_invoke_raw_wraps_legacy_runtime_and_records_events():
@@ -302,5 +318,46 @@ async def test_facade_invoke_raw_wraps_legacy_runtime_and_records_events():
     assert [event.type for event in facade.get_run_events("run_000001")] == [
         "run_started",
         "metering",
+        "done",
+    ]
+
+
+async def test_facade_stream_raw_wraps_legacy_stream_and_records_events():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime()
+    facade = HermesRuntimeFacade(legacy)
+
+    handle = await facade.stream_raw(
+        session_id="edge:owner_1:supervisor:conv_stream",
+        user_text="写三句朋友圈文案",
+        agent_profile="edge_supervisor",
+        system_prompt=None,
+    )
+
+    chunks = []
+    while True:
+        event_type, payload = await handle.queue.get()
+        chunks.append((event_type, payload))
+        if event_type in {"done", "error"}:
+            break
+
+    assert chunks == [
+        ("delta", "第一句"),
+        ("delta", "第二句"),
+        ("done", "最终回复"),
+    ]
+    assert legacy.stream_calls == [
+        {
+            "session_id": "edge:owner_1:supervisor:conv_stream",
+            "user_text": "写三句朋友圈文案",
+            "agent_profile": "edge_supervisor",
+            "system_prompt": None,
+        }
+    ]
+    assert [event.type for event in facade.get_run_events("run_000001")] == [
+        "run_started",
+        "token",
+        "token",
         "done",
     ]
