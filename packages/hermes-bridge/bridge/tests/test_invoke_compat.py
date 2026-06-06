@@ -48,6 +48,7 @@ class TestInvokeCompat:
         assert body["usage"]["prompt_tokens"] == 100
         assert body["usage"]["completion_tokens"] == 50
         assert body["usage"]["total_tokens"] == 150
+        assert body["run_id"] == "run_000001"
 
     @pytest.mark.asyncio
     async def test_invoke_with_system_prompt(self, app_client, mock_agent_class):
@@ -65,6 +66,14 @@ class TestInvokeCompat:
         assert resp.status_code == 200
         body = resp.json()
         assert body["text"] == "测试回复"
+        assert body["run_id"] == "run_000001"
+
+        events_resp = await app_client.get("/api/runs/run_000001/events")
+        assert [event["type"] for event in events_resp.json()["events"]] == [
+            "run_started",
+            "metering",
+            "done",
+        ]
 
         # 验证 AIAgent 被构造时传入了 ephemeral_system_prompt
         constructor_kwargs = mock_agent_class.call_args.kwargs
