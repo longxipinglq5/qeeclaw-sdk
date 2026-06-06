@@ -89,3 +89,45 @@ async def test_platform_conversation_history_prefers_facade_session_messages():
         {"role": "user", "content": "第一轮", "metadata": {"run_id": "run_000001"}},
         {"role": "assistant", "content": "测试回复", "metadata": {"run_id": "run_000001"}},
     ]
+
+
+def test_legacy_employee_session_migration_imports_once_from_session_manager():
+    from bridge.runtime_facade.session_migration import migrate_legacy_employee_session
+    from bridge.runtime_facade.session_store import SessionStore
+    from bridge.runtime_facade.store import InMemoryStore
+
+    class LegacyReader:
+        def __init__(self):
+            self.reads = 0
+
+        def get_messages(self, session_id):
+            self.reads += 1
+            assert session_id == "edge:employee_123"
+            return [
+                {"role": "user", "content": "我们最近主推儿童护眼台灯"},
+                {"role": "assistant", "content": "已记录，重点是护眼、学习场景和家长安心。"},
+            ]
+
+    sessions = SessionStore(InMemoryStore())
+    session = sessions.get_or_create(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        agent_profile="edge_supervisor",
+        metadata={
+            "legacy_employee_session_id": "edge:employee_123",
+            "owner_id": "owner_1",
+            "conversation_id": "conv_abc",
+        },
+    )
+    reader = LegacyReader()
+
+    first = migrate_legacy_employee_session(session, sessions, reader)
+    second = migrate_legacy_employee_session(sessions.get(session.session_id), sessions, reader)
+
+    assert first["imported_message_count"] == 2
+    assert second is None
+    assert reader.reads == 1
+    assert sessions.get_recent_messages(session.session_id, token_budget=None) == [
+        {"role": "user", "content": "我们最近主推儿童护眼台灯", "metadata": {"migration": "legacy_employee_session"}},
+        {"role": "assistant", "content": "已记录，重点是护眼、学习场景和家长安心。", "metadata": {"migration": "legacy_employee_session"}},
+    ]
+    assert sessions.get(session.session_id).metadata["migration"]["from_session_id"] == "edge:employee_123"

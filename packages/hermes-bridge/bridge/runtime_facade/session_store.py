@@ -45,6 +45,18 @@ class SessionStore:
         session = self._store.get("sessions", session_id)
         return session if isinstance(session, RuntimeSession) else None
 
+    def update_metadata(self, session_id: str, metadata: dict[str, Any]) -> RuntimeSession:
+        session = self.get(session_id)
+        if session is None:
+            raise KeyError(f"Session not found: {session_id}")
+        merged_metadata = dict(session.metadata)
+        merged_metadata.update(metadata)
+        updated = session.model_copy(
+            update={"metadata": merged_metadata, "updated_at": utc_now()}
+        )
+        self._store.set("sessions", session_id, updated)
+        return updated
+
     def list(self) -> list[RuntimeSession]:
         return [
             session
