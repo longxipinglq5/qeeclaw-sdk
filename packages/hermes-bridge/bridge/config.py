@@ -198,6 +198,8 @@ class Settings(BaseSettings):
 
     # runtime
     cache_max_size: int = 32
+    context_recent_message_limit: int = 24
+    context_recent_token_budget: int = 6000
 
     @property
     def hermes_agent_path(self) -> Path:
