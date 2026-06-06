@@ -5,7 +5,15 @@ from typing import Any
 
 from bridge.runtime import StreamHandle
 from bridge.runtime_facade.event_bus import EventBus
-from bridge.runtime_facade.models import RuntimeEvent, RuntimeRun
+from bridge.runtime_facade.models import (
+    CreateRunRequest,
+    CreateRunResponse,
+    RunKind,
+    RunStatus,
+    RunUrls,
+    RuntimeEvent,
+    RuntimeRun,
+)
 from bridge.runtime_facade.run_manager import RunManager
 from bridge.runtime_facade.session_store import SessionStore
 from bridge.runtime_facade.store import InMemoryStore
@@ -34,6 +42,26 @@ class HermesRuntimeFacade:
         agent_profile: str = "default",
         system_prompt: str | None = None,
     ) -> dict[str, Any]:
+        return await self._invoke_raw_with_run_metadata(
+            session_id=session_id,
+            user_text=user_text,
+            agent_profile=agent_profile,
+            system_prompt=system_prompt,
+        )
+
+    async def _invoke_raw_with_run_metadata(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        agent_profile: str = "default",
+        system_prompt: str | None = None,
+        trace_id: str | None = None,
+        parent_run_id: str | None = None,
+        created_by: str | None = None,
+        source: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         self.sessions.get_or_create(
             session_id=session_id,
             agent_profile=agent_profile,
@@ -42,6 +70,11 @@ class HermesRuntimeFacade:
             session_id=session_id,
             agent_profile=agent_profile,
             input_text=user_text,
+            trace_id=trace_id,
+            parent_run_id=parent_run_id,
+            created_by=created_by,
+            source=source,
+            metadata=metadata,
         )
         try:
             result = await self._legacy_runtime.invoke_raw(
@@ -72,6 +105,32 @@ class HermesRuntimeFacade:
             "session_id": session_id,
             "agent_profile": agent_profile,
         }
+
+    async def create_run(self, request: CreateRunRequest) -> CreateRunResponse:
+        if request.kind != RunKind.INVOKE:
+            raise ValueError("RUN_KIND_UNSUPPORTED")
+
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+        result = await self._invoke_raw_with_run_metadata(
+            session_id=request.session_id,
+            user_text=request.input.text,
+            agent_profile=request.agent_profile,
+            system_prompt=None,
+            trace_id=trace_id,
+            created_by=request.metadata.get("created_by"),
+            source=request.metadata.get("source"),
+            metadata=request.metadata,
+        )
+        run = self.runs.get(result["run_id"])
+
+        return CreateRunResponse(
+            run_id=result["run_id"],
+            session_id=request.session_id,
+            kind=request.kind,
+            status=run.status if run else RunStatus.COMPLETED,
+            trace_id=trace_id,
+            urls=RunUrls.for_run(result["run_id"], request.session_id),
+        )
 
     def get_run(self, run_id: str) -> RuntimeRun | None:
         return self.runs.get(run_id)

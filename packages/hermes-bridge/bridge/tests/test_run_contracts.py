@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
 
 def test_create_run_request_accepts_invoke_contract_fields():
     from bridge.runtime_facade.models import CreateRunRequest, RunKind
@@ -90,3 +92,78 @@ def test_create_run_response_and_runtime_run_trace_fields():
             "timeline_url": "/api/sessions/edge:owner_1:supervisor:conv_abc/timeline",
         },
     }
+
+
+async def test_post_api_runs_invoke_creates_readable_run_and_events():
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        create_resp = await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "帮我总结"},
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        run_resp = await client.get("/api/runs/run_000001")
+        events_resp = await client.get("/api/runs/run_000001/events")
+
+    assert create_resp.status_code == 200
+    assert create_resp.json() == {
+        "run_id": "run_000001",
+        "session_id": "edge:owner_1:supervisor:conv_abc",
+        "kind": "invoke",
+        "status": "completed",
+        "trace_id": "trc_000001",
+        "urls": {
+            "status_url": "/api/runs/run_000001",
+            "events_url": "/api/runs/run_000001/events",
+            "stream_url": "/api/runs/run_000001/events/stream",
+            "timeline_url": "/api/sessions/edge:owner_1:supervisor:conv_abc/timeline",
+        },
+    }
+    assert run_resp.status_code == 200
+    assert run_resp.json()["run"]["trace_id"] == "trc_000001"
+    assert [event["type"] for event in events_resp.json()["events"]] == [
+        "run_started",
+        "metering",
+        "done",
+    ]
+
+
+async def test_post_api_runs_rejects_unsupported_kind_until_later_plans():
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "skill_run",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "帮我写小红书"},
+                "metadata": {"owner_id": "owner_1"},
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "RUN_KIND_UNSUPPORTED"

@@ -20,6 +20,11 @@ class RunManager:
         agent_profile: str,
         kind: RunKind = RunKind.INVOKE,
         input_text: str | None = None,
+        trace_id: str | None = None,
+        parent_run_id: str | None = None,
+        created_by: str | None = None,
+        source: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> RuntimeRun:
         run = RuntimeRun(
             run_id=self._create_run_id(),
@@ -27,7 +32,12 @@ class RunManager:
             agent_profile=agent_profile,
             kind=kind,
             status=RunStatus.RUNNING,
+            trace_id=trace_id,
+            parent_run_id=parent_run_id,
+            created_by=created_by,
+            source=source,
             input_text=input_text,
+            metadata=metadata or {},
         )
         self._store.set("runs", run.run_id, run)
         self._event_bus.append(
@@ -41,6 +51,10 @@ class RunManager:
     def get(self, run_id: str) -> RuntimeRun | None:
         run = self._store.get("runs", run_id)
         return run if isinstance(run, RuntimeRun) else None
+
+    @property
+    def next_run_number(self) -> int:
+        return self._next_run_number
 
     def complete_run(
         self,

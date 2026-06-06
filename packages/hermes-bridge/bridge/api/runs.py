@@ -6,11 +6,33 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 from starlette.responses import StreamingResponse
 
+from bridge.runtime_facade.models import CreateRunRequest
+
 router = APIRouter()
 
 
 def _facade(request: Request):
     return request.app.state.runtime_facade
+
+
+@router.post("/api/runs")
+async def create_run(req: CreateRunRequest, request: Request) -> JSONResponse:
+    try:
+        response = await _facade(request).create_run(req)
+    except ValueError as exc:
+        if str(exc) == "RUN_KIND_UNSUPPORTED":
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "code": "RUN_KIND_UNSUPPORTED",
+                        "message": "Run kind is not implemented yet",
+                        "details": {"kind": req.kind.value},
+                    }
+                },
+            )
+        raise
+    return JSONResponse(response.model_dump(mode="json"))
 
 
 @router.get("/api/runs/{run_id}")
