@@ -206,3 +206,136 @@ def test_skip_timeout_cannot_bypass_loop_state_guard():
             current_stage=LoopStage.PLANNING,
             next_stage=LoopStage.GENERATING,
         )
+
+
+def test_loop_protocol_maps_plan_and_draft_cards_to_timeline_events():
+    from bridge.runtime_facade.centaur_protocol import map_loop_message_to_timeline_event
+
+    plan = map_loop_message_to_timeline_event(
+        {
+            "message_type": "plan_card",
+            "cycle_id": "cycle_content_001",
+            "summary": "先生成小红书，再生成朋友圈配图和客户群话术",
+            "actions": [
+                {"kind": "confirm", "label": "确认计划"},
+                {"kind": "modify", "label": "修改计划"},
+            ],
+        }
+    )
+    draft = map_loop_message_to_timeline_event(
+        {
+            "message_type": "draft_card",
+            "cycle_id": "cycle_content_001",
+            "artifact_ids": ["art_xhs_001", "art_moments_001"],
+            "summary": "已生成小红书和朋友圈草稿",
+            "actions": [
+                {"kind": "confirm", "label": "通过"},
+                {"kind": "reject", "label": "拒绝"},
+            ],
+        }
+    )
+
+    assert plan["kind"] == "card"
+    assert plan["role"] == "assistant"
+    assert plan["card"]["card_type"] == "plan_card"
+    assert plan["card"]["cycle_id"] == "cycle_content_001"
+    assert plan["card"]["fallback_text"] == "先生成小红书，再生成朋友圈配图和客户群话术"
+    assert draft["card"]["card_type"] == "draft_card"
+    assert draft["card"]["artifact_ids"] == ["art_xhs_001", "art_moments_001"]
+    assert draft["card"]["actions"] == [
+        {"kind": "confirm", "label": "通过"},
+        {"kind": "reject", "label": "拒绝"},
+    ]
+
+
+def test_loop_protocol_maps_publish_and_memory_cards_to_approval_events():
+    from bridge.runtime_facade.centaur_protocol import map_loop_message_to_timeline_event
+
+    publish = map_loop_message_to_timeline_event(
+        {
+            "message_type": "publish_card",
+            "cycle_id": "cycle_content_001",
+            "approval_id": "appr_publish_001",
+            "summary": "发布朋友圈文案和配图",
+        }
+    )
+    memory = map_loop_message_to_timeline_event(
+        {
+            "message_type": "memory_card",
+            "cycle_id": "cycle_content_001",
+            "approval_id": "appr_memory_001",
+            "summary": "写入本轮营销复盘记忆",
+        }
+    )
+
+    assert publish["kind"] == "approval"
+    assert publish["action_kind"] == "publish_content"
+    assert publish["card"]["card_type"] == "publish_card"
+    assert publish["card"]["approval_id"] == "appr_publish_001"
+    assert publish["card"]["action_kind"] == "publish_content"
+    assert memory["kind"] == "approval"
+    assert memory["action_kind"] == "write_memory"
+    assert memory["card"]["card_type"] == "memory_card"
+    assert memory["card"]["approval_id"] == "appr_memory_001"
+    assert memory["card"]["action_kind"] == "write_memory"
+
+
+def test_loop_protocol_maps_feedback_review_progress_and_cycle_complete():
+    from bridge.runtime_facade.centaur_protocol import map_loop_message_to_timeline_event
+
+    feedback = map_loop_message_to_timeline_event(
+        {
+            "message_type": "feedback_request",
+            "cycle_id": "cycle_content_001",
+            "summary": "请补充发布反馈",
+        }
+    )
+    review = map_loop_message_to_timeline_event(
+        {
+            "message_type": "review_card",
+            "cycle_id": "cycle_content_001",
+            "metrics": {"views": 1200},
+            "summary": "自动复盘完成",
+        }
+    )
+    progress = map_loop_message_to_timeline_event(
+        {
+            "message_type": "progress",
+            "cycle_id": "cycle_content_001",
+            "progress": {"stage": "generating", "percent": 60},
+            "summary": "正在生成草稿",
+        }
+    )
+    complete = map_loop_message_to_timeline_event(
+        {
+            "message_type": "cycle_complete",
+            "cycle_id": "cycle_content_001",
+            "summary": "本轮完成",
+        }
+    )
+
+    assert feedback["card"]["card_type"] == "feedback_request"
+    assert review["card"]["card_type"] == "review_card"
+    assert review["card"]["metrics"] == {"views": 1200}
+    assert progress["card"]["card_type"] == "progress_card"
+    assert progress["card"]["progress"] == {"stage": "generating", "percent": 60}
+    assert complete["card"]["card_type"] == "progress_card"
+    assert complete["card"]["status"] == "cycle_complete"
+
+
+def test_loop_protocol_unknown_future_message_degrades_through_fallback_text():
+    from bridge.runtime_facade.centaur_protocol import map_loop_message_to_timeline_event
+
+    event = map_loop_message_to_timeline_event(
+        {
+            "message_type": "future_card",
+            "cycle_id": "cycle_content_001",
+            "summary": "未来协议消息",
+            "fallback_text": "请在时间线查看最新进展。",
+        }
+    )
+
+    assert event["kind"] == "card"
+    assert event["card"]["card_type"] == "progress_card"
+    assert event["card"]["cycle_id"] == "cycle_content_001"
+    assert event["card"]["fallback_text"] == "请在时间线查看最新进展。"
