@@ -34,7 +34,7 @@ def _encode_chunk(chunk: dict) -> str:
 
 @router.post("/invoke/stream")
 async def stream_compat(req: CompatStreamRequest, request: Request) -> StreamingResponse:
-    runtime = request.app.state.runtime
+    runtime = request.app.state.runtime_facade
     session_id = req.session_id or "hermes-adapter:default"
     agent_profile = req.agent_profile or "default"
 

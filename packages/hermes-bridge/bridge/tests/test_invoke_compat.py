@@ -263,6 +263,15 @@ class TestStreamCompat:
         assert done_markers, "expected [DONE] terminator"
         assert done_chunks[0]["content"] == "测试回复"
 
+        events_resp = await app_client.get("/api/runs/run_000001/events")
+        assert [event["type"] for event in events_resp.json()["events"]] == [
+            "run_started",
+            "done",
+        ]
+        run_stream_resp = await app_client.get("/api/runs/run_000001/events/stream")
+        assert "event: run_started" in run_stream_resp.text
+        assert "event: done" in run_stream_resp.text
+
     @pytest.mark.asyncio
     async def test_stream_emits_deltas_via_callback(self, app_client, mock_agent_class):
         """验证 delta 事件经过 stream_delta_callback 转 SSE。
