@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import traceback
 
 from fastapi import APIRouter, Request
@@ -71,7 +72,22 @@ async def facade_session_context_get(session_id: str, request: Request):
             {"session_id": session_id},
         )
 
-    messages = facade.sessions.get_recent_messages(session_id, token_budget=None)
+    artifact_summaries = list(session.metadata.get("artifact_summaries") or [])
+    messages = []
+    if artifact_summaries:
+        messages.append(
+            {
+                "role": "system",
+                "content": json.dumps(
+                    artifact_summaries,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "metadata": {"section": "artifact_summaries"},
+            }
+        )
+    messages.extend(facade.sessions.get_recent_messages(session_id, token_budget=None))
     approx_token_count = sum(
         facade.sessions.approx_token_count(message["content"])
         for message in messages

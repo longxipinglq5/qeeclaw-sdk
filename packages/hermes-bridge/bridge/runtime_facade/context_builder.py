@@ -76,6 +76,7 @@ class ContextBuilder:
         *,
         prefix: ContextPrefix,
         session_summary: str,
+        artifact_summaries: list[dict[str, Any]] | None = None,
         recent_messages: list[dict[str, Any]],
         current_user_text: str,
         channel_metadata: dict[str, Any] | None = None,
@@ -87,6 +88,19 @@ class ContextBuilder:
                     "role": "system",
                     "content": session_summary,
                     "metadata": {"section": "session_summary"},
+                }
+            )
+        if artifact_summaries:
+            messages.append(
+                {
+                    "role": "system",
+                    "content": json.dumps(
+                        artifact_summaries,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "metadata": {"section": "artifact_summaries"},
                 }
             )
         messages.extend(recent_messages)

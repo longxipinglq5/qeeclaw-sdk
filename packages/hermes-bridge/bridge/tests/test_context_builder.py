@@ -67,3 +67,33 @@ def test_capability_manifest_version_changes_prompt_prefix_hash():
     new_prefix = builder.build_prefix(**new_inputs)
 
     assert old_prefix.prompt_prefix_hash != new_prefix.prompt_prefix_hash
+
+
+def test_context_builder_injects_artifact_summaries_without_prefix_hash_change():
+    from bridge.runtime_facade.context_builder import ContextBuilder
+
+    builder = ContextBuilder()
+    prefix = builder.build_prefix(**_stable_inputs())
+    context = builder.build_messages(
+        prefix=prefix,
+        session_summary="",
+        artifact_summaries=[
+            {
+                "artifact_id": "art_run_000002",
+                "kind": "xiaohongshu_note",
+                "title": "小红书种草文",
+                "summary": "儿童护眼台灯的小红书种草文。",
+                "capability_id": "xiaohongshu_note_writer",
+            }
+        ],
+        recent_messages=[],
+        current_user_text="再帮我生成这个产品的朋友圈",
+        channel_metadata={"source": "web"},
+    )
+
+    artifact_message = context.messages[-2]
+    assert artifact_message["role"] == "system"
+    assert artifact_message["metadata"] == {"section": "artifact_summaries"}
+    assert "art_run_000002" in artifact_message["content"]
+    assert "儿童护眼台灯的小红书种草文" in artifact_message["content"]
+    assert context.prompt_prefix_hash == prefix.prompt_prefix_hash

@@ -179,3 +179,45 @@ async def test_session_context_api_returns_facade_messages_after_invoke():
     ]
     assert missing_response.status_code == 404
     assert missing_response.json()["error"]["code"] == "SESSION_NOT_FOUND"
+
+
+async def test_session_context_api_includes_artifact_summaries_after_skill_run(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "帮我生成儿童护眼台灯的小红书"},
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        response = await client.get(
+            "/api/sessions/edge:owner_1:supervisor:conv_abc/context"
+        )
+
+    assert response.status_code == 200
+    messages = response.json()["messages"]
+    artifact_messages = [
+        message
+        for message in messages
+        if message["metadata"].get("section") == "artifact_summaries"
+    ]
+    assert len(artifact_messages) == 1
+    assert "art_run_000002" in artifact_messages[0]["content"]
+    assert "小红书种草文" in artifact_messages[0]["content"]
