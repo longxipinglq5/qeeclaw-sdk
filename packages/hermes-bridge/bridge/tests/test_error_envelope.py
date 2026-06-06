@@ -45,7 +45,11 @@ async def test_run_kind_unsupported_uses_shared_error_envelope():
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "RUN_KIND_UNSUPPORTED"
-    assert response.json()["error"]["details"] == {"kind": "skill_run"}
+    assert response.json()["error"]["details"] == {
+        "kind": "skill_run",
+        "missing": ["capability_id"],
+        "unexpected": [],
+    }
 
 
 async def test_session_owner_mismatch_uses_shared_error_envelope():

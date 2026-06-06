@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Literal
 
 
@@ -68,14 +68,22 @@ class RuntimeRun(BaseModel):
 
 
 class CreateRunInput(BaseModel):
-    text: str
+    model_config = ConfigDict(extra="allow")
+
+    text: str | None = None
 
 
 class CreateRunRequest(BaseModel):
     kind: RunKind
     session_id: str
     agent_profile: str = "default"
+    parent_run_id: str | None = None
+    capability_id: str | None = None
+    expert_id: str | None = None
+    employee_id: str | None = None
+    goal_id: str | None = None
     input: CreateRunInput
+    output_contract: str | None = None
     context_refs: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -113,7 +121,13 @@ class CreateRunResponse(BaseModel):
     kind: RunKind
     status: RunStatus
     trace_id: str | None = None
+    parent_run_id: str | None = None
+    artifact_id: str | None = None
     urls: RunUrls
+
+    def model_dump(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(*args, **kwargs)
 
 
 class PromptCacheUsage(BaseModel):

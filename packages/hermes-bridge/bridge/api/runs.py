@@ -35,15 +35,38 @@ async def create_run(request: Request) -> JSONResponse:
     try:
         response = await _facade(request).create_run(req)
     except ValueError as exc:
-        if str(exc) == "RUN_KIND_UNSUPPORTED":
+        error = _parse_value_error(exc)
+        if error["code"] == "RUN_KIND_UNSUPPORTED":
             return api_error(
                 "RUN_KIND_UNSUPPORTED",
                 "Run kind is not implemented yet",
                 400,
-                {"kind": req.kind.value},
+                error["details"] or {"kind": req.kind.value},
             )
         raise
+    except KeyError as exc:
+        capability_id = str(exc).strip("'")
+        return api_error(
+            "CAPABILITY_NOT_FOUND",
+            "Capability not found",
+            404,
+            {"capability_id": capability_id},
+        )
     return JSONResponse(response.model_dump(mode="json"))
+
+
+def _parse_value_error(exc: ValueError) -> dict[str, object]:
+    raw = str(exc)
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"code": raw, "details": None}
+    if not isinstance(parsed, dict):
+        return {"code": raw, "details": None}
+    return {
+        "code": str(parsed.get("code") or raw),
+        "details": parsed.get("details"),
+    }
 
 
 @router.get("/api/runs/{run_id}")

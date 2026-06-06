@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 
+from bridge.config import settings
 from bridge.runtime import StreamHandle
+from bridge.runtime_facade.artifacts import JsonArtifactStore
 from bridge.runtime_facade.capabilities import CapabilityRegistry
+from bridge.runtime_facade.cards import build_result_preview_card
 from bridge.runtime_facade.event_bus import EventBus
 from bridge.runtime_facade.models import (
+    CapabilityManifest,
     CreateRunRequest,
     CreateRunResponse,
     PromptCacheUsage,
@@ -29,13 +35,16 @@ class HermesRuntimeFacade:
     explicitly moves each route.
     """
 
-    def __init__(self, legacy_runtime: Any) -> None:
+    def __init__(self, legacy_runtime: Any, artifact_root_dir: str | Path | None = None) -> None:
         self._legacy_runtime = legacy_runtime
         self.store = InMemoryStore()
         self.events = EventBus(self.store)
         self.sessions = SessionStore(self.store)
         self.runs = RunManager(store=self.store, event_bus=self.events)
         self.capabilities = CapabilityRegistry.with_builtin_capabilities()
+        self.artifacts = JsonArtifactStore(
+            artifact_root_dir or (settings.hermes_home_path / "bridge-state")
+        )
         self._last_prompt_prefix_hash_by_session: dict[str, str] = {}
 
     async def invoke_raw(
@@ -141,6 +150,9 @@ class HermesRuntimeFacade:
         }
 
     async def create_run(self, request: CreateRunRequest) -> CreateRunResponse:
+        if request.kind == RunKind.SKILL_RUN:
+            return await self._create_skill_run(request)
+
         if request.kind != RunKind.INVOKE:
             raise ValueError("RUN_KIND_UNSUPPORTED")
 
@@ -163,8 +175,187 @@ class HermesRuntimeFacade:
             kind=request.kind,
             status=run.status if run else RunStatus.COMPLETED,
             trace_id=trace_id,
+            parent_run_id=request.parent_run_id,
             urls=RunUrls.for_run(result["run_id"], request.session_id),
         )
+
+    async def _create_skill_run(self, request: CreateRunRequest) -> CreateRunResponse:
+        validation_error = self._validate_skill_run_fields(request)
+        if validation_error:
+            raise ValueError(json.dumps(validation_error))
+
+        capability = self.capabilities.get_capability(str(request.capability_id))
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+        result = await self._run_skill_invocation(
+            request=request,
+            capability=capability,
+            trace_id=trace_id,
+        )
+        run = self.runs.get(result["run_id"])
+        return CreateRunResponse(
+            run_id=result["run_id"],
+            session_id=request.session_id,
+            kind=request.kind,
+            status=run.status if run else RunStatus.COMPLETED,
+            trace_id=trace_id,
+            parent_run_id=request.parent_run_id,
+            artifact_id=result["artifact_id"],
+            urls=RunUrls.for_run(result["run_id"], request.session_id),
+        )
+
+    def _validate_skill_run_fields(self, request: CreateRunRequest) -> dict[str, Any] | None:
+        missing: list[str] = []
+        unexpected: list[str] = []
+        if not request.capability_id:
+            missing.append("capability_id")
+        for field_name in ("expert_id", "employee_id", "goal_id"):
+            if getattr(request, field_name):
+                unexpected.append(field_name)
+        if not missing and not unexpected:
+            return None
+        return {
+            "code": "RUN_KIND_UNSUPPORTED",
+            "details": {
+                "kind": request.kind.value,
+                "missing": missing,
+                "unexpected": unexpected,
+            },
+        }
+
+    async def _run_skill_invocation(
+        self,
+        *,
+        request: CreateRunRequest,
+        capability: CapabilityManifest,
+        trace_id: str,
+    ) -> dict[str, Any]:
+        instruction = self._skill_instruction(capability, request.input)
+        self.sessions.get_or_create(
+            session_id=request.session_id,
+            agent_profile=capability.hermes_profile,
+        )
+        conversation_history = self.sessions.get_recent_messages(request.session_id)
+        run = self.runs.start_run(
+            session_id=request.session_id,
+            agent_profile=capability.hermes_profile,
+            kind=RunKind.SKILL_RUN,
+            input_text=instruction,
+            trace_id=trace_id,
+            parent_run_id=request.parent_run_id,
+            created_by=request.metadata.get("created_by"),
+            source=request.metadata.get("source"),
+            metadata={
+                **request.metadata,
+                "capability_id": capability.capability_id,
+                "output_contract": request.output_contract,
+            },
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="app_started",
+            payload={
+                "capability_id": capability.capability_id,
+                "title": capability.title,
+                "output_contract": request.output_contract or capability.output_contract,
+            },
+            trace_id=run.trace_id,
+        )
+
+        try:
+            result = await self._legacy_runtime.invoke_raw(
+                session_id=request.session_id,
+                user_text=instruction,
+                agent_profile=capability.hermes_profile,
+                system_prompt=None,
+                conversation_history=conversation_history,
+            )
+        except Exception as exc:
+            self.runs.fail_run(run.run_id, error=str(exc))
+            raise
+
+        usage = self._normalize_prompt_cache_usage(
+            result,
+            session_id=request.session_id,
+            context_length=len(conversation_history) + 1,
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="metering",
+            payload={
+                "usage": usage,
+                "cache_prefix_changed": False,
+                "previous_prompt_prefix_hash": None,
+            },
+            trace_id=run.trace_id,
+        )
+
+        final_response = str(result.get("final_response") or "")
+        artifact_id = f"art_{run.run_id}"
+        artifact = self.artifacts.create_artifact(
+            artifact_id=artifact_id,
+            session_id=request.session_id,
+            run_id=run.run_id,
+            kind=self._artifact_kind_for_capability(capability),
+            title=capability.title,
+            content={"body": final_response},
+            metadata={"capability_id": capability.capability_id},
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="artifact_created",
+            payload={"artifact": artifact.model_dump(mode="json")},
+            trace_id=run.trace_id,
+        )
+
+        card = build_result_preview_card(
+            run_id=run.run_id,
+            title=capability.title,
+            summary=final_response,
+            artifact_ids=[artifact.artifact_id],
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="app_result",
+            payload={"card": card.model_dump(mode="json")},
+            trace_id=run.trace_id,
+        )
+        self.runs.complete_run(
+            run.run_id,
+            result_text=final_response,
+            usage=usage,
+            done_payload={"text": final_response, "usage": usage},
+        )
+        self.sessions.append_turn(
+            request.session_id,
+            user_text=instruction,
+            assistant_text=final_response,
+            metadata={"run_id": run.run_id, "capability_id": capability.capability_id},
+        )
+        return {
+            **result,
+            "run_id": run.run_id,
+            "artifact_id": artifact.artifact_id,
+        }
+
+    @staticmethod
+    def _skill_instruction(capability: CapabilityManifest, input_payload: Any) -> str:
+        payload = input_payload.model_dump(exclude_none=True)
+        return (
+            f"/{capability.slash_command} "
+            f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+        )
+
+    @staticmethod
+    def _artifact_kind_for_capability(capability: CapabilityManifest) -> str:
+        if capability.capability_id == "xiaohongshu_note_writer":
+            return "xiaohongshu_note"
+        if capability.capability_id.startswith("moments_copywriter"):
+            return "moments_copy"
+        return capability.capability_id
 
     def get_run(self, run_id: str) -> RuntimeRun | None:
         return self.runs.get(run_id)
