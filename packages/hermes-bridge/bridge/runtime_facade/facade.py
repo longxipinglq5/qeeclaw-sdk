@@ -66,6 +66,7 @@ class HermesRuntimeFacade:
             session_id=session_id,
             agent_profile=agent_profile,
         )
+        conversation_history = self.sessions.get_recent_messages(session_id)
         run = self.runs.start_run(
             session_id=session_id,
             agent_profile=agent_profile,
@@ -82,6 +83,7 @@ class HermesRuntimeFacade:
                 user_text=user_text,
                 agent_profile=agent_profile,
                 system_prompt=system_prompt,
+                conversation_history=conversation_history,
             )
         except Exception as exc:
             self.runs.fail_run(run.run_id, error=str(exc))
@@ -98,6 +100,12 @@ class HermesRuntimeFacade:
             run.run_id,
             result_text=str(result.get("final_response") or ""),
             usage=self._usage_from_result(result),
+        )
+        self.sessions.append_turn(
+            session_id,
+            user_text=user_text,
+            assistant_text=str(result.get("final_response") or ""),
+            metadata={"run_id": run.run_id},
         )
 
         return {
@@ -151,6 +159,7 @@ class HermesRuntimeFacade:
             session_id=session_id,
             agent_profile=agent_profile,
         )
+        conversation_history = self.sessions.get_recent_messages(session_id)
         run = self.runs.start_run(
             session_id=session_id,
             agent_profile=agent_profile,
@@ -162,6 +171,7 @@ class HermesRuntimeFacade:
                 user_text=user_text,
                 agent_profile=agent_profile,
                 system_prompt=system_prompt,
+                conversation_history=conversation_history,
             )
         except Exception as exc:
             self.runs.fail_run(run.run_id, error=str(exc))
@@ -187,6 +197,12 @@ class HermesRuntimeFacade:
                             run.run_id,
                             result_text=payload,
                             usage={},
+                        )
+                        self.sessions.append_turn(
+                            session_id,
+                            user_text=user_text,
+                            assistant_text=payload,
+                            metadata={"run_id": run.run_id},
                         )
                         await queue.put((event_type, payload))
                         break

@@ -311,6 +311,7 @@ async def test_facade_invoke_raw_wraps_legacy_runtime_and_records_events():
             "user_text": "你好",
             "agent_profile": "edge_supervisor",
             "system_prompt": "你是主管",
+            "conversation_history": [],
         }
     ]
     assert result["final_response"] == "测试回复"
@@ -359,6 +360,7 @@ async def test_facade_stream_raw_wraps_legacy_stream_and_records_events():
             "user_text": "写三句朋友圈文案",
             "agent_profile": "edge_supervisor",
             "system_prompt": None,
+            "conversation_history": [],
         }
     ]
     assert [event.type for event in facade.get_run_events("run_000001")] == [
@@ -366,6 +368,36 @@ async def test_facade_stream_raw_wraps_legacy_stream_and_records_events():
         "token",
         "token",
         "done",
+    ]
+
+
+async def test_facade_invoke_raw_uses_session_store_as_canonical_history():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime()
+    facade = HermesRuntimeFacade(legacy)
+
+    await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="第一轮",
+        agent_profile="edge_supervisor",
+    )
+    await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="第二轮",
+        agent_profile="edge_supervisor",
+    )
+
+    assert legacy.invoke_calls[0]["conversation_history"] == []
+    assert legacy.invoke_calls[1]["conversation_history"] == [
+        {"role": "user", "content": "第一轮", "metadata": {"run_id": "run_000001"}},
+        {"role": "assistant", "content": "测试回复", "metadata": {"run_id": "run_000001"}},
+    ]
+    assert facade.sessions.get_recent_messages("edge:owner_1:supervisor:conv_abc") == [
+        {"role": "user", "content": "第一轮", "metadata": {"run_id": "run_000001"}},
+        {"role": "assistant", "content": "测试回复", "metadata": {"run_id": "run_000001"}},
+        {"role": "user", "content": "第二轮", "metadata": {"run_id": "run_000002"}},
+        {"role": "assistant", "content": "测试回复", "metadata": {"run_id": "run_000002"}},
     ]
 
 

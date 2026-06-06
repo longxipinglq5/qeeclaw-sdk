@@ -183,6 +183,7 @@ class HermesRuntime:
         user_text: str,
         agent_profile: str = "default",
         system_prompt: str | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """兼容 core-sdk HermesAdapter 的非流式调用。
 
@@ -196,9 +197,10 @@ class HermesRuntime:
         result = await asyncio.to_thread(
             agent.run_conversation,
             user_message=user_text,
-            conversation_history=self._history_for(cache_key),
+            conversation_history=conversation_history if conversation_history is not None else self._history_for(cache_key),
         )
-        self._append_history(cache_key, user_text, result)
+        if conversation_history is None:
+            self._append_history(cache_key, user_text, result)
         return result
 
     async def stream_raw(
@@ -207,6 +209,7 @@ class HermesRuntime:
         user_text: str,
         agent_profile: str = "default",
         system_prompt: str | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
     ) -> StreamHandle:
         """兼容 core-sdk HermesAdapter 的流式调用：跳过 scenario 映射，按需注入 system_prompt。"""
         queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
@@ -226,10 +229,13 @@ class HermesRuntime:
                 result = await asyncio.to_thread(
                     agent.run_conversation,
                     user_message=user_text,
-                    conversation_history=self._history_for(f"compat:{session_id}:{agent_profile}"),
+                    conversation_history=conversation_history
+                    if conversation_history is not None
+                    else self._history_for(f"compat:{session_id}:{agent_profile}"),
                 )
                 final = result.get("final_response") or ""
-                self._append_history(f"compat:{session_id}:{agent_profile}", user_text, result)
+                if conversation_history is None:
+                    self._append_history(f"compat:{session_id}:{agent_profile}", user_text, result)
                 await queue.put(("done", final))
             except Exception as exc:
                 logger.exception("stream_raw run_conversation 异常")

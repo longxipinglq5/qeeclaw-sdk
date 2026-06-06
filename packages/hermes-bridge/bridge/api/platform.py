@@ -559,7 +559,16 @@ async def conversations_groups():
 
 
 @router.get("/api/platform/conversations/history")
-async def conversations_history():
+async def conversations_history(request: Request, session_id: str | None = Query(default=None)):
+    if session_id and hasattr(request.app.state, "runtime_facade"):
+        facade_session = request.app.state.runtime_facade.sessions.get(session_id)
+        if facade_session is not None:
+            return _ok(
+                request.app.state.runtime_facade.sessions.get_recent_messages(
+                    session_id,
+                    token_budget=None,
+                )
+            )
     return _ok([])
 
 
