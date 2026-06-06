@@ -44,6 +44,13 @@ class SessionStore:
         session = self._store.get("sessions", session_id)
         return session if isinstance(session, RuntimeSession) else None
 
+    def list(self) -> list[RuntimeSession]:
+        return [
+            session
+            for session in self._store.list("sessions")
+            if isinstance(session, RuntimeSession)
+        ]
+
     def append_message(self, session_id: str, *, role: str, text: str) -> None:
         messages = list(self.list_messages(session_id))
         messages.append({"role": role, "text": text})

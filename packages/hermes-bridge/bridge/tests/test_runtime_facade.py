@@ -361,3 +361,41 @@ async def test_facade_stream_raw_wraps_legacy_stream_and_records_events():
         "token",
         "done",
     ]
+
+
+async def test_run_and_session_rest_apis_read_facade_state():
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime)
+    await app.state.runtime_facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="你好",
+        agent_profile="edge_supervisor",
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        run_resp = await client.get("/api/runs/run_000001")
+        events_resp = await client.get("/api/runs/run_000001/events")
+        sessions_resp = await client.get("/api/sessions")
+        session_resp = await client.get("/api/sessions/edge:owner_1:supervisor:conv_abc")
+        missing_resp = await client.get("/api/runs/run_missing")
+
+    assert run_resp.status_code == 200
+    assert run_resp.json()["run"]["run_id"] == "run_000001"
+    assert events_resp.status_code == 200
+    assert [event["type"] for event in events_resp.json()["events"]] == [
+        "run_started",
+        "metering",
+        "done",
+    ]
+    assert sessions_resp.status_code == 200
+    assert sessions_resp.json()["sessions"][0]["session_id"] == "edge:owner_1:supervisor:conv_abc"
+    assert session_resp.status_code == 200
+    assert session_resp.json()["session"]["agent_profile"] == "edge_supervisor"
+    assert missing_resp.status_code == 404

@@ -19,12 +19,15 @@ from bridge.api.models_invoke import router as models_invoke_router
 from bridge.api.models_mgmt import router as models_mgmt_router
 from bridge.api.platform import router as platform_router
 from bridge.api.profile_context import router as profile_context_router
+from bridge.api.runs import router as runs_router
 from bridge.api.sessions import router as sessions_router
 from bridge.api.stream import router as stream_router
 from bridge.api.stream_compat import router as stream_compat_router
 from bridge.api.tools_list import router as tools_list_router
 from bridge.config import settings
 from bridge.runtime import HermesRuntime
+from bridge.runtime_facade.facade import HermesRuntimeFacade
+from bridge.runtime_facade.store import warn_if_in_memory_store_multi_worker
 from bridge.setup_hermes import ensure_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -41,7 +44,10 @@ async def lifespan(app: FastAPI):
     ensure_hermes_home()
 
     logger.info("创建 HermesRuntime (cache_max=%d)...", settings.cache_max_size)
-    app.state.runtime = HermesRuntime()
+    legacy_runtime = HermesRuntime()
+    app.state.runtime = legacy_runtime
+    app.state.runtime_facade = HermesRuntimeFacade(legacy_runtime)
+    warn_if_in_memory_store_multi_worker(app.state.runtime_facade.store)
 
     logger.info(
         "Bridge 启动: port=%d, agent_dir=%s, hermes_home=%s",
@@ -79,6 +85,9 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Accept"],
     )
 
+    # Facade-owned native run APIs must stay before any future legacy fallback
+    # routers. Existing non-/api routes remain legacy until explicitly migrated.
+    app.include_router(runs_router, tags=["runs"])
     app.include_router(invoke_router, tags=["chat"])
     app.include_router(stream_router, tags=["chat"])
     app.include_router(invoke_compat_router, tags=["compat"])

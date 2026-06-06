@@ -40,6 +40,23 @@ async def session_create(request: Request):
         return JSONResponse({"error": str(exc)}, status_code=500)
 
 
+@router.get("/api/sessions")
+async def facade_sessions_list(request: Request):
+    sessions = [
+        session.model_dump(mode="json")
+        for session in request.app.state.runtime_facade.sessions.list()
+    ]
+    return JSONResponse({"sessions": sessions})
+
+
+@router.get("/api/sessions/{session_id}")
+async def facade_session_get(session_id: str, request: Request):
+    session = request.app.state.runtime_facade.sessions.get(session_id)
+    if session is None:
+        return JSONResponse({"error": "session_not_found"}, status_code=404)
+    return JSONResponse({"session": session.model_dump(mode="json")})
+
+
 @router.post("/sessions/{session_id}/clear")
 async def session_clear(session_id: str):
     try:
