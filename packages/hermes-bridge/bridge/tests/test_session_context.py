@@ -131,3 +131,51 @@ def test_legacy_employee_session_migration_imports_once_from_session_manager():
         {"role": "assistant", "content": "已记录，重点是护眼、学习场景和家长安心。", "metadata": {"migration": "legacy_employee_session"}},
     ]
     assert sessions.get(session.session_id).metadata["migration"]["from_session_id"] == "edge:employee_123"
+
+
+async def test_session_context_api_returns_facade_messages_after_invoke():
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            "/invoke",
+            json={
+                "prompt": "帮我总结这个产品的卖点",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+        response = await client.get(
+            "/api/sessions/edge:owner_1:supervisor:conv_abc/context"
+        )
+        missing_response = await client.get("/api/sessions/session_missing/context")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["session_id"] == "edge:owner_1:supervisor:conv_abc"
+    assert body["message_count"] == 2
+    assert body["approx_token_count"] > 0
+    assert body["prompt_prefix_hash"].startswith("sha256:")
+    assert body["messages"] == [
+        {
+            "role": "user",
+            "content": "帮我总结这个产品的卖点",
+            "metadata": {"run_id": "run_000001"},
+        },
+        {
+            "role": "assistant",
+            "content": "测试回复",
+            "metadata": {"run_id": "run_000001"},
+        },
+    ]
+    assert missing_response.status_code == 404
+    assert missing_response.json()["error"]["code"] == "SESSION_NOT_FOUND"

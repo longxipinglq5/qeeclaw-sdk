@@ -8,6 +8,8 @@ import traceback
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from bridge.api.errors import api_error
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -55,6 +57,34 @@ async def facade_session_get(session_id: str, request: Request):
     if session is None:
         return JSONResponse({"error": "session_not_found"}, status_code=404)
     return JSONResponse({"session": session.model_dump(mode="json")})
+
+
+@router.get("/api/sessions/{session_id}/context")
+async def facade_session_context_get(session_id: str, request: Request):
+    facade = request.app.state.runtime_facade
+    session = facade.sessions.get(session_id)
+    if session is None:
+        return api_error(
+            "SESSION_NOT_FOUND",
+            "Session not found",
+            404,
+            {"session_id": session_id},
+        )
+
+    messages = facade.sessions.get_recent_messages(session_id, token_budget=None)
+    approx_token_count = sum(
+        facade.sessions.approx_token_count(message["content"])
+        for message in messages
+    )
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            "message_count": len(messages),
+            "approx_token_count": approx_token_count,
+            "prompt_prefix_hash": facade._prompt_prefix_hash_for_session(session_id),
+            "messages": messages,
+        }
+    )
 
 
 @router.post("/sessions/{session_id}/clear")
