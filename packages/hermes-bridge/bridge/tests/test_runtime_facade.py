@@ -399,3 +399,39 @@ async def test_run_and_session_rest_apis_read_facade_state():
     assert session_resp.status_code == 200
     assert session_resp.json()["session"]["agent_profile"] == "edge_supervisor"
     assert missing_resp.status_code == 404
+
+
+async def test_run_event_sse_stream_replays_events_and_honors_last_event_id():
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime)
+    await app.state.runtime_facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="你好",
+        agent_profile="edge_supervisor",
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        stream_resp = await client.get("/api/runs/run_000001/events/stream")
+        replay_resp = await client.get(
+            "/api/runs/run_000001/events/stream",
+            headers={"Last-Event-ID": "evt_000001"},
+        )
+
+    assert stream_resp.status_code == 200
+    assert "text/event-stream" in stream_resp.headers["content-type"]
+    assert "id: evt_000001" in stream_resp.text
+    assert "event: run_started" in stream_resp.text
+    assert "event: metering" in stream_resp.text
+    assert "event: done" in stream_resp.text
+
+    assert replay_resp.status_code == 200
+    assert "id: evt_000001" not in replay_resp.text
+    assert "id: evt_000002" in replay_resp.text
+    assert "id: evt_000003" in replay_resp.text
