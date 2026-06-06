@@ -177,6 +177,11 @@ class HermesRuntimeFacade:
                     request=request,
                     selection=selection,
                 )
+            if selection.fallback_behavior == "ask_clarification":
+                return self._create_supervisor_clarification_run(
+                    request=request,
+                    selection=selection,
+                )
 
         trace_id = f"trc_{self.runs.next_run_number:06d}"
         result = await self._invoke_raw_with_run_metadata(
@@ -229,6 +234,17 @@ class HermesRuntimeFacade:
                     else "publish_content",
                     "matched_terms": ["发布"] if "发布" in normalized else ["客户群"],
                 },
+            )
+        if "内容" in normalized:
+            return CapabilitySelection(
+                selection_id=f"sel_{self.runs.next_run_number:06d}",
+                confidence=0.31,
+                reasoning_summary="用户没有说明平台、产品或内容目标，无法可靠选择具体 Skill App。",
+                missing_inputs=["product", "platform", "content_goal"],
+                requires_clarification=True,
+                fallback_behavior="ask_clarification",
+                source="deterministic_rule",
+                metadata={"matched_terms": ["内容"]},
             )
         if "朋友圈" in normalized and ("配图" in normalized or "图" in normalized):
             source_artifact_id = self._latest_artifact_ref(
@@ -401,6 +417,55 @@ class HermesRuntimeFacade:
             done_payload={
                 "approval_id": f"appr_{run.run_id}",
                 "artifact_refs": artifact_refs,
+            },
+        )
+        return CreateRunResponse(
+            run_id=run.run_id,
+            session_id=request.session_id,
+            kind=request.kind,
+            status=RunStatus.COMPLETED,
+            trace_id=trace_id,
+            urls=RunUrls.for_run(run.run_id, request.session_id),
+        )
+
+    def _create_supervisor_clarification_run(
+        self,
+        *,
+        request: CreateRunRequest,
+        selection: CapabilitySelection,
+    ) -> CreateRunResponse:
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+        self.sessions.get_or_create(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+        )
+        run = self.runs.start_run(
+            session_id=request.session_id,
+            agent_profile=request.agent_profile,
+            kind=RunKind.INVOKE,
+            input_text=request.input.text,
+            trace_id=trace_id,
+            created_by=request.metadata.get("created_by"),
+            source=request.metadata.get("source"),
+            metadata=request.metadata,
+        )
+        self.events.append(
+            session_id=request.session_id,
+            run_id=run.run_id,
+            type="clarify_required",
+            payload={
+                "missing_inputs": selection.missing_inputs,
+                "selection": selection.model_dump(mode="json", exclude_none=True),
+            },
+            trace_id=run.trace_id,
+        )
+        self.runs.complete_run(
+            run.run_id,
+            result_text="",
+            usage={},
+            done_payload={
+                "missing_inputs": selection.missing_inputs,
+                "fallback_behavior": selection.fallback_behavior,
             },
         )
         return CreateRunResponse(

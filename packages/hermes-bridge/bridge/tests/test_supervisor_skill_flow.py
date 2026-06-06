@@ -27,6 +27,28 @@ def test_supervisor_route_to_capability_selects_xhs_note_writer(tmp_path):
     assert selection.source == "deterministic_rule"
 
 
+def test_supervisor_route_to_capability_asks_clarification_for_ambiguous_content(tmp_path):
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    facade = HermesRuntimeFacade(FakeLegacyRuntime(), artifact_root_dir=tmp_path)
+
+    selection = facade.supervisor_route_to_capability(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="帮我做一篇内容",
+        context={},
+    )
+
+    assert selection.capability_id is None
+    assert selection.input == {}
+    assert selection.context_refs == []
+    assert selection.confidence == 0.31
+    assert selection.requires_clarification is True
+    assert selection.fallback_behavior == "ask_clarification"
+    assert selection.missing_inputs == ["product", "platform", "content_goal"]
+    assert selection.source == "deterministic_rule"
+
+
 async def test_supervisor_invoke_creates_child_xhs_skill_run_and_refs(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
@@ -236,4 +258,49 @@ async def test_supervisor_publish_followup_requires_approval_without_child_run(t
     approval = events[1]["payload"]
     assert approval["action_kind"] == "publish_content"
     assert approval["artifact_refs"] == ["art_run_000002"]
+    assert missing_child_resp.status_code == 404
+
+
+async def test_supervisor_ambiguous_content_clarifies_without_child_run(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "帮我做一篇内容"},
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        events_resp = await client.get("/api/runs/run_000001/events")
+        missing_child_resp = await client.get("/api/runs/run_000002")
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "run_000001"
+    assert "artifact_id" not in response.json()
+
+    events = events_resp.json()["events"]
+    assert [event["type"] for event in events] == [
+        "run_started",
+        "clarify_required",
+        "done",
+    ]
+    clarify = events[1]["payload"]
+    assert clarify["missing_inputs"] == ["product", "platform", "content_goal"]
+    assert clarify["selection"]["fallback_behavior"] == "ask_clarification"
     assert missing_child_resp.status_code == 404
