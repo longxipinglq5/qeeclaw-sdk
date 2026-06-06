@@ -53,3 +53,6 @@ include = ["bridge*"]
 [tool.pytest.ini_options]
 testpaths = ["bridge/tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: tests that require real provider credentials or external services",
+]
