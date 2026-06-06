@@ -4,8 +4,10 @@ import json
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 from starlette.responses import StreamingResponse
 
+from bridge.api.errors import api_error
 from bridge.runtime_facade.models import CreateRunRequest
 
 router = APIRouter()
@@ -16,20 +18,28 @@ def _facade(request: Request):
 
 
 @router.post("/api/runs")
-async def create_run(req: CreateRunRequest, request: Request) -> JSONResponse:
+async def create_run(request: Request) -> JSONResponse:
+    try:
+        req = CreateRunRequest.model_validate(await request.json())
+    except ValidationError as exc:
+        errors = exc.errors()
+        if any("owner_id" in str(error.get("ctx", {})) or "owner_id" in str(error.get("msg", "")) for error in errors):
+            return api_error(
+                "SESSION_OWNER_MISMATCH",
+                "metadata.owner_id conflicts with session_id owner",
+                400,
+            )
+        return api_error("RUN_REQUEST_INVALID", "Run request is invalid", 422, {"errors": errors})
+
     try:
         response = await _facade(request).create_run(req)
     except ValueError as exc:
         if str(exc) == "RUN_KIND_UNSUPPORTED":
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": {
-                        "code": "RUN_KIND_UNSUPPORTED",
-                        "message": "Run kind is not implemented yet",
-                        "details": {"kind": req.kind.value},
-                    }
-                },
+            return api_error(
+                "RUN_KIND_UNSUPPORTED",
+                "Run kind is not implemented yet",
+                400,
+                {"kind": req.kind.value},
             )
         raise
     return JSONResponse(response.model_dump(mode="json"))
@@ -39,7 +49,7 @@ async def create_run(req: CreateRunRequest, request: Request) -> JSONResponse:
 async def get_run(run_id: str, request: Request) -> JSONResponse:
     run = _facade(request).get_run(run_id)
     if run is None:
-        return JSONResponse(status_code=404, content={"error": "run_not_found"})
+        return api_error("RUN_NOT_FOUND", "Run not found", 404, {"run_id": run_id})
     return JSONResponse({"run": run.model_dump(mode="json")})
 
 
@@ -47,7 +57,7 @@ async def get_run(run_id: str, request: Request) -> JSONResponse:
 async def get_run_events(run_id: str, request: Request) -> JSONResponse:
     run = _facade(request).get_run(run_id)
     if run is None:
-        return JSONResponse(status_code=404, content={"error": "run_not_found"})
+        return api_error("RUN_NOT_FOUND", "Run not found", 404, {"run_id": run_id})
     events = [
         event.model_dump(mode="json")
         for event in _facade(request).get_run_events(run_id)
@@ -60,9 +70,17 @@ async def stream_run_events(run_id: str, request: Request):
     facade = _facade(request)
     run = facade.get_run(run_id)
     if run is None:
-        return JSONResponse(status_code=404, content={"error": "run_not_found"})
+        return api_error("RUN_NOT_FOUND", "Run not found", 404, {"run_id": run_id})
 
     after_event_id = request.headers.get("Last-Event-ID")
+    events = facade.events.list_by_run(run_id)
+    if after_event_id and events and after_event_id not in {event.event_id for event in events}:
+        return api_error(
+            "EVENT_CURSOR_EXPIRED",
+            "Event cursor is outside the retained event range",
+            409,
+            {"run_id": run_id, "last_event_id": after_event_id},
+        )
 
     async def _generator():
         for event in facade.events.list_by_run(run_id, after_event_id=after_event_id):
