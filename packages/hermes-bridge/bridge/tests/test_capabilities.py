@@ -53,3 +53,31 @@ def test_capability_manifest_rejects_unknown_kind():
             permissions=[],
             approval_policy="preview",
         )
+
+
+async def test_capability_api_lists_and_reads_capabilities():
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        list_resp = await client.get("/api/capabilities")
+        detail_resp = await client.get("/api/capabilities/moments_copywriter")
+        missing_resp = await client.get("/api/capabilities/missing")
+
+    assert list_resp.status_code == 200
+    assert "capabilities" in list_resp.json()
+    assert {
+        capability["capability_id"] for capability in list_resp.json()["capabilities"]
+    } >= {"moments_copywriter", "xiaohongshu_note_writer"}
+    assert detail_resp.status_code == 200
+    assert detail_resp.json()["capability"]["slash_command"] == "moments-copy-generator"
+    assert missing_resp.status_code == 404
+    assert missing_resp.json()["error"]["code"] == "CAPABILITY_NOT_FOUND"

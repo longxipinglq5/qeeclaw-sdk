@@ -4,6 +4,7 @@ import asyncio
 from typing import Any
 
 from bridge.runtime import StreamHandle
+from bridge.runtime_facade.capabilities import CapabilityRegistry
 from bridge.runtime_facade.event_bus import EventBus
 from bridge.runtime_facade.models import (
     CreateRunRequest,
@@ -34,6 +35,7 @@ class HermesRuntimeFacade:
         self.events = EventBus(self.store)
         self.sessions = SessionStore(self.store)
         self.runs = RunManager(store=self.store, event_bus=self.events)
+        self.capabilities = CapabilityRegistry.with_builtin_capabilities()
         self._last_prompt_prefix_hash_by_session: dict[str, str] = {}
 
     async def invoke_raw(

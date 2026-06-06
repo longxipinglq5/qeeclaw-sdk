@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from bridge.api.billing import router as billing_router
+from bridge.api.capabilities import router as capabilities_router
 from bridge.api.channels import router as channels_router
 from bridge.api.invoke import router as invoke_router
 from bridge.api.invoke_compat import router as invoke_compat_router
@@ -96,6 +97,7 @@ def create_app() -> FastAPI:
     # Facade-owned native run APIs must stay before any future legacy fallback
     # routers. Existing non-/api routes remain legacy until explicitly migrated.
     app.include_router(runs_router, tags=["runs"])
+    app.include_router(capabilities_router, tags=["capabilities"])
     app.include_router(invoke_router, tags=["chat"])
     app.include_router(stream_router, tags=["chat"])
     app.include_router(invoke_compat_router, tags=["compat"])
