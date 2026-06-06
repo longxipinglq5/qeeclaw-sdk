@@ -7,6 +7,14 @@ from bridge.runtime_facade.models import RunKind, RuntimeRun, RunStatus, utc_now
 from bridge.runtime_facade.store import BaseStore
 
 
+class RunTerminalError(RuntimeError):
+    pass
+
+
+class RunResumeNotAllowedError(RuntimeError):
+    pass
+
+
 class RunManager:
     def __init__(self, *, store: BaseStore, event_bus: EventBus) -> None:
         self._store = store
@@ -96,6 +104,48 @@ class RunManager:
             run_id=updated.run_id,
             type="error",
             payload={"error": error},
+        )
+        return updated
+
+    def cancel_run(self, run_id: str, *, reason: str = "user_cancelled") -> RuntimeRun:
+        run = self._require_run(run_id)
+        if run.status in {RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}:
+            raise RunTerminalError(f"Run is terminal: {run_id}")
+        updated = run.model_copy(
+            update={
+                "status": RunStatus.CANCELLED,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.set("runs", run_id, updated)
+        self._event_bus.append(
+            session_id=updated.session_id,
+            run_id=updated.run_id,
+            type="cancelled",
+            payload={"reason": reason},
+        )
+        return updated
+
+    def resume_run(self, run_id: str) -> RuntimeRun:
+        run = self._require_run(run_id)
+        if run.status not in {
+            RunStatus.CANCELLED,
+            RunStatus.WAITING_CLARIFICATION,
+            RunStatus.WAITING_APPROVAL,
+        }:
+            raise RunResumeNotAllowedError(f"Run cannot resume from {run.status.value}")
+        updated = run.model_copy(
+            update={
+                "status": RunStatus.RUNNING,
+                "updated_at": utc_now(),
+            }
+        )
+        self._store.set("runs", run_id, updated)
+        self._event_bus.append(
+            session_id=updated.session_id,
+            run_id=updated.run_id,
+            type="run_resumed",
+            payload={"status": updated.status.value},
         )
         return updated
 

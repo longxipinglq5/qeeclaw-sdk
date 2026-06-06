@@ -167,3 +167,73 @@ async def test_post_api_runs_rejects_unsupported_kind_until_later_plans():
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "RUN_KIND_UNSUPPORTED"
+
+
+def test_run_manager_cancel_and_resume_state_guards():
+    from bridge.runtime_facade.event_bus import EventBus
+    from bridge.runtime_facade.models import RunStatus
+    from bridge.runtime_facade.run_manager import RunManager, RunTerminalError
+    from bridge.runtime_facade.store import InMemoryStore
+
+    store = InMemoryStore()
+    events = EventBus(store)
+    runs = RunManager(store=store, event_bus=events)
+
+    run = runs.start_run(session_id="session_1", agent_profile="edge_supervisor")
+    cancelled = runs.cancel_run(run.run_id, reason="user_cancelled")
+    assert cancelled.status == RunStatus.CANCELLED
+    assert [event.type for event in events.list_by_run(run.run_id)] == [
+        "run_started",
+        "cancelled",
+    ]
+
+    resumed = runs.resume_run(run.run_id)
+    assert resumed.status == RunStatus.RUNNING
+    assert [event.type for event in events.list_by_run(run.run_id)] == [
+        "run_started",
+        "cancelled",
+        "run_resumed",
+    ]
+
+    completed = runs.start_run(session_id="session_1", agent_profile="edge_supervisor")
+    runs.complete_run(completed.run_id, result_text="done")
+    with pytest.raises(RunTerminalError):
+        runs.cancel_run(completed.run_id)
+
+
+async def test_cancel_and_resume_run_apis_use_explicit_state_contracts():
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime)
+    app.state.runtime_facade.runs.start_run(
+        session_id="edge:owner_1:supervisor:conv_cancel",
+        agent_profile="edge_supervisor",
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        cancel_resp = await client.post("/api/runs/run_000001/cancel")
+        resume_resp = await client.post("/api/runs/run_000001/resume")
+        await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "帮我总结"},
+                "metadata": {"owner_id": "owner_1"},
+            },
+        )
+        terminal_cancel_resp = await client.post("/api/runs/run_000002/cancel")
+
+    assert cancel_resp.status_code == 200
+    assert cancel_resp.json()["run"]["status"] == "cancelled"
+    assert resume_resp.status_code == 200
+    assert resume_resp.json()["run"]["status"] == "running"
+    assert terminal_cancel_resp.status_code == 409
+    assert terminal_cancel_resp.json()["error"]["code"] == "RUN_TERMINAL"

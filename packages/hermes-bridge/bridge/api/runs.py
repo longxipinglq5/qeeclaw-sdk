@@ -9,6 +9,7 @@ from starlette.responses import StreamingResponse
 
 from bridge.api.errors import api_error
 from bridge.runtime_facade.models import CreateRunRequest
+from bridge.runtime_facade.run_manager import RunResumeNotAllowedError, RunTerminalError
 
 router = APIRouter()
 
@@ -50,6 +51,28 @@ async def get_run(run_id: str, request: Request) -> JSONResponse:
     run = _facade(request).get_run(run_id)
     if run is None:
         return api_error("RUN_NOT_FOUND", "Run not found", 404, {"run_id": run_id})
+    return JSONResponse({"run": run.model_dump(mode="json")})
+
+
+@router.post("/api/runs/{run_id}/cancel")
+async def cancel_run(run_id: str, request: Request) -> JSONResponse:
+    try:
+        run = _facade(request).runs.cancel_run(run_id)
+    except KeyError:
+        return api_error("RUN_NOT_FOUND", "Run not found", 404, {"run_id": run_id})
+    except RunTerminalError:
+        return api_error("RUN_TERMINAL", "Run is already terminal", 409, {"run_id": run_id})
+    return JSONResponse({"run": run.model_dump(mode="json")})
+
+
+@router.post("/api/runs/{run_id}/resume")
+async def resume_run(run_id: str, request: Request) -> JSONResponse:
+    try:
+        run = _facade(request).runs.resume_run(run_id)
+    except KeyError:
+        return api_error("RUN_NOT_FOUND", "Run not found", 404, {"run_id": run_id})
+    except RunResumeNotAllowedError:
+        return api_error("RUN_RESUME_NOT_ALLOWED", "Run cannot be resumed", 409, {"run_id": run_id})
     return JSONResponse({"run": run.model_dump(mode="json")})
 
 
