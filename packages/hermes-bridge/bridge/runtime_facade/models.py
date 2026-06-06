@@ -199,6 +199,31 @@ class LinkedSession(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class ApprovalEffect(BaseModel):
+    action_kind: str
+    outbox_ids: list[str] = Field(default_factory=list)
+    memory_write: dict[str, Any] | None = None
+    form_submission: dict[str, Any] | None = None
+    automation_rule: dict[str, Any] | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApprovalRecord(BaseModel):
+    approval_id: str
+    run_id: str
+    session_id: str
+    action_kind: str
+    gate_type: str
+    status: Literal["pending", "approved", "denied", "revision_requested"]
+    summary: str
+    effect: ApprovalEffect
+    decision: Literal["approved", "denied", "revision_requested"] | None = None
+    decided_by: str | None = None
+    note: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    decided_at: datetime | None = None
+
+
 class RuntimeArtifact(BaseModel):
     artifact_id: str
     session_id: str
