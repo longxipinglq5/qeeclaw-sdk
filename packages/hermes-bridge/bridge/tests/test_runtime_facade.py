@@ -70,6 +70,7 @@ def test_runtime_models_have_stable_defaults_and_serialization():
         "event_id": "evt_001",
         "session_id": "edge:owner_1:supervisor:conv_abc",
         "run_id": "run_inv_001",
+        "trace_id": None,
         "type": "run_started",
         "payload": {"kind": "invoke"},
         "created_at": _json_datetime(event.created_at),

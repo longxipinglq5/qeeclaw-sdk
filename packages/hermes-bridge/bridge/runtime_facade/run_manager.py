@@ -53,6 +53,7 @@ class RunManager:
             run_id=run.run_id,
             type="run_started",
             payload={"kind": kind.value, "status": run.status.value},
+            trace_id=run.trace_id,
         )
         return run
 
@@ -86,6 +87,7 @@ class RunManager:
             run_id=updated.run_id,
             type="done",
             payload={"text": result_text, "usage": updated.usage},
+            trace_id=updated.trace_id,
         )
         return updated
 
@@ -104,6 +106,7 @@ class RunManager:
             run_id=updated.run_id,
             type="error",
             payload={"error": error},
+            trace_id=updated.trace_id,
         )
         return updated
 
@@ -123,6 +126,7 @@ class RunManager:
             run_id=updated.run_id,
             type="cancelled",
             payload={"reason": reason},
+            trace_id=updated.trace_id,
         )
         return updated
 
@@ -146,6 +150,7 @@ class RunManager:
             run_id=updated.run_id,
             type="run_resumed",
             payload={"status": updated.status.value},
+            trace_id=updated.trace_id,
         )
         return updated
 

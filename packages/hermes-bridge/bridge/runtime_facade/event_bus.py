@@ -18,11 +18,13 @@ class EventBus:
         run_id: str,
         type: str,
         payload: dict[str, Any] | None = None,
+        trace_id: str | None = None,
     ) -> RuntimeEvent:
         event = RuntimeEvent(
             event_id=self._create_event_id(),
             session_id=session_id,
             run_id=run_id,
+            trace_id=trace_id,
             type=type,
             payload=payload or {},
         )

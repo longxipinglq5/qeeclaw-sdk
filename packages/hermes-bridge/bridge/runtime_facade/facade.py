@@ -92,6 +92,7 @@ class HermesRuntimeFacade:
             run_id=run.run_id,
             type="metering",
             payload=self._usage_from_result(result),
+            trace_id=run.trace_id,
         )
         self.runs.complete_run(
             run.run_id,
@@ -178,6 +179,7 @@ class HermesRuntimeFacade:
                             run_id=run.run_id,
                             type="token",
                             payload={"text": payload},
+                            trace_id=run.trace_id,
                         )
                         await queue.put((event_type, payload))
                     elif event_type == "done":

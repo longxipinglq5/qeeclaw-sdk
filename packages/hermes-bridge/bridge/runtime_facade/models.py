@@ -33,6 +33,7 @@ class RuntimeEvent(BaseModel):
     event_id: str
     session_id: str
     run_id: str
+    trace_id: str | None = None
     type: str
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
