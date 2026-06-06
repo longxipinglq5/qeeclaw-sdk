@@ -477,6 +477,7 @@ class HermesRuntimeFacade:
             },
             trace_id=run.trace_id,
         )
+        self._emit_skill_tool_events(request=request, capability=capability, run=run)
 
         final_response = str(result.get("final_response") or "")
         artifact_id = f"art_{run.run_id}"
@@ -552,6 +553,31 @@ class HermesRuntimeFacade:
         payload = input_payload.model_dump(exclude_none=True)
         source_artifact_id = payload.get("source_artifact_id")
         return {"source_artifact_id": source_artifact_id} if source_artifact_id else {}
+
+    def _emit_skill_tool_events(
+        self,
+        *,
+        request: CreateRunRequest,
+        capability: CapabilityManifest,
+        run: RuntimeRun,
+    ) -> None:
+        if capability.capability_id != "moments_copywriter_with_image":
+            return
+        for tool_name in ("朋友圈文案生成", "配图生成"):
+            self.events.append(
+                session_id=request.session_id,
+                run_id=run.run_id,
+                type="tool_started",
+                payload={"tool_name": tool_name},
+                trace_id=run.trace_id,
+            )
+            self.events.append(
+                session_id=request.session_id,
+                run_id=run.run_id,
+                type="tool_completed",
+                payload={"tool_name": tool_name},
+                trace_id=run.trace_id,
+            )
 
     def get_run(self, run_id: str) -> RuntimeRun | None:
         return self.runs.get(run_id)

@@ -157,9 +157,24 @@ async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tm
         "run_started",
         "app_started",
         "metering",
+        "tool_started",
+        "tool_completed",
+        "tool_started",
+        "tool_completed",
         "artifact_created",
         "app_result",
         "done",
+    ]
+    tool_events = [
+        event["payload"]["tool_name"]
+        for event in child_events
+        if event["type"] in {"tool_started", "tool_completed"}
+    ]
+    assert tool_events == [
+        "朋友圈文案生成",
+        "朋友圈文案生成",
+        "配图生成",
+        "配图生成",
     ]
 
     artifact = app.state.runtime_facade.artifacts.get_artifact("art_run_000004")
