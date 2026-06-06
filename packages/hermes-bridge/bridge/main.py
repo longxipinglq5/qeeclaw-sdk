@@ -28,6 +28,7 @@ from bridge.api.stream import router as stream_router
 from bridge.api.stream_compat import router as stream_compat_router
 from bridge.api.timeline import router as timeline_router
 from bridge.api.tools_list import router as tools_list_router
+from bridge.api.wechat import router as wechat_router
 from bridge.config import settings
 from bridge.runtime import HermesRuntime
 from bridge.runtime_facade.facade import HermesRuntimeFacade
@@ -118,6 +119,7 @@ def create_app() -> FastAPI:
     app.include_router(billing_router, tags=["billing"])
     app.include_router(platform_router, tags=["platform"])
     app.include_router(profile_context_router, tags=["profile-context"])
+    app.include_router(wechat_router, tags=["wechat"])
 
     @app.get("/health", response_model=HealthResponse)
     async def health():

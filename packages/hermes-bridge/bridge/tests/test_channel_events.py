@@ -368,6 +368,11 @@ async def test_app_im_free_text_invokes_supervisor_and_returns_renderable_reply(
     assert response.json()["reply"] == {"text": "收到，我会继续推进。"}
     assert response.json()["run_id"] == "run_000001"
     assert "accepted_action" not in response.json()
+    timeline_events = app.state.runtime_facade.timeline.list_session(supervisor_session_id).events
+    assert [(event.kind, event.role, event.text) for event in timeline_events] == [
+        ("message", "user", "请用一句话回复收到"),
+        ("message", "assistant", "收到，我会继续推进。"),
+    ]
     assert app.state.runtime.invoke_calls == [
         {
             "session_id": supervisor_session_id,

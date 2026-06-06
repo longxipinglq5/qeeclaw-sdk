@@ -33,3 +33,166 @@ def test_wechat_webhook():
 
 if __name__ == "__main__":
     test_wechat_webhook()
+import json
+import sys
+import types
+
+
+def test_incoming_wechat_message_routes_through_edge_app_im(monkeypatch):
+    import wechat_gateway
+
+    captured_requests = []
+    sent_messages = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "mode": "sync_reply",
+                "run_id": "run_001",
+                "reply": {"text": "Edge 已收到微信消息"},
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured_requests.append({
+            "url": request.full_url,
+            "body": json.loads(request.data.decode("utf-8")),
+            "timeout": timeout,
+        })
+        return FakeResponse()
+
+    async def fake_send_weixin_direct(*, extra, token, chat_id, message, media_files):
+        sent_messages.append({
+            "extra": extra,
+            "token": token,
+            "chat_id": chat_id,
+            "message": message,
+            "media_files": media_files,
+        })
+        return {"success": True}
+
+    fake_weixin_module = types.ModuleType("gateway.platforms.weixin")
+    fake_weixin_module.send_weixin_direct = fake_send_weixin_direct
+    monkeypatch.setitem(sys.modules, "gateway.platforms.weixin", fake_weixin_module)
+    monkeypatch.setenv("WEIXIN_ACCOUNT_ID", "acct_001")
+    monkeypatch.setenv("WEIXIN_TOKEN", "token_001")
+    monkeypatch.setenv("WEIXIN_BASE_URL", "https://weixin.example.test")
+    monkeypatch.setenv("WEIXIN_AI_INVOKE_URL", "http://127.0.0.1:21748/api/channels/events")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    event = types.SimpleNamespace(
+        source=types.SimpleNamespace(user_id="wx_user_001", chat_id="wx_chat_001"),
+        text="测试微信到 Edge",
+    )
+
+    asyncio_run = __import__("asyncio").run
+    asyncio_run(wechat_gateway._handle_incoming_message(event))
+
+    assert captured_requests == [
+        {
+            "url": "http://127.0.0.1:21748/api/channels/events",
+            "body": {
+                "channel_key": "app_im",
+                "conversation_key": "main",
+                "external_message_id": "wechat:wx_chat_001:wx_user_001:测试微信到 Edge",
+                "sender_id": "owner_default",
+                "sender_name": "wx_user_001",
+                "direction": "inbound",
+                "content": "测试微信到 Edge",
+                "sync_reply_timeout_ms": 60000,
+                "metadata": {
+                    "supervisor_session_id": "edge:owner_default:supervisor:main",
+                    "source_channel_key": "wechat_personal_openclaw",
+                    "source_chat_id": "wx_chat_001",
+                    "source_sender_id": "wx_user_001",
+                    "action": {"type": "free_text", "text": "测试微信到 Edge"},
+                },
+            },
+            "timeout": 60.0,
+        }
+    ]
+    assert sent_messages[0]["chat_id"] == "wx_chat_001"
+    assert sent_messages[0]["message"] == "Edge 已收到微信消息"
+
+
+def test_send_message_loads_saved_weixin_credentials(monkeypatch, tmp_path):
+    import wechat_gateway
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text(
+        "\n".join(
+            [
+                "WEIXIN_ACCOUNT_ID=acct_saved",
+                "WEIXIN_TOKEN=token_saved",
+                "WEIXIN_BASE_URL=https://weixin.saved.test",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    sent_messages = []
+
+    async def fake_send_weixin_direct(*, extra, token, chat_id, message, media_files):
+        sent_messages.append({
+            "extra": extra,
+            "token": token,
+            "chat_id": chat_id,
+            "message": message,
+            "media_files": media_files,
+        })
+        return {"success": True}
+
+    fake_weixin_module = types.ModuleType("gateway.platforms.weixin")
+    fake_weixin_module.send_weixin_direct = fake_send_weixin_direct
+    monkeypatch.setitem(sys.modules, "gateway.platforms.weixin", fake_weixin_module)
+    monkeypatch.setattr(wechat_gateway, "_get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.delenv("WEIXIN_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("WEIXIN_TOKEN", raising=False)
+    monkeypatch.delenv("WEIXIN_BASE_URL", raising=False)
+
+    result = wechat_gateway.send_message("wx_chat_001", "Edge 发微信测试")
+
+    assert result == {"success": True}
+    assert sent_messages == [
+        {
+            "extra": {
+                "account_id": "acct_saved",
+                "base_url": "https://weixin.saved.test",
+            },
+            "token": "token_saved",
+            "chat_id": "wx_chat_001",
+            "message": "Edge 发微信测试",
+            "media_files": None,
+        }
+    ]
+
+
+def test_list_recent_chat_ids_returns_context_token_keys(monkeypatch, tmp_path):
+    import wechat_gateway
+
+    hermes_home = tmp_path / "hermes"
+    accounts_dir = hermes_home / "weixin" / "accounts"
+    accounts_dir.mkdir(parents=True)
+    (hermes_home / ".env").write_text(
+        "WEIXIN_ACCOUNT_ID=acct_saved\nWEIXIN_TOKEN=token_saved\n",
+        encoding="utf-8",
+    )
+    (accounts_dir / "acct_saved.context-tokens.json").write_text(
+        json.dumps({
+            "wx_chat_001": "token_value_001",
+            "wx_chat_002": "token_value_002",
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(wechat_gateway, "_get_hermes_home", lambda: str(hermes_home))
+    monkeypatch.delenv("WEIXIN_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("WEIXIN_TOKEN", raising=False)
+
+    assert wechat_gateway.list_recent_chat_ids(limit=1) == ["wx_chat_001"]

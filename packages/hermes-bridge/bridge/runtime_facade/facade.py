@@ -150,6 +150,13 @@ class HermesRuntimeFacade:
             source=source,
             metadata=metadata,
         )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="message",
+            payload={"role": "user", "text": user_text},
+            trace_id=run.trace_id,
+        )
         try:
             result = await self._legacy_runtime.invoke_raw(
                 session_id=session_id,
@@ -194,6 +201,13 @@ class HermesRuntimeFacade:
                 "text": str(result.get("final_response") or ""),
                 "usage": usage,
             },
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="message",
+            payload={"role": "assistant", "text": str(result.get("final_response") or "")},
+            trace_id=run.trace_id,
         )
         self.sessions.append_turn(
             session_id,
