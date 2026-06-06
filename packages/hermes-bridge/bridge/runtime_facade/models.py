@@ -140,3 +140,45 @@ class CapabilityManifest(BaseModel):
     slash_command: str
     permissions: list[str] = Field(default_factory=list)
     approval_policy: str = "preview"
+
+
+class RuntimeArtifact(BaseModel):
+    artifact_id: str
+    session_id: str
+    run_id: str
+    kind: str
+    title: str
+    content: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class CardManifest(BaseModel):
+    card_id: str
+    card_type: Literal[
+        "result_preview",
+        "artifact_reference",
+        "approval_request",
+        "plan_card",
+        "draft_card",
+        "publish_card",
+        "feedback_request",
+        "review_card",
+        "memory_card",
+        "progress_card",
+        "error_card",
+    ]
+    title: str
+    summary: str = ""
+    body: str | None = None
+    artifact_ids: list[str] = Field(default_factory=list)
+    run_id: str
+    cycle_id: str | None = None
+    approval_id: str | None = None
+    action_kind: str | None = None
+    status: str | None = None
+    progress: dict[str, Any] | None = None
+    metrics: dict[str, Any] | None = None
+    actions: list[dict[str, Any]] = Field(default_factory=list)
+    fallback_text: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
