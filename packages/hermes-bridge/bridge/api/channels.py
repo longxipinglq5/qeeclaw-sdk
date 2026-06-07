@@ -51,17 +51,37 @@ async def post_channel_event(request: Request) -> JSONResponse:
 
     action = ((body.get("metadata") or {}).get("action") or {}) if isinstance(body.get("metadata"), dict) else {}
     if _is_app_im_free_text(body, action):
-        result = await facade.invoke_app_im_free_text(
-            session_id=session_id,
-            user_text=str(body.get("content") or ""),
-            agent_profile="edge_supervisor",
-            metadata={
-                "owner_id": str(body.get("sender_id") or ""),
-                "conversation_id": str(body.get("conversation_key") or ""),
-                "channel_key": str(body.get("channel_key") or ""),
-                "external_message_id": str(body.get("external_message_id") or ""),
-            },
+        invoke_task = asyncio.create_task(
+            facade.invoke_app_im_free_text(
+                session_id=session_id,
+                user_text=str(body.get("content") or ""),
+                agent_profile="edge_supervisor",
+                metadata={
+                    "owner_id": str(body.get("sender_id") or ""),
+                    "conversation_id": str(body.get("conversation_key") or ""),
+                    "channel_key": str(body.get("channel_key") or ""),
+                    "external_message_id": str(body.get("external_message_id") or ""),
+                },
+            )
         )
+        sync_reply_timeout_ms = int(body.get("sync_reply_timeout_ms") or 0)
+        if sync_reply_timeout_ms > 0:
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(invoke_task),
+                    timeout=sync_reply_timeout_ms / 1000,
+                )
+            except asyncio.TimeoutError:
+                _schedule_app_im_free_text_followup(invoke_task, body)
+                return JSONResponse(
+                    {
+                        "mode": "accepted_async",
+                        "reply": {"text": "收到，正在生成，完成后发你。"},
+                        "outbox_followup": _has_wechat_followup_target(body),
+                    }
+                )
+        else:
+            result = await invoke_task
         return JSONResponse(
             {
                 "mode": "sync_reply",
@@ -165,6 +185,79 @@ def _action_conflicts_with_content(action_type: str, content: str) -> bool:
 
 def _is_app_im_free_text(body: dict, action: dict) -> bool:
     return str(body.get("channel_key") or "") == "app_im" and str(action.get("type") or "") == "free_text"
+
+
+def _has_wechat_followup_target(body: dict) -> bool:
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    return (
+        str(metadata.get("source_channel_key") or "") == "wechat_personal_openclaw"
+        and bool(str(metadata.get("source_chat_id") or ""))
+    )
+
+
+def _schedule_app_im_free_text_followup(task: asyncio.Task, body: dict) -> None:
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    if not _has_wechat_followup_target(body):
+        return
+
+    chat_id = str(metadata.get("source_chat_id") or "")
+
+    async def _send_when_done() -> None:
+        try:
+            result = await task
+            reply_text = _wechat_followup_text_from_result(result)
+            if not reply_text:
+                logger.warning("[channels] app_im followup skipped empty reply for chat_id=%s", chat_id)
+                return
+            send_result = await asyncio.to_thread(
+                _send_wechat_followup_message,
+                chat_id=chat_id,
+                message=reply_text,
+                media_files=None,
+            )
+            logger.info("[channels] app_im followup sent to chat_id=%s: %s", chat_id, send_result)
+        except Exception as exc:
+            logger.error("[channels] app_im followup failed for chat_id=%s: %s", chat_id, exc)
+            traceback.print_exc()
+
+    asyncio.create_task(_send_when_done())
+
+
+def _wechat_followup_text_from_result(result: dict) -> str:
+    text = str(result.get("renderable_reply_text") or result.get("final_response") or "").strip()
+    if not text:
+        return ""
+
+    try:
+        parsed = __import__("json").loads(text)
+    except Exception:
+        return text
+
+    if not isinstance(parsed, dict):
+        return text
+    if str(parsed.get("card_type") or "") != "result_preview":
+        return text
+
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else {}
+    full_output = str(data.get("full_output") or "").strip()
+    if full_output:
+        return full_output
+    speech = str(parsed.get("speech") or "").strip()
+    preview = str(data.get("preview") or "").strip()
+    return "\n\n".join(part for part in [speech, preview] if part)
+
+
+def _send_wechat_followup_message(*, chat_id: str, message: str, media_files=None) -> dict:
+    import bridge_server as _bs
+
+    _bs._ensure_hermes_on_path()
+    import wechat_gateway
+
+    return wechat_gateway.send_message(
+        chat_id=chat_id,
+        message=message,
+        media_files=media_files,
+    )
 
 
 def _append_timeline_conflict(facade, session_id: str, body: dict, action: dict) -> None:

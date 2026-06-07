@@ -595,6 +595,8 @@ def _build_wechat_date_context() -> str:
 def _build_wechat_app_im_event(text: str, sender_id: str, chat_id: str) -> Dict[str, Any]:
     owner_id = os.environ.get("WEIXIN_EDGE_OWNER_ID", "owner_default")
     conversation_id = os.environ.get("WEIXIN_EDGE_CONVERSATION_ID", "main")
+    http_timeout = float(os.environ.get("WEIXIN_AI_TIMEOUT", "60"))
+    sync_timeout = float(os.environ.get("WEIXIN_AI_SYNC_REPLY_TIMEOUT", str(max(1, http_timeout - 5))))
     return {
         "channel_key": "app_im",
         "conversation_key": conversation_id,
@@ -603,7 +605,7 @@ def _build_wechat_app_im_event(text: str, sender_id: str, chat_id: str) -> Dict[
         "sender_name": sender_id,
         "direction": "inbound",
         "content": text,
-        "sync_reply_timeout_ms": int(float(os.environ.get("WEIXIN_AI_TIMEOUT", "60")) * 1000),
+        "sync_reply_timeout_ms": int(sync_timeout * 1000),
         "metadata": {
             "supervisor_session_id": f"edge:{owner_id}:supervisor:{conversation_id}",
             "source_channel_key": "wechat_personal_openclaw",
@@ -642,7 +644,10 @@ def _sanitize_wechat_outbound_reply(text: str) -> str:
         parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
             card_type = str(parsed.get("card_type") or "")
-            if card_type in {"result_preview", "operation_log", "work_plan", "executing"}:
+            if card_type == "result_preview":
+                card_text = _result_preview_text_for_wechat(parsed)
+                return _sanitize_wechat_outbound_reply(card_text) if card_text else fallback
+            if card_type in {"operation_log", "work_plan", "executing"}:
                 return fallback
     except Exception:
         pass
@@ -664,6 +669,16 @@ def _sanitize_wechat_outbound_reply(text: str) -> str:
         suffix = "\n\n完整内容已在 Edge 主对话里生成。"
         return cleaned[: max(0, max_chars - len(suffix))].rstrip() + suffix
     return cleaned
+
+
+def _result_preview_text_for_wechat(card: Dict[str, Any]) -> str:
+    data = card.get("data") if isinstance(card.get("data"), dict) else {}
+    full_output = str(data.get("full_output") or "").strip()
+    if full_output:
+        return full_output
+    speech = str(card.get("speech") or "").strip()
+    preview = str(data.get("preview") or "").strip()
+    return "\n\n".join(part for part in [speech, preview] if part)
 
 
 def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:

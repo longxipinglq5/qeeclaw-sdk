@@ -78,12 +78,16 @@ def _migrate_legacy_memories(home: Path) -> None:
 
 def validate_hermes_agent_version(agent_dir: Path | None = None) -> None:
     agent_path = agent_dir or settings.hermes_agent_path
+    expected = settings.hermes_agent_required_tag
+    if str(expected).lower() in {"skip", "none", "disabled"}:
+        logger.info("hermes-agent tag 校验已通过 HERMES_AGENT_REQUIRED_TAG=%s 跳过: %s", expected, agent_path)
+        return
+
     git_marker = agent_path / ".git"
     if not git_marker.exists():
         logger.info("hermes-agent 非 git checkout，跳过 tag 校验: %s", agent_path)
         return
 
-    expected = settings.hermes_agent_required_tag
     try:
         result = subprocess.run(
             ["git", "-C", str(agent_path), "describe", "--tags", "--exact-match"],

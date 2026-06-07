@@ -104,7 +104,7 @@ def test_incoming_wechat_message_routes_through_edge_app_im(monkeypatch):
                 "sender_name": "wx_user_001",
                 "direction": "inbound",
                 "content": "测试微信到 Edge",
-                "sync_reply_timeout_ms": 60000,
+                "sync_reply_timeout_ms": 55000,
                 "metadata": {
                     "supervisor_session_id": "edge:owner_default:supervisor:main",
                     "source_channel_key": "wechat_personal_openclaw",
@@ -274,3 +274,21 @@ def test_wechat_sync_reply_keeps_long_natural_language_question(monkeypatch):
 
     assert "你想先定哪个文案版本" in sanitized
     assert "已收到，结果已在 Edge 主对话里生成。" not in sanitized
+
+
+def test_wechat_sync_reply_unwraps_safe_result_preview_card():
+    import wechat_gateway
+
+    result_preview = {
+        "card_type": "result_preview",
+        "speech": "内容已生成。",
+        "data": {
+            "title": "朋友圈文案",
+            "preview": "预览文本",
+            "full_output": "朋友圈文案：\n马尔代夫的蓝，专治加班后遗症。\n\n配图：https://example.test/image.jpg",
+        },
+    }
+
+    sanitized = wechat_gateway._sanitize_wechat_outbound_reply(json.dumps(result_preview, ensure_ascii=False))
+
+    assert sanitized == "朋友圈文案：\n马尔代夫的蓝，专治加班后遗症。\n\n配图：https://example.test/image.jpg"

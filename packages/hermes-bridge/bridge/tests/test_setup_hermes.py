@@ -162,6 +162,19 @@ class TestHermesAgentVersionLock:
         with pytest.raises(HermesAgentVersionError, match="v2026.5.29.2"):
             validate_hermes_agent_version(agent_dir)
 
+    def test_allows_explicit_skip_for_local_integration_agent(self, tmp_path, monkeypatch):
+        agent_dir = tmp_path / "hermes-agent"
+        agent_dir.mkdir()
+        (agent_dir / ".git").write_text("gitdir: ../.git/worktrees/hermes-agent\n", encoding="utf-8")
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("git should not be called when version lock is skipped")
+
+        monkeypatch.setattr(subprocess, "run", fail_if_called)
+        monkeypatch.setattr("bridge.setup_hermes.settings.hermes_agent_required_tag", "skip")
+
+        validate_hermes_agent_version(agent_dir)
+
     def test_skips_release_directory_without_git_metadata(self, tmp_path, monkeypatch):
         agent_dir = tmp_path / "hermes-agent"
         agent_dir.mkdir()

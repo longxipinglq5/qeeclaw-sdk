@@ -384,6 +384,89 @@ async def test_app_im_free_text_invokes_supervisor_and_returns_renderable_reply(
     ]
 
 
+async def test_app_im_free_text_times_out_with_async_wechat_followup(tmp_path, monkeypatch):
+    import asyncio
+
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    sent_messages = []
+
+    def fake_send_message(*, chat_id, message, media_files=None):
+        sent_messages.append({"chat_id": chat_id, "message": message, "media_files": media_files})
+        return {"success": True, "message_id": "wx_reply_001"}
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    async def slow_invoke_app_im_free_text(**kwargs):
+        await asyncio.sleep(0.05)
+        return {
+            "run_id": "run_late_001",
+            "artifact_id": None,
+            "renderable_reply_text": "搞定。这是朋友圈文案和配图链接。",
+            "final_response": "搞定。这是朋友圈文案和配图链接。",
+        }
+
+    monkeypatch.setattr(app.state.runtime_facade, "invoke_app_im_free_text", slow_invoke_app_im_free_text)
+    monkeypatch.setattr("bridge.api.channels._send_wechat_followup_message", fake_send_message)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_free_text_timeout_001", "帮我写一个假装在马尔代夫旅游的朋友圈，配一张图"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "sync_reply_timeout_ms": 10,
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "source_channel_key": "wechat_personal_openclaw",
+                    "source_chat_id": "wx_chat_001",
+                    "action": {"type": "free_text", "text": "帮我写一个假装在马尔代夫旅游的朋友圈，配一张图"},
+                },
+            },
+        )
+        await asyncio.sleep(0.08)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "accepted_async"
+    assert body["reply"] == {"text": "收到，正在生成，完成后发你。"}
+    assert body["outbox_followup"] is True
+    assert sent_messages == [
+        {
+            "chat_id": "wx_chat_001",
+            "message": "搞定。这是朋友圈文案和配图链接。",
+            "media_files": None,
+        }
+    ]
+
+
+def test_wechat_followup_text_unwraps_result_preview_json():
+    from bridge.api.channels import _wechat_followup_text_from_result
+
+    result = {
+        "renderable_reply_text": (
+            '{"card_type":"result_preview","speech":"内容已生成。",'
+            '"data":{"title":"朋友圈文案","preview":"预览文本",'
+            '"full_output":"朋友圈文案：\\n马尔代夫的蓝，专治加班后遗症。\\n\\n配图：https://example.test/image.jpg"}}'
+        ),
+        "final_response": "内容已生成。",
+    }
+
+    assert _wechat_followup_text_from_result(result) == (
+        "朋友圈文案：\n马尔代夫的蓝，专治加班后遗症。\n\n配图：https://example.test/image.jpg"
+    )
+
+
 async def test_app_im_free_text_returns_tool_output_as_renderable_result_card(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
