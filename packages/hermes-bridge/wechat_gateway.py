@@ -617,19 +617,50 @@ def _build_wechat_app_im_event(text: str, sender_id: str, chat_id: str) -> Dict[
 def _extract_wechat_ai_reply(result: Dict[str, Any]) -> str:
     reply = result.get("reply")
     if isinstance(reply, dict) and reply.get("text"):
-        return str(reply.get("text") or "")
+        return _sanitize_wechat_outbound_reply(str(reply.get("text") or ""))
 
     if result.get("mode") == "accepted_async":
         return str((reply or {}).get("text") if isinstance(reply, dict) else "收到，正在处理")
 
     if result.get("code") == 0:
         data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        return str(data.get("text") or "抱歉，我暂时没有生成有效回复。")
+        return _sanitize_wechat_outbound_reply(str(data.get("text") or "抱歉，我暂时没有生成有效回复。"))
 
     if "text" in result:
-        return str(result.get("text") or "抱歉，我暂时没有生成有效回复。")
+        return _sanitize_wechat_outbound_reply(str(result.get("text") or "抱歉，我暂时没有生成有效回复。"))
 
     raise RuntimeError(result.get("message") or result.get("error") or "本地模型调用失败")
+
+
+def _sanitize_wechat_outbound_reply(text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned:
+        return "已收到，结果已在 Edge 主对话里生成。"
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            card_type = str(parsed.get("card_type") or "")
+            if card_type in {"result_preview", "operation_log", "work_plan", "executing"}:
+                return "已收到，结果已在 Edge 主对话里生成。"
+    except Exception:
+        pass
+
+    internal_markers = [
+        '"agent_prompt"',
+        '"system_prompt"',
+        '"ownerContext"',
+        '"businessContext"',
+        '"full_output"',
+        '"tool_name"',
+        "You are a",
+        "Knowledge cutoff",
+    ]
+    if len(cleaned) > int(os.environ.get("WEIXIN_MAX_SYNC_REPLY_CHARS", "800")):
+        return "已收到，结果已在 Edge 主对话里生成。"
+    if any(marker in cleaned for marker in internal_markers):
+        return "已收到，结果已在 Edge 主对话里生成。"
+    return cleaned
 
 
 def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:

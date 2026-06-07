@@ -196,3 +196,63 @@ def test_list_recent_chat_ids_returns_context_token_keys(monkeypatch, tmp_path):
     monkeypatch.delenv("WEIXIN_TOKEN", raising=False)
 
     assert wechat_gateway.list_recent_chat_ids(limit=1) == ["wx_chat_001"]
+
+
+def test_wechat_sync_reply_suppresses_result_preview_json_for_outbound(monkeypatch):
+    import wechat_gateway
+
+    captured_requests = []
+    sent_messages = []
+
+    result_preview = {
+        "card_type": "result_preview",
+        "speech": "工具结果已生成。",
+        "data": {
+            "title": "长报告",
+            "preview": "这是一段预览",
+            "full_output": "{\"team_id\":1,\"agent_prompt\":\"内部上下文\"}\n" + ("very long internal text\n" * 120),
+            "tool_name": "internal-tool",
+        },
+    }
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "mode": "sync_reply",
+                "run_id": "run_001",
+                "reply": {"text": json.dumps(result_preview, ensure_ascii=False)},
+            }).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        captured_requests.append(request)
+        return FakeResponse()
+
+    async def fake_send_weixin_direct(*, extra, token, chat_id, message, media_files):
+        sent_messages.append(message)
+        return {"success": True}
+
+    fake_weixin_module = types.ModuleType("gateway.platforms.weixin")
+    fake_weixin_module.send_weixin_direct = fake_send_weixin_direct
+    monkeypatch.setitem(sys.modules, "gateway.platforms.weixin", fake_weixin_module)
+    monkeypatch.setenv("WEIXIN_ACCOUNT_ID", "acct_001")
+    monkeypatch.setenv("WEIXIN_TOKEN", "token_001")
+    monkeypatch.setenv("WEIXIN_BASE_URL", "https://weixin.example.test")
+    monkeypatch.setenv("WEIXIN_AI_INVOKE_URL", "http://127.0.0.1:21748/api/channels/events")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    event = types.SimpleNamespace(
+        source=types.SimpleNamespace(user_id="wx_user_001", chat_id="wx_chat_001"),
+        text="生成一份长报告",
+    )
+
+    asyncio_run = __import__("asyncio").run
+    asyncio_run(wechat_gateway._handle_incoming_message(event))
+
+    assert captured_requests
+    assert sent_messages == ["已收到，结果已在 Edge 主对话里生成。"]
