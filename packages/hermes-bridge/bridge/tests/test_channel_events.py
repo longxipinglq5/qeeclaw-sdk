@@ -447,7 +447,7 @@ async def test_app_im_free_text_emits_open_skill_app_from_hermes_intent(tmp_path
     assert open_skill_events[-1].card["data"]["prefilled"]["theme"] == "马尔代夫海景"
 
 
-async def test_app_im_toolbox_request_projects_capability_selection_to_open_skill_app(tmp_path):
+async def test_app_im_toolbox_request_uses_hermes_intent_not_bridge_projection(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
     from bridge.main import create_app
@@ -455,7 +455,7 @@ async def test_app_im_toolbox_request_projects_capability_selection_to_open_skil
     from bridge.tests.test_runtime_facade import FakeLegacyRuntime
 
     app = create_app()
-    app.state.runtime = FakeLegacyRuntime({"final_response": "不应该直接生成结果。"})
+    app.state.runtime = FakeLegacyRuntime({"final_response": "我需要先理解你的需求。"})
     app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
     app.state.runtime_facade.skill_catalog.as_dicts = lambda: [
         {
@@ -495,6 +495,7 @@ async def test_app_im_toolbox_request_projects_capability_selection_to_open_skil
     assert response.status_code == 200
     body = response.json()
     assert body["mode"] == "sync_reply"
+    assert body["reply"] == {"text": "我需要先理解你的需求。"}
     timeline = app.state.runtime_facade.timeline.list_session(supervisor_session_id)
     assert not [
         event
@@ -506,11 +507,16 @@ async def test_app_im_toolbox_request_projects_capability_selection_to_open_skil
         for event in timeline.events
         if event.card and event.card.get("card_type") == "open_skill_app"
     ]
-    assert open_skill_events
-    data = open_skill_events[-1].card["data"]
-    assert data["skill_id"] == "poster-generator"
-    assert data["prefilled"]["purpose"] == "朋友圈配图"
-    assert "奶茶店雨天第二杯半价活动" in data["prefilled"]["theme"]
+    assert not open_skill_events
+    assert app.state.runtime.invoke_calls == [
+        {
+            "session_id": supervisor_session_id,
+            "user_text": user_text,
+            "agent_profile": "edge_supervisor",
+            "system_prompt": None,
+            "conversation_history": [],
+        }
+    ]
 
 
 async def test_app_im_free_text_skill_intent_missing_required_field_clarifies(tmp_path):
@@ -967,7 +973,7 @@ async def test_app_im_free_text_returns_tool_output_as_renderable_result_card(tm
     assert "生成结果如上，可以直接发布。" in reply_text
 
 
-async def test_app_im_free_text_routes_clear_xhs_request_to_skill_result_card(tmp_path):
+async def test_app_im_free_text_delegates_xhs_toolbox_request_to_hermes_intent(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
     from bridge.main import create_app
@@ -1009,14 +1015,19 @@ async def test_app_im_free_text_routes_clear_xhs_request_to_skill_result_card(tm
     body = response.json()
     assert body["mode"] == "sync_reply"
     assert body["run_id"] == "run_000001"
-    assert body["artifact_id"] == "art_run_000002"
+    assert body["artifact_id"] is None
     reply_text = body["reply"]["text"]
-    assert '"card_type": "result_preview"' in reply_text
     assert "护眼台灯真的救了我的晚间工作" in reply_text
+    timeline = app.state.runtime_facade.timeline.list_session(supervisor_session_id)
+    assert not [
+        event
+        for event in timeline.events
+        if event.card and event.card.get("card_type") in {"result_preview", "open_skill_app"}
+    ]
     assert app.state.runtime.invoke_calls == [
         {
             "session_id": supervisor_session_id,
-            "user_text": '/xhs-note-generator {"platform": "xiaohongshu", "product": "便携护眼台灯", "tone": "真实种草"}',
+            "user_text": "请用AI工具箱的小红书笔记生成器，为便携护眼台灯生成一段种草文",
             "agent_profile": "edge_supervisor",
             "system_prompt": None,
             "conversation_history": [],

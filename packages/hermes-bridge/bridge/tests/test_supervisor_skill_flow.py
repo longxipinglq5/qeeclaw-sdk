@@ -3,95 +3,7 @@ from __future__ import annotations
 import json
 
 
-def test_supervisor_route_to_capability_selects_xhs_note_writer(tmp_path):
-    from bridge.runtime_facade.facade import HermesRuntimeFacade
-    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
-
-    facade = HermesRuntimeFacade(FakeLegacyRuntime(), artifact_root_dir=tmp_path)
-
-    selection = facade.supervisor_route_to_capability(
-        session_id="edge:owner_1:supervisor:conv_abc",
-        user_text="帮我生成儿童护眼台灯的小红书",
-        context={},
-    )
-
-    assert selection.capability_id == "xiaohongshu_note_writer"
-    assert selection.input == {
-        "product": "儿童护眼台灯",
-        "tone": "真实种草",
-        "platform": "xiaohongshu",
-    }
-    assert selection.output_contract == "skill_app_card"
-    assert selection.requires_clarification is False
-    assert selection.fallback_behavior == "run_capability"
-    assert selection.source == "deterministic_rule"
-
-
-def test_supervisor_route_to_capability_treats_directly_publishable_xhs_as_generation(tmp_path):
-    from bridge.runtime_facade.facade import HermesRuntimeFacade
-    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
-
-    facade = HermesRuntimeFacade(FakeLegacyRuntime(), artifact_root_dir=tmp_path)
-
-    selection = facade.supervisor_route_to_capability(
-        session_id="edge:owner_1:supervisor:conv_abc",
-        user_text="请用AI工具箱的小红书笔记生成器，为便携护眼台灯生成一段种草文，要求输出可直接发布的结果",
-        context={},
-    )
-
-    assert selection.capability_id == "xiaohongshu_note_writer"
-    assert selection.input == {
-        "product": "便携护眼台灯",
-        "tone": "真实种草",
-        "platform": "xiaohongshu",
-    }
-    assert selection.fallback_behavior == "run_capability"
-    assert selection.requires_clarification is False
-
-
-def test_supervisor_route_to_capability_asks_clarification_for_ambiguous_content(tmp_path):
-    from bridge.runtime_facade.facade import HermesRuntimeFacade
-    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
-
-    facade = HermesRuntimeFacade(FakeLegacyRuntime(), artifact_root_dir=tmp_path)
-
-    selection = facade.supervisor_route_to_capability(
-        session_id="edge:owner_1:supervisor:conv_abc",
-        user_text="帮我做一篇内容",
-        context={},
-    )
-
-    assert selection.capability_id is None
-    assert selection.input == {}
-    assert selection.context_refs == []
-    assert selection.confidence == 0.31
-    assert selection.requires_clarification is True
-    assert selection.fallback_behavior == "ask_clarification"
-    assert selection.missing_inputs == ["product", "platform", "content_goal"]
-    assert selection.source == "deterministic_rule"
-
-
-def test_supervisor_routes_personal_moments_image_request_without_existing_artifact(tmp_path):
-    from bridge.runtime_facade.facade import HermesRuntimeFacade
-    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
-
-    facade = HermesRuntimeFacade(FakeLegacyRuntime(), artifact_root_dir=tmp_path)
-
-    selection = facade.supervisor_route_to_capability(
-        session_id="edge:owner_1:supervisor:conv_abc",
-        user_text="帮我写一个假装在马尔代夫旅游的朋友圈，配一张图",
-        context={},
-    )
-
-    assert selection.capability_id == "moments_copywriter_with_image"
-    assert selection.input["need_image"] is True
-    assert selection.input["topic"] == "假装在马尔代夫旅游"
-    assert selection.fallback_behavior == "run_capability"
-    assert selection.requires_clarification is False
-    assert selection.missing_inputs == []
-
-
-async def test_supervisor_invoke_creates_child_xhs_skill_run_and_refs(tmp_path):
+async def test_supervisor_invoke_delegates_tool_decision_to_hermes(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
     from bridge.main import create_app
@@ -99,7 +11,9 @@ async def test_supervisor_invoke_creates_child_xhs_skill_run_and_refs(tmp_path):
     from bridge.tests.test_runtime_facade import FakeLegacyRuntime
 
     app = create_app()
-    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={"final_response": "我会根据你的需求判断是否需要打开工具。"}
+    )
     app.state.runtime_facade = HermesRuntimeFacade(
         app.state.runtime,
         artifact_root_dir=tmp_path,
@@ -117,55 +31,37 @@ async def test_supervisor_invoke_creates_child_xhs_skill_run_and_refs(tmp_path):
                 "metadata": {"owner_id": "owner_1", "created_by": "web"},
             },
         )
-        parent_events_resp = await client.get("/api/runs/run_000001/events")
-        child_events_resp = await client.get("/api/runs/run_000002/events")
+        events_resp = await client.get("/api/runs/run_000001/events")
+        missing_child_resp = await client.get("/api/runs/run_000002")
 
     assert response.status_code == 200
     assert response.json()["run_id"] == "run_000001"
-    assert response.json()["artifact_id"] == "art_run_000002"
+    assert "artifact_id" not in response.json()
+    assert missing_child_resp.status_code == 404
 
-    parent_events = parent_events_resp.json()["events"]
-    assert [event["type"] for event in parent_events] == [
-        "run_started",
-        "capability_selected",
-        "done",
-    ]
-    selected = next(event for event in parent_events if event["type"] == "capability_selected")
-    assert selected["payload"]["selection"]["capability_id"] == "xiaohongshu_note_writer"
-
-    parent_done = parent_events[-1]["payload"]
-    assert parent_done == {
-        "artifact_refs": ["art_run_000002"],
-        "child_run_ids": ["run_000002"],
-    }
-    assert "测试回复" not in json.dumps(parent_done, ensure_ascii=False)
-
-    child_events = child_events_resp.json()["events"]
-    assert [event["type"] for event in child_events] == [
-        "run_started",
-        "app_started",
-        "metering",
-        "artifact_created",
-        "app_result",
-        "done",
+    events = events_resp.json()["events"]
+    event_types = [event["type"] for event in events]
+    assert "run_started" in event_types
+    assert "metering" in event_types
+    assert "done" in event_types
+    assert not [
+        event
+        for event in events
+        if event["type"] in {"capability_selected", "approval_required", "clarify_required"}
     ]
 
-    artifact = app.state.runtime_facade.artifacts.get_artifact("art_run_000002")
-    assert artifact.kind == "xiaohongshu_note"
-
-    session = app.state.runtime_facade.sessions.get("edge:owner_1:supervisor:conv_abc")
-    assert session.metadata["artifact_summaries"] == [
+    assert app.state.runtime.invoke_calls == [
         {
-            "artifact_id": "art_run_000002",
-            "kind": "xiaohongshu_note",
-            "title": "小红书种草文",
-            "summary": "测试回复",
-            "capability_id": "xiaohongshu_note_writer",
+            "session_id": "edge:owner_1:supervisor:conv_abc",
+            "user_text": "帮我生成儿童护眼台灯的小红书",
+            "agent_profile": "edge_supervisor",
+            "system_prompt": None,
+            "conversation_history": [],
         }
     ]
 
 
-async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tmp_path):
+async def test_supervisor_followup_keeps_context_for_hermes_instead_of_local_routing(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
     from bridge.main import create_app
@@ -174,9 +70,7 @@ async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tm
 
     app = create_app()
     app.state.runtime = FakeLegacyRuntime(
-        response_overrides={
-            "final_response": "三版朋友圈文案已生成。要我帮你直接用工具出张图吗？"
-        }
+        response_overrides={"final_response": "我会结合上下文继续判断是否需要工具。"}
     )
     app.state.runtime_facade = HermesRuntimeFacade(
         app.state.runtime,
@@ -206,49 +100,26 @@ async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tm
                 "metadata": {"owner_id": "owner_1", "created_by": "web"},
             },
         )
-        parent_events_resp = await client.get("/api/runs/run_000003/events")
-        child_events_resp = await client.get("/api/runs/run_000004/events")
+        events_resp = await client.get("/api/runs/run_000002/events")
+        missing_child_resp = await client.get("/api/runs/run_000003")
 
     assert response.status_code == 200
-    assert response.json()["run_id"] == "run_000003"
-    assert response.json()["artifact_id"] == "art_run_000004"
+    assert response.json()["run_id"] == "run_000002"
+    assert "artifact_id" not in response.json()
+    assert missing_child_resp.status_code == 404
 
-    parent_events = parent_events_resp.json()["events"]
-    selected = next(event for event in parent_events if event["type"] == "capability_selected")
-    selection = selected["payload"]["selection"]
-    assert selection["capability_id"] == "moments_copywriter_with_image"
-    assert selection["input"]["source_artifact_id"] == "art_run_000002"
-    assert selection["output_contract"] == "copy_plus_image_card"
-
-    child_events = child_events_resp.json()["events"]
-    assert [event["type"] for event in child_events] == [
-        "run_started",
-        "app_started",
-        "metering",
-        "tool_started",
-        "tool_completed",
-        "tool_started",
-        "tool_completed",
-        "artifact_created",
-        "app_result",
-        "done",
+    events = events_resp.json()["events"]
+    event_types = [event["type"] for event in events]
+    assert "run_started" in event_types
+    assert "metering" in event_types
+    assert "done" in event_types
+    assert not [
+        event
+        for event in events
+        if event["type"] in {"capability_selected", "approval_required", "clarify_required"}
     ]
-    tool_events = [
-        event["payload"]["tool_name"]
-        for event in child_events
-        if event["type"] in {"tool_started", "tool_completed"}
-    ]
-    assert tool_events == [
-        "朋友圈文案生成",
-        "朋友圈文案生成",
-        "配图生成",
-        "配图生成",
-    ]
-
-    artifact = app.state.runtime_facade.artifacts.get_artifact("art_run_000004")
-    assert artifact.kind == "moments_copy"
-    assert artifact.metadata["source_artifact_id"] == "art_run_000002"
-    assert artifact.metadata["capability_id"] == "moments_copywriter_with_image"
+    assert app.state.runtime.invoke_calls[-1]["user_text"] == "再帮我生成这个产品的朋友圈，并配一张图"
+    assert app.state.runtime.invoke_calls[-1]["conversation_history"]
 
 
 async def test_moments_image_skill_calls_nexus_and_attaches_image_url(tmp_path, monkeypatch):
@@ -418,7 +289,7 @@ async def test_moments_image_skill_records_nexus_timeout_without_comfy_claims(tm
     assert artifact.metadata["image_status"] == "timeout"
 
 
-async def test_supervisor_publish_followup_requires_approval_without_child_run(tmp_path):
+async def test_supervisor_publish_followup_delegates_approval_decision_to_hermes(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
     from bridge.main import create_app
@@ -426,7 +297,9 @@ async def test_supervisor_publish_followup_requires_approval_without_child_run(t
     from bridge.tests.test_runtime_facade import FakeLegacyRuntime
 
     app = create_app()
-    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={"final_response": "发布前我会先判断是否需要审批。"}
+    )
     app.state.runtime_facade = HermesRuntimeFacade(
         app.state.runtime,
         artifact_root_dir=tmp_path,
@@ -455,26 +328,23 @@ async def test_supervisor_publish_followup_requires_approval_without_child_run(t
                 "metadata": {"owner_id": "owner_1", "created_by": "web"},
             },
         )
-        events_resp = await client.get("/api/runs/run_000003/events")
-        missing_child_resp = await client.get("/api/runs/run_000004")
+        events_resp = await client.get("/api/runs/run_000002/events")
+        missing_child_resp = await client.get("/api/runs/run_000003")
 
     assert response.status_code == 200
-    assert response.json()["run_id"] == "run_000003"
+    assert response.json()["run_id"] == "run_000002"
     assert "artifact_id" not in response.json()
 
     events = events_resp.json()["events"]
-    assert [event["type"] for event in events] == [
-        "run_started",
-        "approval_required",
-        "done",
-    ]
-    approval = events[1]["payload"]
-    assert approval["action_kind"] == "publish_content"
-    assert approval["artifact_refs"] == ["art_run_000002"]
+    event_types = [event["type"] for event in events]
+    assert "run_started" in event_types
+    assert "metering" in event_types
+    assert "done" in event_types
+    assert not [event for event in events if event["type"] == "approval_required"]
     assert missing_child_resp.status_code == 404
 
 
-async def test_supervisor_ambiguous_content_clarifies_without_child_run(tmp_path):
+async def test_supervisor_ambiguous_content_delegates_clarification_to_hermes(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
     from bridge.main import create_app
@@ -482,7 +352,9 @@ async def test_supervisor_ambiguous_content_clarifies_without_child_run(tmp_path
     from bridge.tests.test_runtime_facade import FakeLegacyRuntime
 
     app = create_app()
-    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={"final_response": "你想做哪类内容？可以补充平台和目标。"}
+    )
     app.state.runtime_facade = HermesRuntimeFacade(
         app.state.runtime,
         artifact_root_dir=tmp_path,
@@ -508,12 +380,9 @@ async def test_supervisor_ambiguous_content_clarifies_without_child_run(tmp_path
     assert "artifact_id" not in response.json()
 
     events = events_resp.json()["events"]
-    assert [event["type"] for event in events] == [
-        "run_started",
-        "clarify_required",
-        "done",
-    ]
-    clarify = events[1]["payload"]
-    assert clarify["missing_inputs"] == ["product", "platform", "content_goal"]
-    assert clarify["selection"]["fallback_behavior"] == "ask_clarification"
+    event_types = [event["type"] for event in events]
+    assert "run_started" in event_types
+    assert "metering" in event_types
+    assert "done" in event_types
+    assert not [event for event in events if event["type"] == "clarify_required"]
     assert missing_child_resp.status_code == 404
