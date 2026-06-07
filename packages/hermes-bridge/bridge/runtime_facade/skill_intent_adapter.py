@@ -87,10 +87,7 @@ def _intent_from_card(card: dict[str, Any]) -> SkillUseIntent | None:
     data = card.get("data") if isinstance(card.get("data"), dict) else {}
     if card_type == "open_skill_app":
         return _build_intent(card, data)
-    if (
-        card_type == "intent_confirm"
-        and str(data.get("execution_mode") or data.get("executionMode") or "") == "toolbox"
-    ):
+    if card_type == "intent_confirm" and (data.get("skill_id") or data.get("skillId")):
         return _build_intent(card, data)
     return None
 

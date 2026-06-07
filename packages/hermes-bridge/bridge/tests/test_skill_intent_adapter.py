@@ -65,6 +65,26 @@ def test_extract_legacy_intent_confirm_toolbox_intent():
     assert intent.prefilled["weather_context"] == "雨天人少"
 
 
+def test_extract_intent_confirm_with_skill_id_even_when_execution_mode_drifts():
+    from bridge.runtime_facade.skill_intent_adapter import extract_skill_use_intent
+
+    text = (
+        '{"card_type":"intent_confirm","speech":"确认就生成。",'
+        '"data":{"skill_id":"poster-generator",'
+        '"skill_name":"海报生成器",'
+        '"execution_mode":"chat",'
+        '"prefilled":{"purpose":"朋友圈配图","theme":"奶茶店雨天第二杯半价活动"},'
+        '"summary":"雨天奶茶第二杯半价海报"}}'
+    )
+
+    intent = extract_skill_use_intent({"final_response": text})
+
+    assert intent is not None
+    assert intent.skill_id == "poster-generator"
+    assert intent.skill_name == "海报生成器"
+    assert intent.prefilled["theme"] == "奶茶店雨天第二杯半价活动"
+
+
 def test_ignore_plain_text_without_skill_intent():
     from bridge.runtime_facade.skill_intent_adapter import extract_skill_use_intent
 
