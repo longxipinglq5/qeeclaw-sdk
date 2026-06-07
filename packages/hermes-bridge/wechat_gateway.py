@@ -636,13 +636,14 @@ def _sanitize_wechat_outbound_reply(text: str) -> str:
     cleaned = text.strip()
     if not cleaned:
         return "已收到，结果已在 Edge 主对话里生成。"
+    fallback = "已收到，结果已在 Edge 主对话里生成。"
 
     try:
         parsed = json.loads(cleaned)
         if isinstance(parsed, dict):
             card_type = str(parsed.get("card_type") or "")
             if card_type in {"result_preview", "operation_log", "work_plan", "executing"}:
-                return "已收到，结果已在 Edge 主对话里生成。"
+                return fallback
     except Exception:
         pass
 
@@ -656,10 +657,12 @@ def _sanitize_wechat_outbound_reply(text: str) -> str:
         "You are a",
         "Knowledge cutoff",
     ]
-    if len(cleaned) > int(os.environ.get("WEIXIN_MAX_SYNC_REPLY_CHARS", "800")):
-        return "已收到，结果已在 Edge 主对话里生成。"
     if any(marker in cleaned for marker in internal_markers):
-        return "已收到，结果已在 Edge 主对话里生成。"
+        return fallback
+    max_chars = int(os.environ.get("WEIXIN_MAX_SYNC_REPLY_CHARS", "1200"))
+    if len(cleaned) > max_chars:
+        suffix = "\n\n完整内容已在 Edge 主对话里生成。"
+        return cleaned[: max(0, max_chars - len(suffix))].rstrip() + suffix
     return cleaned
 
 

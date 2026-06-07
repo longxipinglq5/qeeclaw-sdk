@@ -256,3 +256,21 @@ def test_wechat_sync_reply_suppresses_result_preview_json_for_outbound(monkeypat
 
     assert captured_requests
     assert sent_messages == ["已收到，结果已在 Edge 主对话里生成。"]
+
+
+def test_wechat_sync_reply_keeps_long_natural_language_question(monkeypatch):
+    import wechat_gateway
+
+    text = (
+        "文案先出，ComfyUI 还在启动中。\n\n"
+        "给你三个版本挑：\n"
+        "版本一｜短平快：落地第一口空气是咸的。\n"
+        "版本二｜沉浸式：早上被海浪声吵醒。\n"
+        "版本三｜反转版：印度洋的日落真太绝了。\n\n"
+        "图的话，ComfyUI 正在后台启动。你想先定哪个文案版本？还是三个都要？"
+    )
+
+    sanitized = wechat_gateway._sanitize_wechat_outbound_reply(text + "\n" + ("补充说明。\n" * 220))
+
+    assert "你想先定哪个文案版本" in sanitized
+    assert "已收到，结果已在 Edge 主对话里生成。" not in sanitized
