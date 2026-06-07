@@ -447,6 +447,72 @@ async def test_app_im_free_text_emits_open_skill_app_from_hermes_intent(tmp_path
     assert open_skill_events[-1].card["data"]["prefilled"]["theme"] == "马尔代夫海景"
 
 
+async def test_app_im_toolbox_request_projects_capability_selection_to_open_skill_app(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime({"final_response": "不应该直接生成结果。"})
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    app.state.runtime_facade.skill_catalog.as_dicts = lambda: [
+        {
+            "name": "poster-generator",
+            "description": "为小红书封面、公众号头图和朋友圈配图生成视觉素材。",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "purpose": {},
+                    "theme": {},
+                    "style": {},
+                    "ratio": {},
+                },
+                "required": ["purpose", "theme"],
+            },
+        }
+    ]
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    user_text = "请用AI工具箱的生成海报工具，为奶茶店雨天第二杯半价活动做一张朋友圈配图海报，视觉风格真实摄影海报，比例1:1。"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_capability_toolbox_001", user_text),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {"type": "free_text", "text": user_text},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "sync_reply"
+    timeline = app.state.runtime_facade.timeline.list_session(supervisor_session_id)
+    assert not [
+        event
+        for event in timeline.events
+        if event.card and event.card.get("card_type") == "result_preview"
+    ]
+    open_skill_events = [
+        event
+        for event in timeline.events
+        if event.card and event.card.get("card_type") == "open_skill_app"
+    ]
+    assert open_skill_events
+    data = open_skill_events[-1].card["data"]
+    assert data["skill_id"] == "poster-generator"
+    assert data["prefilled"]["purpose"] == "朋友圈配图"
+    assert "奶茶店雨天第二杯半价活动" in data["prefilled"]["theme"]
+
+
 async def test_app_im_free_text_skill_intent_missing_required_field_clarifies(tmp_path):
     from httpx import ASGITransport, AsyncClient
 

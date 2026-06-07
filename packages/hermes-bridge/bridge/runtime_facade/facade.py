@@ -113,6 +113,15 @@ class HermesRuntimeFacade:
                 },
             )
             if selection.fallback_behavior == "run_capability" and selection.capability_id:
+                projected = self._project_capability_selection_to_open_skill_app(
+                    session_id=session_id,
+                    user_text=user_text,
+                    agent_profile=agent_profile,
+                    metadata=metadata or {},
+                    selection=selection,
+                )
+                if projected is not None:
+                    return projected
                 response = await self._create_supervisor_skill_child_run(
                     request=CreateRunRequest(
                         kind=RunKind.INVOKE,
@@ -496,6 +505,300 @@ class HermesRuntimeFacade:
             "session_id": session_id,
             "agent_profile": agent_profile,
         }
+
+    def _project_capability_selection_to_open_skill_app(
+        self,
+        *,
+        session_id: str,
+        user_text: str,
+        agent_profile: str,
+        metadata: dict[str, Any],
+        selection: CapabilitySelection,
+    ) -> dict[str, Any] | None:
+        tool = self._match_edge_skill_for_capability_selection(
+            selection=selection,
+            user_text=user_text,
+        )
+        if tool is None:
+            return None
+
+        prefilled = self._prefill_edge_skill_from_selection(
+            tool=tool,
+            selection=selection,
+            user_text=user_text,
+        )
+        validation = validate_skill_use_intent(
+            SkillUseIntent(
+                skill_id=str(tool.get("name") or ""),
+                skill_name=str(tool.get("description") or tool.get("name") or ""),
+                summary=f"打开{tool.get('description') or tool.get('name')}生成。",
+                speech="我帮你打开工具生成。",
+                prefilled=prefilled,
+                auto_run=True,
+                source="capability_selection_projection",
+            ),
+            tools=self.skill_catalog.as_dicts(),
+        )
+        if validation.status != "accepted":
+            return None
+
+        trace_id = f"trc_{self.runs.next_run_number:06d}"
+        self.sessions.get_or_create(session_id=session_id, agent_profile=agent_profile)
+        run = self.runs.start_run(
+            session_id=session_id,
+            agent_profile=agent_profile,
+            kind=RunKind.INVOKE,
+            input_text=user_text,
+            trace_id=trace_id,
+            created_by=metadata.get("created_by"),
+            source=metadata.get("source"),
+            metadata=metadata,
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="message",
+            payload={"role": "user", "text": user_text},
+            trace_id=run.trace_id,
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="capability_selected",
+            payload={"selection": selection.model_dump(mode="json", exclude_none=True)},
+            trace_id=run.trace_id,
+        )
+
+        reply_text = (
+            validation.intent.summary
+            or validation.intent.speech
+            or "我帮你打开工具生成。"
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="open_skill_app",
+            payload={
+                "skill_id": validation.intent.skill_id,
+                "skill_name": validation.intent.skill_name,
+                "summary": validation.intent.summary,
+                "speech": validation.intent.speech,
+                "prefilled": validation.intent.prefilled,
+                "auto_run": validation.intent.auto_run,
+            },
+            trace_id=run.trace_id,
+        )
+        self.runs.complete_run(
+            run.run_id,
+            result_text=reply_text,
+            usage={},
+            done_payload={
+                "skill_id": validation.intent.skill_id,
+                "source": validation.intent.source,
+            },
+        )
+        self.sessions.append_turn(
+            session_id,
+            user_text=user_text,
+            assistant_text=reply_text,
+            metadata={"run_id": run.run_id, "skill_intent": validation.intent.skill_id},
+        )
+        return {
+            "final_response": reply_text,
+            "renderable_reply_text": reply_text,
+            "run_id": run.run_id,
+            "session_id": session_id,
+            "agent_profile": agent_profile,
+            "skill_intent": validation.intent.model_dump(mode="json"),
+            "skill_intent_validation": validation.model_dump(mode="json"),
+        }
+
+    def _match_edge_skill_for_capability_selection(
+        self,
+        *,
+        selection: CapabilitySelection,
+        user_text: str,
+    ) -> dict[str, Any] | None:
+        tools = self.skill_catalog.as_dicts()
+        if not tools:
+            return None
+
+        capability_text = " ".join(
+            str(part)
+            for part in [
+                selection.capability_id or "",
+                selection.output_contract or "",
+                selection.reasoning_summary or "",
+                user_text,
+            ]
+            if part
+        )
+        capability_tokens = self._routing_tokens(capability_text)
+        best_tool: dict[str, Any] | None = None
+        best_score = 0
+        for tool in tools:
+            tool_text = " ".join(
+                str(part)
+                for part in [
+                    tool.get("name") or "",
+                    tool.get("description") or "",
+                    self._tool_schema_text(tool),
+                ]
+                if part
+            )
+            tool_tokens = self._routing_tokens(tool_text)
+            score = len(capability_tokens & tool_tokens)
+            if self._is_visual_request(user_text) and tool_tokens & {"海报", "配图", "图片", "视觉", "封面"}:
+                score += 5
+            if self._is_visual_request(user_text) and "poster" in str(tool.get("name") or ""):
+                score += 4
+            if str(selection.capability_id or "").startswith("moments_copywriter") and tool_tokens & {"朋友圈", "配图"}:
+                score += 2
+            if score > best_score:
+                best_tool = tool
+                best_score = score
+
+        return best_tool if best_score >= 5 else None
+
+    @staticmethod
+    def _routing_tokens(text: str) -> set[str]:
+        tokens = {
+            token
+            for token in re.split(r"[^a-zA-Z0-9_\-\u4e00-\u9fff]+", text.lower())
+            if token
+        }
+        for keyword in [
+            "海报",
+            "配图",
+            "图片",
+            "视觉",
+            "封面",
+            "朋友圈",
+            "小红书",
+            "公众号",
+            "活动",
+            "产品",
+            "营销",
+            "生图",
+        ]:
+            if keyword in text:
+                tokens.add(keyword)
+        return tokens
+
+    @staticmethod
+    def _tool_schema_text(tool: dict[str, Any]) -> str:
+        schema = tool.get("input_schema") if isinstance(tool.get("input_schema"), dict) else {}
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        parts: list[str] = []
+        for key, value in properties.items():
+            parts.append(str(key))
+            if isinstance(value, dict):
+                parts.append(str(value.get("description") or ""))
+                parts.extend(str(item) for item in value.get("enum") or [])
+        return " ".join(parts)
+
+    @staticmethod
+    def _is_visual_request(text: str) -> bool:
+        return any(keyword in text for keyword in ["海报", "配图", "图片", "生图", "视觉", "封面", "头图", "主图"])
+
+    def _prefill_edge_skill_from_selection(
+        self,
+        *,
+        tool: dict[str, Any],
+        selection: CapabilitySelection,
+        user_text: str,
+    ) -> dict[str, Any]:
+        schema = tool.get("input_schema") if isinstance(tool.get("input_schema"), dict) else {}
+        properties = schema.get("properties") if isinstance(schema.get("properties"), dict) else {}
+        source = {key: value for key, value in selection.input.items() if value}
+        prefilled: dict[str, Any] = {}
+
+        for key, property_schema in properties.items():
+            lower_key = key.lower()
+            if key in source:
+                prefilled[key] = source[key]
+            elif lower_key in {"purpose", "poster_usage", "usage", "format"}:
+                prefilled[key] = self._infer_visual_purpose(user_text)
+            elif lower_key in {"theme", "poster_topic", "event_theme", "topic", "title"}:
+                prefilled[key] = self._infer_visual_theme(user_text, source)
+            elif lower_key in {"business_info", "store_info", "brand_project_info", "product", "materials"}:
+                prefilled[key] = self._infer_business_info(user_text, source)
+            elif lower_key in {"style", "poster_style", "visual_style"}:
+                prefilled[key] = self._infer_visual_style(user_text, property_schema)
+            elif lower_key in {"ratio", "poster_ratio", "aspect_ratio"}:
+                prefilled[key] = self._infer_visual_ratio(user_text, property_schema)
+
+        return {key: value for key, value in prefilled.items() if str(value).strip()}
+
+    @staticmethod
+    def _infer_visual_purpose(user_text: str) -> str:
+        for purpose in ["朋友圈配图", "小红书封面", "公众号头图", "门店宣传海报", "活动促销海报", "产品介绍海报"]:
+            if purpose in user_text:
+                return purpose
+        if "朋友圈" in user_text:
+            return "朋友圈配图"
+        if "小红书" in user_text:
+            return "小红书封面"
+        if "公众号" in user_text:
+            return "公众号头图"
+        return "活动促销海报"
+
+    @staticmethod
+    def _infer_visual_theme(user_text: str, source: dict[str, Any]) -> str:
+        for key in ["topic", "theme", "product"]:
+            value = str(source.get(key) or "").strip()
+            if value:
+                cleaned = HermesRuntimeFacade._clean_toolbox_request_text(value)
+                if cleaned:
+                    return cleaned
+        patterns = [
+            r"为(.+?)(?:做|生成|设计|出|制作)(?:一张|一个|一份|一下)?(?:朋友圈配图|海报|图片|图|视觉)?",
+            r"帮(.+?)(?:做|生成|设计|出|制作|写)(?:一张|一个|一份|一下)?(?:朋友圈配图|海报|图片|图|视觉)?",
+            r"内容是(.+?)(?:，|。|$)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, user_text)
+            if match and match.group(1).strip():
+                return match.group(1).strip(" ，。")
+        return HermesRuntimeFacade._clean_toolbox_request_text(user_text)[:80]
+
+    @staticmethod
+    def _infer_business_info(user_text: str, source: dict[str, Any]) -> str:
+        parts = [
+            HermesRuntimeFacade._clean_toolbox_request_text(str(source.get("product") or "")),
+            HermesRuntimeFacade._clean_toolbox_request_text(str(source.get("topic") or "")),
+            user_text.strip(),
+        ]
+        return "\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _clean_toolbox_request_text(text: str) -> str:
+        cleaned = text.strip(" ，。")
+        cleaned = re.sub(r"^请?用AI工具箱的?[^，。]*?工具[，,]?", "", cleaned)
+        cleaned = re.sub(r"^帮我", "", cleaned)
+        cleaned = re.sub(r"^为(.+?)(?:做|生成|设计|出|制作)(?:一张|一个|一份|一下)?(?:朋友圈配图|海报|图片|图|视觉)?$", r"\1", cleaned)
+        cleaned = re.sub(r"^帮(.+?)(?:做|生成|设计|出|制作|写)(?:一张|一个|一份|一下)?(?:朋友圈配图|海报|图片|图|视觉)?$", r"\1", cleaned)
+        return cleaned.strip(" ，。")
+
+    @staticmethod
+    def _infer_visual_style(user_text: str, property_schema: Any) -> str:
+        options = property_schema.get("enum") if isinstance(property_schema, dict) else []
+        options = options or []
+        for option in options or []:
+            if str(option) in user_text:
+                return str(option)
+        if "真实摄影" in user_text and "真实摄影海报" in options:
+            return "真实摄影海报"
+        return str((options or ["高级商业质感"])[0])
+
+    @staticmethod
+    def _infer_visual_ratio(user_text: str, property_schema: Any) -> str:
+        options = property_schema.get("enum") if isinstance(property_schema, dict) else []
+        options = options or []
+        match = re.search(r"\b(?:1:1|3:4|4:5|16:9)\b", user_text)
+        if match:
+            return match.group(0)
+        return str((options or ["1:1"])[0])
 
     def _sync_reply_from_create_run_response(
         self,
