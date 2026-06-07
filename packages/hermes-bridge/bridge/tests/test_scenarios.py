@@ -46,7 +46,12 @@ class TestScenarios:
         prompt = get_system_prompt("supervisor", agent_profile="edge_supervisor")
         assert "命中内部 AI工具箱工具" in prompt
         assert "禁止直接返回 result_preview" in prompt
-        assert "必须返回 intent_confirm" in prompt
+        assert "open_skill_app" in prompt
+        assert "skill_id" in prompt
+        assert "不要直接返回最终生成结果" in prompt
+        assert "短回复" in prompt
+        assert "马尔代夫" in prompt
+        assert "雨天人少" in prompt
         assert 'execution_mode 必须设为 "toolbox"' in prompt
         assert "前端会导航到对应工具表单页" in prompt
 
