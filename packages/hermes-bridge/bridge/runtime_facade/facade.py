@@ -36,6 +36,7 @@ from bridge.runtime_facade.models import (
 from bridge.runtime_facade.run_manager import RunManager
 from bridge.runtime_facade.session_store import SessionStore
 from bridge.runtime_facade.session_ids import SessionIdBuilder
+from bridge.runtime_facade.skill_catalog_provider import EdgeSkillCatalogProvider
 from bridge.runtime_facade.store import InMemoryStore
 from bridge.runtime_facade.timeline import TimelineStore
 
@@ -64,6 +65,8 @@ class HermesRuntimeFacade:
             artifact_root_dir or (settings.hermes_home_path / "bridge-state")
         )
         self.automation_status = AutomationStatusProjector()
+        self.skill_catalog = EdgeSkillCatalogProvider()
+        self.skill_catalog.preload()
         self.centaur_adapter = CentaurLoopRuntimeAdapter(
             event_bus=self.events,
             run_manager=self.runs,
