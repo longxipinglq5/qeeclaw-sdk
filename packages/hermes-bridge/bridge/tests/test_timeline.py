@@ -78,6 +78,40 @@ def test_timeline_standard_projection_includes_expected_business_events():
     assert [event.source_event_type for event in store.list_session("session_1").events] == included_types
 
 
+def test_open_skill_app_event_projects_to_card():
+    from bridge.runtime_facade.event_bus import EventBus
+    from bridge.runtime_facade.store import InMemoryStore
+    from bridge.runtime_facade.timeline import TimelineStore
+
+    bus = EventBus(InMemoryStore())
+    store = TimelineStore()
+    event = bus.append(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        run_id="run_001",
+        type="open_skill_app",
+        payload={
+            "skill_id": "poster-generator",
+            "skill_name": "海报生成器",
+            "summary": "生成朋友圈配图",
+            "prefilled": {"purpose": "朋友圈配图", "theme": "马尔代夫海景"},
+            "auto_run": True,
+        },
+    )
+
+    store.append_from_runtime_event(event)
+
+    timeline = store.list_session("edge:owner_1:supervisor:conv_abc")
+    assert len(timeline.events) == 1
+    timeline_event = timeline.events[0]
+    assert timeline_event.kind == "card"
+    assert timeline_event.card["card_type"] == "open_skill_app"
+    assert timeline_event.card["data"]["skill_id"] == "poster-generator"
+    assert timeline_event.card["data"]["prefilled"] == {
+        "purpose": "朋友圈配图",
+        "theme": "马尔代夫海景",
+    }
+
+
 def test_timeline_debug_projection_includes_debug_runtime_events():
     from bridge.runtime_facade.event_bus import EventBus
     from bridge.runtime_facade.store import InMemoryStore

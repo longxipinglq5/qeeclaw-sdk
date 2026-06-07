@@ -18,6 +18,7 @@ _STANDARD_EVENT_TYPES = {
     "loop_stage_changed",
     "feedback_request",
     "review_card",
+    "open_skill_app",
     "message",
     "channel_message",
     "error",
@@ -196,6 +197,7 @@ class TimelineStore:
             "loop_stage_changed",
             "feedback_request",
             "review_card",
+            "open_skill_app",
         }:
             return "card"
         if event.type == "human_review":
@@ -237,6 +239,22 @@ class TimelineStore:
         if event.type == "app_result":
             card = event.payload.get("card")
             return card if isinstance(card, dict) else None
+        if event.type == "open_skill_app":
+            summary = str(event.payload.get("summary") or "打开工具生成")
+            return {
+                "card_id": f"card_open_skill_{event.event_id}",
+                "card_type": "open_skill_app",
+                "summary": summary,
+                "fallback_text": summary,
+                "data": {
+                    "skill_id": event.payload.get("skill_id"),
+                    "skill_name": event.payload.get("skill_name"),
+                    "summary": event.payload.get("summary"),
+                    "prefilled": event.payload.get("prefilled") or {},
+                    "auto_run": event.payload.get("auto_run", True),
+                    "execution_mode": "toolbox",
+                },
+            }
         if event.type == "loop_stage_changed":
             cycle_id = str(event.payload["cycle_id"])
             return {
