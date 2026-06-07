@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _nexus_image_timeout_seconds() -> float:
+    return float(
+        os.environ.get("NEXUS_IMAGE_TIMEOUT_SECONDS")
+        or os.environ.get("NEXUS_LLM_TIMEOUT_SECONDS")
+        or "300"
+    )
+
+
 def _platform_ok(data):
     return JSONResponse({"success": True, "data": data})
 
@@ -300,7 +308,7 @@ async def llm_images_generations(request: Request):
 
     def _proxy():
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=_nexus_image_timeout_seconds()) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     try:
