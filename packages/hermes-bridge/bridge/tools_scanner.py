@@ -26,21 +26,31 @@ def scan_edge_skills(force: bool = False) -> list[ToolInfo]:
         if not force and _scan_cache is not None and (now - _scan_cache_ts) < _CACHE_TTL:
             return _scan_cache
 
-        skills_dir = settings.hermes_home_path / "skills" / "edge"
-        if not skills_dir.exists():
-            logger.warning("Edge skills 目录不存在: %s", skills_dir)
+        skills_dirs = [
+            settings.hermes_home_path / "skills" / "edge",
+            settings.hermes_home_path / "edge-skills",
+        ]
+        existing_dirs = [skills_dir for skills_dir in skills_dirs if skills_dir.exists()]
+        if not existing_dirs:
+            logger.warning(
+                "Edge skills 目录不存在: %s",
+                ", ".join(str(skills_dir) for skills_dir in skills_dirs),
+            )
             _scan_cache = []
             _scan_cache_ts = now
             return []
 
         tools: list[ToolInfo] = []
-        for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
-            try:
-                tool = _parse_skill_md(skill_md)
-                if tool:
-                    tools.append(tool)
-            except Exception:
-                logger.warning("解析 SKILL.md 失败: %s", skill_md, exc_info=True)
+        seen_names: set[str] = set()
+        for skills_dir in existing_dirs:
+            for skill_md in sorted(skills_dir.glob("*/SKILL.md")):
+                try:
+                    tool = _parse_skill_md(skill_md)
+                    if tool and tool.name not in seen_names:
+                        tools.append(tool)
+                        seen_names.add(tool.name)
+                except Exception:
+                    logger.warning("解析 SKILL.md 失败: %s", skill_md, exc_info=True)
 
         logger.info("扫描到 %d 个 Edge skill", len(tools))
         _scan_cache = tools

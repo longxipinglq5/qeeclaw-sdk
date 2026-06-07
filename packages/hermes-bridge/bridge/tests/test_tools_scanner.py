@@ -25,6 +25,21 @@ class TestToolsScanner:
         assert len(tools) == 1
         assert tools[0].name == "echo"
 
+    def test_scan_includes_legacy_edge_skills_dir(self, tmp_path, monkeypatch):
+        from bridge import config
+
+        monkeypatch.setattr(config.settings, "hermes_home", str(tmp_path))
+
+        skill_dir = tmp_path / "edge-skills" / "legacy-note-writer"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: legacy-note-writer\ndescription: 旧 Edge 技能目录工具\n---\n\n# Legacy\n",
+            encoding="utf-8",
+        )
+
+        tools = scan_edge_skills(force=True)
+        assert [tool.name for tool in tools] == ["legacy-note-writer"]
+
     def test_empty_dir_returns_empty(self, tmp_path, monkeypatch):
         from bridge import config
 
