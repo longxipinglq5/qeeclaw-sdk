@@ -262,5 +262,7 @@ class CardManifest(BaseModel):
     progress: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
     actions: list[dict[str, Any]] = Field(default_factory=list)
+    imageUrl: str | None = None
+    imagePrompt: str | None = None
     fallback_text: str | None = None
     created_at: datetime = Field(default_factory=utc_now)

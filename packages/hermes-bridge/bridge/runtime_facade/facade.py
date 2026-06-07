@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -598,22 +601,24 @@ class HermesRuntimeFacade:
                 session_id=session_id,
                 context_refs=list(context.get("context_refs") or []),
             )
+            topic = self._extract_moments_topic(normalized)
             return CapabilitySelection(
                 selection_id=f"sel_{self.runs.next_run_number:06d}",
                 capability_id="moments_copywriter_with_image",
                 input={
-                    "product": "这个产品",
+                    "topic": topic,
+                    "product": "这个产品" if source_artifact_id else topic,
                     "tone": "真实、亲切、适合朋友圈",
                     "need_image": True,
                     "source_artifact_id": source_artifact_id,
                 },
                 context_refs=[f"artifact:{source_artifact_id}"] if source_artifact_id else [],
                 output_contract="copy_plus_image_card",
-                confidence=0.86 if source_artifact_id else 0.55,
-                reasoning_summary="用户要求基于已有产品内容生成朋友圈并配图。",
-                missing_inputs=[] if source_artifact_id else ["product"],
-                requires_clarification=source_artifact_id is None,
-                fallback_behavior="run_capability" if source_artifact_id else "ask_clarification",
+                confidence=0.86 if source_artifact_id else 0.72,
+                reasoning_summary="用户要求生成朋友圈并配图。",
+                missing_inputs=[],
+                requires_clarification=False,
+                fallback_behavior="run_capability",
                 source="deterministic_rule",
                 metadata={"matched_terms": ["朋友圈", "配图"]},
             )
@@ -1109,19 +1114,57 @@ class HermesRuntimeFacade:
         )
         self._emit_skill_tool_events(request=request, capability=capability, run=run)
 
-        final_response = str(result.get("final_response") or "")
+        final_response = self._sanitize_skill_final_response(
+            str(result.get("final_response") or ""),
+            capability=capability,
+        )
+        image_result = await self._maybe_generate_skill_image(
+            request=request,
+            capability=capability,
+            final_response=final_response,
+        )
         artifact_id = self.artifacts.next_available_artifact_id(f"art_{run.run_id}")
+        artifact_content = {"body": final_response}
+        artifact_metadata = {
+            "capability_id": capability.capability_id,
+            **self._artifact_metadata_from_input(request.input),
+        }
+        if image_result and image_result.get("image_url"):
+            artifact_content.update(
+                {
+                    "imageUrl": image_result["image_url"],
+                    "imagePrompt": image_result["prompt"],
+                    "imageRaw": image_result.get("raw"),
+                }
+            )
+            artifact_metadata.update(
+                {
+                    "image_provider": "nexus",
+                    "image_model": image_result.get("model"),
+                }
+            )
+        elif image_result:
+            artifact_content.update(
+                {
+                    "imageStatus": image_result.get("status") or "error",
+                    "imageError": image_result.get("error") or "NEXUS 生图接口暂未返回图片，文案已先生成。",
+                    "imagePrompt": image_result.get("prompt"),
+                }
+            )
+            artifact_metadata.update(
+                {
+                    "image_provider": "nexus",
+                    "image_status": image_result.get("status") or "error",
+                }
+            )
         artifact = self.artifacts.create_artifact(
             artifact_id=artifact_id,
             session_id=request.session_id,
             run_id=run.run_id,
             kind=self._artifact_kind_for_capability(capability),
             title=capability.title,
-            content={"body": final_response},
-            metadata={
-                "capability_id": capability.capability_id,
-                **self._artifact_metadata_from_input(request.input),
-            },
+            content=artifact_content,
+            metadata=artifact_metadata,
         )
         self.events.append(
             session_id=request.session_id,
@@ -1136,6 +1179,8 @@ class HermesRuntimeFacade:
             title=capability.title,
             summary=final_response,
             artifact_ids=[artifact.artifact_id],
+            image_url=image_result.get("image_url") if image_result else None,
+            image_prompt=image_result.get("prompt") if image_result else None,
         )
         self.events.append(
             session_id=request.session_id,
@@ -1165,10 +1210,16 @@ class HermesRuntimeFacade:
     @staticmethod
     def _skill_instruction(capability: CapabilityManifest, input_payload: Any) -> str:
         payload = input_payload.model_dump(exclude_none=True)
-        return (
+        instruction = (
             f"/{capability.slash_command} "
             f"{json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
         )
+        if capability.capability_id == "moments_copywriter_with_image":
+            instruction += (
+                "\n系统会自动调用 NEXUS 生图接口生成配图；"
+                "请直接输出朋友圈文案，不要询问是否需要出图，不要提 ComfyUI 或内部工具名。"
+            )
+        return instruction
 
     @staticmethod
     def _artifact_kind_for_capability(capability: CapabilityManifest) -> str:
@@ -1183,6 +1234,209 @@ class HermesRuntimeFacade:
         payload = input_payload.model_dump(exclude_none=True)
         source_artifact_id = payload.get("source_artifact_id")
         return {"source_artifact_id": source_artifact_id} if source_artifact_id else {}
+
+    @staticmethod
+    def _sanitize_skill_final_response(text: str, *, capability: CapabilityManifest) -> str:
+        if capability.capability_id != "moments_copywriter_with_image":
+            return text
+        sanitized = HermesRuntimeFacade._unwrap_skill_card_text(text)
+        sanitized = re.sub(
+            r"\n+##\s*[^\n]*(?:海报|配图)[^\n]*\n.*?(?=\n---\n|\Z)",
+            "",
+            sanitized,
+            flags=re.S,
+        )
+        sanitized = re.sub(r"[^。！？\n]*ComfyUI[^。！？\n]*[。！？]?", "", sanitized)
+        sanitized = re.sub(r"(?im)^.*ComfyUI.*(?:\n|$)", "", sanitized)
+        sanitized = re.sub(
+            r"[^。！？\n]*(?:要我|需要我|是否需要|要不要)[^。！？\n]*(?:出|生成|做|配)[^。！？\n]*(?:图|图片|配图)[^。！？\n]*[。！？]?",
+            "",
+            sanitized,
+        )
+        sanitized = re.sub(r"\n{3,}", "\n\n", sanitized).strip()
+        if sanitized:
+            return sanitized
+        return "" if "ComfyUI" in text else text
+
+    @staticmethod
+    def _unwrap_skill_card_text(text: str) -> str:
+        stripped = text.strip()
+        fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", stripped, flags=re.S | re.I)
+        if fenced:
+            stripped = fenced.group(1).strip()
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            body = HermesRuntimeFacade._extract_loose_json_string_field(stripped, "body")
+            return body or text
+        if not isinstance(parsed, dict):
+            return text
+
+        data = parsed.get("data") if isinstance(parsed.get("data"), dict) else {}
+        for value in (
+            data.get("body"),
+            data.get("full_output"),
+            data.get("summary"),
+            data.get("preview"),
+            parsed.get("body"),
+            parsed.get("summary"),
+            parsed.get("speech"),
+        ):
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return text
+
+    @staticmethod
+    def _extract_loose_json_string_field(text: str, field_name: str) -> str | None:
+        match = re.search(rf'"{re.escape(field_name)}"\s*:\s*"', text)
+        if not match:
+            return None
+        index = match.end()
+        chars: list[str] = []
+        escaped = False
+        while index < len(text):
+            char = text[index]
+            if escaped:
+                if char == "n":
+                    chars.append("\n")
+                elif char == "t":
+                    chars.append("\t")
+                elif char == "r":
+                    chars.append("\r")
+                else:
+                    chars.append(char)
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                tail = text[index + 1 : index + 80]
+                if re.match(r"\s*[,}]", tail):
+                    return "".join(chars).strip()
+                chars.append(char)
+            else:
+                chars.append(char)
+            index += 1
+        return None
+
+    @staticmethod
+    def _extract_moments_topic(user_text: str) -> str:
+        topic = user_text.strip()
+        for prefix in ("帮我写一个", "帮我写", "写一个", "生成一个", "生成"):
+            if topic.startswith(prefix):
+                topic = topic[len(prefix):].strip()
+                break
+        topic = re.sub(r"[，,。；;！!？?]*\s*(再)?配[一1]张图.*$", "", topic).strip()
+        topic = re.sub(r"[，,。；;！!？?]*\s*朋友圈.*$", "", topic).strip()
+        topic = re.sub(r"的$", "", topic).strip()
+        return topic or user_text.strip()
+
+    async def _maybe_generate_skill_image(
+        self,
+        *,
+        request: CreateRunRequest,
+        capability: CapabilityManifest,
+        final_response: str,
+    ) -> dict[str, Any] | None:
+        if capability.capability_id != "moments_copywriter_with_image":
+            return None
+        payload = request.input.model_dump(exclude_none=True)
+        if payload.get("need_image") is not True:
+            return None
+
+        prompt = self._image_prompt_from_skill_input(payload, final_response)
+        if not prompt:
+            return None
+        return await asyncio.to_thread(self._call_nexus_image_generation, prompt)
+
+    @staticmethod
+    def _image_prompt_from_skill_input(payload: dict[str, Any], final_response: str) -> str:
+        for key in ("image_prompt", "imagePrompt", "topic", "product"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return final_response.strip()[:500]
+
+    @staticmethod
+    def _call_nexus_image_generation(prompt: str) -> dict[str, Any] | None:
+        nexus_url = os.environ.get("NEXUS_URL", "").strip().rstrip("/")
+        nexus_api_key = os.environ.get("NEXUS_API_KEY", "").strip()
+        if not nexus_url:
+            return None
+
+        body = {
+            "prompt": prompt,
+            "size": "1024x1024",
+            "n": 1,
+            "response_format": "url",
+            "output_format": "png",
+        }
+        req = urllib.request.Request(
+            f"{nexus_url}/api/llm/images/generations",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {nexus_api_key}",
+            },
+            method="POST",
+        )
+        timeout = int(os.environ.get("NEXUS_IMAGE_TIMEOUT_SECONDS", "120"))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = json.loads(resp.read().decode("utf-8"))
+        except TimeoutError:
+            return {
+                "status": "timeout",
+                "prompt": prompt,
+                "error": "NEXUS 生图接口超时，文案已先生成。",
+            }
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            return {
+                "status": "error",
+                "prompt": prompt,
+                "error": "NEXUS 生图接口暂未返回图片，文案已先生成。",
+            }
+
+        image_url = HermesRuntimeFacade._extract_image_url_from_generation_response(raw)
+        if not image_url:
+            return {
+                "status": "error",
+                "prompt": prompt,
+                "raw": raw,
+                "error": "NEXUS 生图接口未返回图片地址，文案已先生成。",
+            }
+        return {
+            "status": "completed",
+            "image_url": image_url,
+            "prompt": prompt,
+            "model": raw.get("model") if isinstance(raw, dict) else None,
+            "raw": raw,
+        }
+
+    @staticmethod
+    def _extract_image_url_from_generation_response(raw: Any) -> str | None:
+        if not isinstance(raw, dict):
+            return None
+        for key in ("imageUrl", "url"):
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        data = raw.get("data")
+        if isinstance(data, dict):
+            for key in ("imageUrl", "url"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if isinstance(data, list) and data:
+            first = data[0]
+            if isinstance(first, dict):
+                for key in ("imageUrl", "url"):
+                    value = first.get(key)
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                b64 = first.get("b64_json") or first.get("b64Json")
+                if isinstance(b64, str) and b64.strip():
+                    return f"data:image/png;base64,{b64.strip()}"
+        return None
 
     @staticmethod
     def _input_field(input_payload: CreateRunInput, field_name: str) -> Any:

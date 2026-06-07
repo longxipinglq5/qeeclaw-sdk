@@ -294,6 +294,25 @@ def test_wechat_sync_reply_unwraps_safe_result_preview_card():
     assert sanitized == "朋友圈文案：\n马尔代夫的蓝，专治加班后遗症。\n\n配图：https://example.test/image.jpg"
 
 
+def test_wechat_sync_reply_unwraps_result_preview_with_nexus_image_url():
+    import wechat_gateway
+
+    result_preview = {
+        "card_type": "result_preview",
+        "title": "朋友圈文案",
+        "summary": "朋友圈文案：\n马尔代夫的蓝，专治加班后遗症。",
+        "imageUrl": "https://cdn.example.test/maldives.png",
+        "imagePrompt": "假装在马尔代夫旅游",
+    }
+
+    sanitized = wechat_gateway._sanitize_wechat_outbound_reply(json.dumps(result_preview, ensure_ascii=False))
+
+    assert sanitized == (
+        "朋友圈文案：\n马尔代夫的蓝，专治加班后遗症。"
+        "\n\n配图：https://cdn.example.test/maldives.png"
+    )
+
+
 def test_wechat_sync_reply_removes_terminal_json_before_user_summary():
     import wechat_gateway
 

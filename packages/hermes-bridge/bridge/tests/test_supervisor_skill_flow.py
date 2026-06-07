@@ -71,6 +71,26 @@ def test_supervisor_route_to_capability_asks_clarification_for_ambiguous_content
     assert selection.source == "deterministic_rule"
 
 
+def test_supervisor_routes_personal_moments_image_request_without_existing_artifact(tmp_path):
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    facade = HermesRuntimeFacade(FakeLegacyRuntime(), artifact_root_dir=tmp_path)
+
+    selection = facade.supervisor_route_to_capability(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="帮我写一个假装在马尔代夫旅游的朋友圈，配一张图",
+        context={},
+    )
+
+    assert selection.capability_id == "moments_copywriter_with_image"
+    assert selection.input["need_image"] is True
+    assert selection.input["topic"] == "假装在马尔代夫旅游"
+    assert selection.fallback_behavior == "run_capability"
+    assert selection.requires_clarification is False
+    assert selection.missing_inputs == []
+
+
 async def test_supervisor_invoke_creates_child_xhs_skill_run_and_refs(tmp_path):
     from httpx import ASGITransport, AsyncClient
 
@@ -153,7 +173,11 @@ async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tm
     from bridge.tests.test_runtime_facade import FakeLegacyRuntime
 
     app = create_app()
-    app.state.runtime = FakeLegacyRuntime()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={
+            "final_response": "三版朋友圈文案已生成。要我帮你直接用工具出张图吗？"
+        }
+    )
     app.state.runtime_facade = HermesRuntimeFacade(
         app.state.runtime,
         artifact_root_dir=tmp_path,
@@ -225,6 +249,173 @@ async def test_supervisor_followup_resolves_latest_artifact_for_moments_image(tm
     assert artifact.kind == "moments_copy"
     assert artifact.metadata["source_artifact_id"] == "art_run_000002"
     assert artifact.metadata["capability_id"] == "moments_copywriter_with_image"
+
+
+async def test_moments_image_skill_calls_nexus_and_attaches_image_url(tmp_path, monkeypatch):
+    import urllib.request
+
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    monkeypatch.setenv("NEXUS_URL", "https://nexus.example")
+    monkeypatch.setenv("NEXUS_API_KEY", "test-token")
+    calls = []
+
+    class FakeResponse:
+        status = 200
+        headers = {"Content-Type": "application/json"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {"data": [{"url": "https://cdn.example/maldives.png"}], "model": "nexus-image"}
+            ).encode("utf-8")
+
+    def fake_urlopen(req, timeout):
+        calls.append(
+            {
+                "url": req.full_url,
+                "body": json.loads(req.data.decode("utf-8")),
+                "authorization": req.headers.get("Authorization"),
+                "timeout": timeout,
+            }
+        )
+        return FakeResponse()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={
+            "final_response": (
+                "```json\n"
+                "{\n"
+                '  "card_type": "text",\n'
+                '  "speech": "三版朋友圈文案已生成。",\n'
+                '  "data": {\n'
+                '    "body": "### 短版\n马尔代夫的蓝，专治加班后遗症。\n\n要我帮你直接用工具出张图吗？",\n'
+                '    "suggestions": ["用短版", "用故事版"]\n'
+                "  }\n"
+                "}\n"
+                "```"
+            )
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "skill_run",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "capability_id": "moments_copywriter_with_image",
+                "input": {
+                    "topic": "假装在马尔代夫旅游",
+                    "tone": "轻松聊天",
+                    "need_image": True,
+                },
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        child_events_resp = await client.get("/api/runs/run_000001/events")
+
+    assert response.status_code == 200
+    assert calls == [
+        {
+            "url": "https://nexus.example/api/llm/images/generations",
+            "body": {
+                "prompt": "假装在马尔代夫旅游",
+                "size": "1024x1024",
+                "n": 1,
+                "response_format": "url",
+                "output_format": "png",
+            },
+            "authorization": "Bearer test-token",
+            "timeout": 120,
+        }
+    ]
+
+    artifact = app.state.runtime_facade.artifacts.get_artifact("art_run_000001")
+    assert "要我帮你" not in artifact.content["body"]
+    assert "```json" not in artifact.content["body"]
+    assert '"card_type"' not in artifact.content["body"]
+    assert "马尔代夫的蓝" in artifact.content["body"]
+    assert artifact.content["imageUrl"] == "https://cdn.example/maldives.png"
+    assert artifact.metadata["image_provider"] == "nexus"
+
+    child_events = child_events_resp.json()["events"]
+    app_result = next(event for event in child_events if event["type"] == "app_result")
+    assert app_result["payload"]["card"]["imageUrl"] == "https://cdn.example/maldives.png"
+
+
+async def test_moments_image_skill_records_nexus_timeout_without_comfy_claims(tmp_path, monkeypatch):
+    import urllib.request
+
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    monkeypatch.setenv("NEXUS_URL", "https://nexus.example")
+    monkeypatch.setenv("NEXUS_API_KEY", "test-token")
+
+    def fake_urlopen(_req, timeout):
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={
+            "final_response": "三版朋友圈文案已生成。ComfyUI 方案不应该出现在最终结果里。"
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "skill_run",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "capability_id": "moments_copywriter_with_image",
+                "input": {
+                    "topic": "假装在马尔代夫旅游",
+                    "tone": "轻松聊天",
+                    "need_image": True,
+                },
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+
+    assert response.status_code == 200
+
+    artifact = app.state.runtime_facade.artifacts.get_artifact("art_run_000001")
+    assert "ComfyUI" not in artifact.content["body"]
+    assert artifact.content["imageStatus"] == "timeout"
+    assert artifact.content["imageError"] == "NEXUS 生图接口超时，文案已先生成。"
+    assert artifact.metadata["image_provider"] == "nexus"
+    assert artifact.metadata["image_status"] == "timeout"
 
 
 async def test_supervisor_publish_followup_requires_approval_without_child_run(tmp_path):

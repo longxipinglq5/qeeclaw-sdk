@@ -696,7 +696,13 @@ def _result_preview_text_for_wechat(card: Dict[str, Any]) -> str:
         return full_output
     speech = str(card.get("speech") or "").strip()
     preview = str(data.get("preview") or "").strip()
-    return "\n\n".join(part for part in [speech, preview] if part)
+    summary = str(card.get("summary") or data.get("summary") or "").strip()
+    image_url = str(card.get("imageUrl") or data.get("imageUrl") or "").strip()
+    body = "\n\n".join(part for part in [speech, summary or preview] if part)
+    if image_url:
+        image_line = f"配图：{image_url}"
+        return "\n\n".join(part for part in [body, image_line] if part)
+    return body
 
 
 def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:

@@ -11,6 +11,8 @@ def build_result_preview_card(
     title: str,
     summary: str,
     artifact_ids: list[str],
+    image_url: str | None = None,
+    image_prompt: str | None = None,
 ) -> CardManifest:
     return CardManifest(
         card_id=f"card_result_{run_id}",
@@ -19,6 +21,8 @@ def build_result_preview_card(
         summary=summary,
         artifact_ids=artifact_ids,
         run_id=run_id,
+        imageUrl=image_url,
+        imagePrompt=image_prompt,
         fallback_text=summary,
     )
 
