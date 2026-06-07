@@ -51,12 +51,14 @@ async def post_channel_event(request: Request) -> JSONResponse:
 
     action = ((body.get("metadata") or {}).get("action") or {}) if isinstance(body.get("metadata"), dict) else {}
     if _is_app_im_free_text(body, action):
+        source_metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
         invoke_task = asyncio.create_task(
             facade.invoke_app_im_free_text(
                 session_id=session_id,
                 user_text=str(body.get("content") or ""),
                 agent_profile="edge_supervisor",
                 metadata={
+                    **source_metadata,
                     "owner_id": str(body.get("sender_id") or ""),
                     "conversation_id": str(body.get("conversation_key") or ""),
                     "channel_key": str(body.get("channel_key") or ""),

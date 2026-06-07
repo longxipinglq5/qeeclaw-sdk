@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from bridge.config import settings
+from bridge.invocation import resolve_skill_dispatch
 from bridge.runtime import StreamHandle
 from bridge.runtime_facade.approvals import ApprovalStore
 from bridge.runtime_facade.artifacts import JsonArtifactStore
@@ -38,6 +39,7 @@ from bridge.runtime_facade.session_store import SessionStore
 from bridge.runtime_facade.session_ids import SessionIdBuilder
 from bridge.runtime_facade.skill_catalog_provider import EdgeSkillCatalogProvider
 from bridge.runtime_facade.skill_intent_adapter import (
+    SkillUseIntent,
     extract_skill_use_intent,
     validate_skill_use_intent,
 )
@@ -101,7 +103,7 @@ class HermesRuntimeFacade:
         agent_profile: str = "edge_supervisor",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if agent_profile == "edge_supervisor":
+        if agent_profile == "edge_supervisor" and not self._is_headless_skill_channel(metadata or {}):
             selection = self.supervisor_route_to_capability(
                 session_id=session_id,
                 user_text=user_text,
@@ -126,11 +128,170 @@ class HermesRuntimeFacade:
                     agent_profile=agent_profile,
                 )
 
-        return await self.invoke_raw(
+        result = await self._invoke_raw_with_run_metadata(
             session_id=session_id,
             user_text=user_text,
             agent_profile=agent_profile,
+            metadata=metadata,
         )
+        if self._is_headless_skill_channel(metadata or {}) and isinstance(result.get("skill_intent"), dict):
+            intent = extract_skill_use_intent({"final_response": json.dumps({
+                "card_type": "open_skill_app",
+                "data": result["skill_intent"],
+            }, ensure_ascii=False)})
+            if intent is not None:
+                return await self.run_headless_skill_intent(
+                    intent=intent,
+                    metadata=metadata or {},
+                    parent_run_id=str(result.get("run_id") or ""),
+                )
+        return result
+
+    async def run_headless_skill_intent(
+        self,
+        *,
+        intent: SkillUseIntent,
+        metadata: dict[str, Any],
+        parent_run_id: str | None = None,
+        trace_id: str | None = None,
+    ) -> dict[str, Any]:
+        session_id = str(metadata.get("supervisor_session_id") or "")
+        if not session_id:
+            raise ValueError("metadata.supervisor_session_id is required for headless skill intent")
+
+        user_instruction = json.dumps(intent.prefilled, ensure_ascii=False, sort_keys=True)
+        dispatch = resolve_skill_dispatch(
+            user_instruction,
+            skill_command=intent.skill_id,
+            runtime_note="headless Skill as App execution",
+        )
+        if dispatch.error:
+            raise ValueError(json.dumps(dispatch.error, ensure_ascii=False))
+
+        self.sessions.get_or_create(session_id=session_id, agent_profile="edge_supervisor")
+        conversation_history = self.sessions.get_recent_messages(session_id)
+        run = self.runs.start_run(
+            session_id=session_id,
+            agent_profile="edge_supervisor",
+            kind=RunKind.SKILL_RUN,
+            input_text=dispatch.user_text,
+            trace_id=trace_id,
+            parent_run_id=parent_run_id,
+            source="headless_skill_intent",
+            metadata={
+                **metadata,
+                "skill_id": intent.skill_id,
+                "skill_name": intent.skill_name,
+            },
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="app_started",
+            payload={
+                "skill_id": intent.skill_id,
+                "skill_name": intent.skill_name or intent.skill_id,
+                "source": "headless_skill_intent",
+            },
+            trace_id=run.trace_id,
+        )
+
+        try:
+            result = await self._legacy_runtime.invoke_raw(
+                session_id=session_id,
+                user_text=dispatch.user_text,
+                agent_profile="edge_supervisor",
+                system_prompt=None,
+                conversation_history=conversation_history,
+            )
+        except Exception as exc:
+            self.runs.fail_run(run.run_id, error=str(exc))
+            raise
+
+        usage = self._normalize_prompt_cache_usage(
+            result,
+            session_id=session_id,
+            context_length=len(conversation_history) + 1,
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="metering",
+            payload={
+                "usage": usage,
+                "cache_prefix_changed": False,
+                "previous_prompt_prefix_hash": None,
+            },
+            trace_id=run.trace_id,
+        )
+
+        final_response = self._unwrap_skill_card_text(str(result.get("final_response") or "")).strip()
+        artifact_id = self.artifacts.next_available_artifact_id(f"art_{run.run_id}")
+        artifact = self.artifacts.create_artifact(
+            artifact_id=artifact_id,
+            session_id=session_id,
+            run_id=run.run_id,
+            kind=intent.skill_id,
+            title=intent.skill_name or intent.skill_id,
+            content={"body": final_response},
+            metadata={
+                "skill_id": intent.skill_id,
+                "skill_name": intent.skill_name,
+                "prefilled": intent.prefilled,
+            },
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="artifact_created",
+            payload={"artifact": artifact.model_dump(mode="json")},
+            trace_id=run.trace_id,
+        )
+        card = build_result_preview_card(
+            run_id=run.run_id,
+            title=intent.skill_name or intent.skill_id,
+            summary=final_response,
+            artifact_ids=[artifact.artifact_id],
+        )
+        self.events.append(
+            session_id=session_id,
+            run_id=run.run_id,
+            type="app_result",
+            payload={"card": card.model_dump(mode="json")},
+            trace_id=run.trace_id,
+        )
+        self.runs.complete_run(
+            run.run_id,
+            result_text=final_response,
+            usage=usage,
+            done_payload={
+                "text": final_response,
+                "usage": usage,
+                "artifact_id": artifact.artifact_id,
+                "skill_id": intent.skill_id,
+            },
+        )
+        self.sessions.append_turn(
+            session_id,
+            user_text=dispatch.user_text,
+            assistant_text=final_response,
+            metadata={"run_id": run.run_id, "skill_id": intent.skill_id},
+        )
+        return {
+            **result,
+            "run_id": run.run_id,
+            "artifact_id": artifact.artifact_id,
+            "final_response": final_response,
+            "renderable_reply_text": final_response,
+        }
+
+    @staticmethod
+    def _is_headless_skill_channel(metadata: dict[str, Any]) -> bool:
+        return str(metadata.get("source_channel_key") or "") in {
+            "wechat_personal_openclaw",
+            "wechat_personal_plugin",
+            "wechat",
+        }
 
     async def _invoke_raw_with_run_metadata(
         self,

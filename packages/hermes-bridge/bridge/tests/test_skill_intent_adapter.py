@@ -147,3 +147,50 @@ def test_validate_skill_intent_missing_required_field_needs_clarification():
 
     assert validated.status == "needs_clarification"
     assert validated.missing_inputs == ["theme"]
+
+
+async def test_run_headless_skill_intent_invokes_hermes_skill_and_creates_result(tmp_path):
+    import sys
+    import types
+
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.runtime_facade.skill_intent_adapter import SkillUseIntent
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    fake_skill_commands = types.ModuleType("agent.skill_commands")
+    fake_skill_commands.resolve_skill_command_key = lambda command: f"/{command}"
+
+    def build_skill_invocation_message(cmd_key, user_instruction, task_id=None, runtime_note=""):
+        return f"[skill invocation] {cmd_key} {user_instruction}"
+
+    fake_skill_commands.build_skill_invocation_message = build_skill_invocation_message
+    sys.modules["agent.skill_commands"] = fake_skill_commands
+
+    legacy = FakeLegacyRuntime({"final_response": "朋友圈配图已生成"})
+    facade = HermesRuntimeFacade(legacy, artifact_root_dir=tmp_path)
+
+    result = await facade.run_headless_skill_intent(
+        intent=SkillUseIntent(
+            skill_id="poster-generator",
+            skill_name="海报生成器",
+            summary="生成朋友圈配图",
+            prefilled={"purpose": "朋友圈配图", "theme": "马尔代夫海景"},
+        ),
+        metadata={
+            "supervisor_session_id": "edge:owner_1:supervisor:conv_abc",
+            "owner_id": "owner_1",
+        },
+        parent_run_id="run_parent_001",
+    )
+
+    assert result["artifact_id"] == "art_run_000001"
+    assert result["renderable_reply_text"] == "朋友圈配图已生成"
+    assert legacy.invoke_calls[-1]["user_text"] == (
+        '[skill invocation] /poster-generator {"purpose": "朋友圈配图", "theme": "马尔代夫海景"}'
+    )
+    artifact = facade.artifacts.get_artifact("art_run_000001")
+    assert artifact.title == "海报生成器"
+    assert artifact.metadata["skill_id"] == "poster-generator"
+    timeline = facade.timeline.list_session("edge:owner_1:supervisor:conv_abc")
+    cards = [event.card for event in timeline.events if event.card]
+    assert cards[-1]["card_type"] == "result_preview"

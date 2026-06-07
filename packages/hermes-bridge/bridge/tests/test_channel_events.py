@@ -574,6 +574,183 @@ async def test_app_im_free_text_times_out_with_async_wechat_followup(tmp_path, m
     ]
 
 
+async def test_wechat_source_skill_intent_runs_headless_skill_when_fast(tmp_path, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        {
+            "final_response": (
+                '{"card_type":"open_skill_app","data":{"skill_id":"poster-generator",'
+                '"skill_name":"海报生成器","summary":"生成马尔代夫朋友圈配图",'
+                '"prefilled":{"purpose":"朋友圈配图","theme":"马尔代夫海景"}}}'
+            )
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    app.state.runtime_facade.skill_catalog.as_dicts = lambda: [
+        {
+            "name": "poster-generator",
+            "description": "生成海报",
+            "input_schema": {
+                "type": "object",
+                "properties": {"purpose": {}, "theme": {}},
+                "required": ["purpose", "theme"],
+            },
+        }
+    ]
+    calls = []
+
+    async def fake_run_headless_skill_intent(*, intent, metadata, parent_run_id=None, trace_id=None):
+        calls.append(
+            {
+                "skill_id": intent.skill_id,
+                "prefilled": intent.prefilled,
+                "metadata": metadata,
+                "parent_run_id": parent_run_id,
+            }
+        )
+        return {
+            "run_id": "run_skill_001",
+            "artifact_id": "art_skill_001",
+            "renderable_reply_text": "朋友圈文案和配图已生成：https://cdn.example/maldives.png",
+            "final_response": "朋友圈文案和配图已生成：https://cdn.example/maldives.png",
+        }
+
+    monkeypatch.setattr(app.state.runtime_facade, "run_headless_skill_intent", fake_run_headless_skill_intent)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("wx_skill_intent_001", "帮我写一个假装在马尔代夫旅游的朋友圈，配一张图"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "source_channel_key": "wechat_personal_openclaw",
+                    "source_chat_id": "wx_chat_001",
+                    "action": {"type": "free_text"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "sync_reply"
+    assert body["artifact_id"] == "art_skill_001"
+    assert body["reply"]["text"] == "朋友圈文案和配图已生成：https://cdn.example/maldives.png"
+    assert calls == [
+        {
+            "skill_id": "poster-generator",
+            "prefilled": {"purpose": "朋友圈配图", "theme": "马尔代夫海景"},
+            "metadata": {
+                "owner_id": "owner_1",
+                "conversation_id": "conv_abc",
+                "channel_key": "app_im",
+                "external_message_id": "wx_skill_intent_001",
+                "supervisor_session_id": supervisor_session_id,
+                "source_channel_key": "wechat_personal_openclaw",
+                "source_chat_id": "wx_chat_001",
+                "action": {"type": "free_text"},
+            },
+            "parent_run_id": "run_000001",
+        }
+    ]
+
+
+async def test_wechat_source_skill_intent_times_out_and_schedules_headless_followup(
+    tmp_path,
+    monkeypatch,
+):
+    import asyncio
+
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    sent_messages = []
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        {
+            "final_response": (
+                '{"card_type":"open_skill_app","data":{"skill_id":"poster-generator",'
+                '"skill_name":"海报生成器","summary":"生成马尔代夫朋友圈配图",'
+                '"prefilled":{"purpose":"朋友圈配图","theme":"马尔代夫海景"}}}'
+            )
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    app.state.runtime_facade.skill_catalog.as_dicts = lambda: [
+        {
+            "name": "poster-generator",
+            "description": "生成海报",
+            "input_schema": {
+                "type": "object",
+                "properties": {"purpose": {}, "theme": {}},
+                "required": ["purpose", "theme"],
+            },
+        }
+    ]
+
+    async def slow_run_headless_skill_intent(*, intent, metadata, parent_run_id=None, trace_id=None):
+        await asyncio.sleep(0.05)
+        return {
+            "run_id": "run_skill_late_001",
+            "artifact_id": "art_skill_late_001",
+            "renderable_reply_text": "朋友圈配图已生成：https://cdn.example/maldives.png",
+            "final_response": "朋友圈配图已生成：https://cdn.example/maldives.png",
+        }
+
+    def fake_send_message(*, chat_id, message, media_files=None):
+        sent_messages.append({"chat_id": chat_id, "message": message, "media_files": media_files})
+        return {"success": True, "message_id": "wx_reply_001"}
+
+    monkeypatch.setattr(app.state.runtime_facade, "run_headless_skill_intent", slow_run_headless_skill_intent)
+    monkeypatch.setattr("bridge.api.channels._send_wechat_followup_message", fake_send_message)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("wx_skill_timeout_001", "帮我配张马尔代夫海景图"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "sync_reply_timeout_ms": 30,
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "source_channel_key": "wechat_personal_openclaw",
+                    "source_chat_id": "wx_chat_001",
+                    "action": {"type": "free_text"},
+                },
+            },
+        )
+        await asyncio.sleep(0.08)
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "accepted_async"
+    assert response.json()["reply"]["text"] == "收到，正在生成，完成后发你。"
+    assert sent_messages == [
+        {
+            "chat_id": "wx_chat_001",
+            "message": "朋友圈配图已生成：https://cdn.example/maldives.png",
+            "media_files": None,
+        }
+    ]
+
+
 def test_wechat_followup_text_unwraps_result_preview_json():
     from bridge.api.channels import _wechat_followup_text_from_result
 
