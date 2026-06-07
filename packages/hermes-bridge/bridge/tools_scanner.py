@@ -67,14 +67,18 @@ def _parse_skill_md(path: Path) -> ToolInfo | None:
     name = meta.get("name") or path.parent.name
     description = meta.get("description") or ""
     category = meta.get("category")
+    icon = meta.get("icon")
     input_schema = _convert_input_schema(meta.get("input_schema"))
+    output_schema = meta.get("output_schema")
     card_template = meta.get("card_template")
 
     return ToolInfo(
         name=name,
         description=description,
         category=category,
+        icon=icon,
         input_schema=input_schema,
+        output_schema=output_schema,
         card_template=card_template,
     )
 
@@ -94,10 +98,14 @@ def _convert_input_schema(raw: list[dict] | dict | None) -> dict | None:
         if not key:
             continue
         field_type = field.get("type", "string")
+        schema_type = "string" if field_type in {"text", "textarea", "select"} else field_type
         properties[key] = {
-            "type": field_type,
+            "type": schema_type,
             "description": field.get("label", key),
+            "x_input_type": field_type,
         }
+        if field.get("placeholder"):
+            properties[key]["x_placeholder"] = field["placeholder"]
         if field.get("options"):
             properties[key]["enum"] = field["options"]
         if field.get("required"):

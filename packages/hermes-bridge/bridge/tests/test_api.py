@@ -68,6 +68,34 @@ class TestToolsListAPI:
         from bridge import config
 
         monkeypatch.setattr(config.settings, "hermes_home", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "edge" / "weather-day-promo-generator"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: weather-day-promo-generator\n"
+            "description: 为雨天生成促销话术。\n"
+            "category: store\n"
+            "icon: \"雨\"\n"
+            "input_schema:\n"
+            "  - key: weather_context\n"
+            "    label: 天气/低峰情况\n"
+            "    type: select\n"
+            "    required: true\n"
+            "    placeholder: \"选择当前情况\"\n"
+            "    options: [\"雨天人少\", \"突然降温\"]\n"
+            "  - key: target_item\n"
+            "    label: 想推项目\n"
+            "    type: textarea\n"
+            "    required: true\n"
+            "    placeholder: \"例如：到店消费项目\"\n"
+            "output_schema:\n"
+            "  - key: result\n"
+            "    label: 生成结果\n"
+            "    type: text\n"
+            "card_template: text_only\n"
+            "---\n\n# 天气低峰促销助手\n",
+            encoding="utf-8",
+        )
         from bridge.tools_scanner import scan_edge_skills
 
         scan_edge_skills(force=True)
@@ -77,6 +105,32 @@ class TestToolsListAPI:
         body = resp.json()
         assert "tools" in body
         assert isinstance(body["tools"], list)
+        tool = next(
+            item for item in body["tools"] if item["name"] == "weather-day-promo-generator"
+        )
+        assert tool["icon"] == "雨"
+        assert tool["category"] == "store"
+        assert tool["card_template"] == "text_only"
+        assert tool["output_schema"] == [
+            {"key": "result", "label": "生成结果", "type": "text"}
+        ]
+        assert tool["input_schema"]["properties"]["weather_context"] == {
+            "type": "string",
+            "description": "天气/低峰情况",
+            "x_input_type": "select",
+            "x_placeholder": "选择当前情况",
+            "enum": ["雨天人少", "突然降温"],
+        }
+        assert tool["input_schema"]["properties"]["target_item"] == {
+            "type": "string",
+            "description": "想推项目",
+            "x_input_type": "textarea",
+            "x_placeholder": "例如：到店消费项目",
+        }
+        assert tool["input_schema"]["required"] == [
+            "weather_context",
+            "target_item",
+        ]
 
 
 class TestHealthAPI:
