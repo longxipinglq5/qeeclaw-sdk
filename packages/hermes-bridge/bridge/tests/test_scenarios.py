@@ -42,6 +42,14 @@ class TestScenarios:
         assert "来自 Edge 的专家规则" not in prompt
         assert "来自 Edge 的专家列表" not in prompt
 
+    def test_supervisor_routes_internal_tool_matches_to_toolbox_form(self):
+        prompt = get_system_prompt("supervisor", agent_profile="edge_supervisor")
+        assert "命中内部 AI工具箱工具" in prompt
+        assert "禁止直接返回 result_preview" in prompt
+        assert "必须返回 intent_confirm" in prompt
+        assert 'execution_mode 必须设为 "toolbox"' in prompt
+        assert "前端会导航到对应工具表单页" in prompt
+
     def test_context_none_no_extra(self):
         prompt = get_system_prompt("general", None)
         assert "当前上下文" not in prompt
