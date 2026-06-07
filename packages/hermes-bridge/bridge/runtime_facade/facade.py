@@ -364,7 +364,7 @@ class HermesRuntimeFacade:
             },
             trace_id=run.trace_id,
         )
-        intent = extract_skill_use_intent(result)
+        intent = extract_skill_use_intent(result) if settings.native_skill_intent_enabled else None
         if intent:
             validation = validate_skill_use_intent(intent, tools=self.skill_catalog.as_dicts())
             if validation.status == "accepted":

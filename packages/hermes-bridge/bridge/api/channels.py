@@ -11,6 +11,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
 from bridge.api.errors import api_error
+from bridge.config import settings
 from bridge.runtime_facade.channel_stores import (
     ChannelUnavailableError,
     OutboxNotFoundError,
@@ -66,7 +67,9 @@ async def post_channel_event(request: Request) -> JSONResponse:
                 },
             )
         )
-        sync_reply_timeout_ms = int(body.get("sync_reply_timeout_ms") or 0)
+        sync_reply_timeout_ms = int(
+            body.get("sync_reply_timeout_ms") or settings.headless_skill_sync_timeout_ms
+        )
         if sync_reply_timeout_ms > 0:
             try:
                 result = await asyncio.wait_for(

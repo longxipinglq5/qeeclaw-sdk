@@ -200,6 +200,10 @@ class Settings(BaseSettings):
     cache_max_size: int = 32
     context_recent_message_limit: int = 24
     context_recent_token_budget: int = 6000
+    native_skill_intent_enabled: bool = os.getenv("HERMES_NATIVE_SKILL_INTENT", "1") == "1"
+    headless_skill_sync_timeout_ms: int = int(
+        os.getenv("HERMES_HEADLESS_SKILL_SYNC_TIMEOUT_MS", "1500")
+    )
 
     @property
     def hermes_agent_path(self) -> Path:

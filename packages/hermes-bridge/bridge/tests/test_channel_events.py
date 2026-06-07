@@ -508,6 +508,53 @@ async def test_app_im_free_text_skill_intent_missing_required_field_clarifies(tm
     assert clarify_events[-1].payload["missing_inputs"] == ["theme"]
 
 
+async def test_native_skill_intent_flag_can_disable_bridge_capture(tmp_path, monkeypatch):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge import config
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    monkeypatch.setattr(config.settings, "native_skill_intent_enabled", False)
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        {
+            "final_response": (
+                '{"card_type":"open_skill_app","data":{"skill_id":"poster-generator",'
+                '"prefilled":{"purpose":"朋友圈配图","theme":"马尔代夫海景"}}}'
+            )
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_flag_off_001", "配张海景图就行"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {"type": "free_text"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    timeline = app.state.runtime_facade.timeline.list_session(supervisor_session_id)
+    assert not [
+        event
+        for event in timeline.events
+        if event.card and event.card.get("card_type") == "open_skill_app"
+    ]
+
+
 async def test_app_im_free_text_times_out_with_async_wechat_followup(tmp_path, monkeypatch):
     import asyncio
 
