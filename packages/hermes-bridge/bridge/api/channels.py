@@ -241,10 +241,19 @@ def _wechat_followup_text_from_result(result: dict) -> str:
     data = parsed.get("data") if isinstance(parsed.get("data"), dict) else {}
     full_output = str(data.get("full_output") or "").strip()
     if full_output:
-        return full_output
+        return _sanitize_wechat_followup_text(full_output)
     speech = str(parsed.get("speech") or "").strip()
     preview = str(data.get("preview") or "").strip()
-    return "\n\n".join(part for part in [speech, preview] if part)
+    return _sanitize_wechat_followup_text("\n\n".join(part for part in [speech, preview] if part))
+
+
+def _sanitize_wechat_followup_text(text: str) -> str:
+    try:
+        import wechat_gateway
+
+        return wechat_gateway._sanitize_wechat_outbound_reply(text)
+    except Exception:
+        return text
 
 
 def _send_wechat_followup_message(*, chat_id: str, message: str, media_files=None) -> dict:

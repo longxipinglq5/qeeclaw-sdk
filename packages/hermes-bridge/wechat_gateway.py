@@ -639,6 +639,9 @@ def _sanitize_wechat_outbound_reply(text: str) -> str:
     if not cleaned:
         return "已收到，结果已在 Edge 主对话里生成。"
     fallback = "已收到，结果已在 Edge 主对话里生成。"
+    cleaned = _strip_leading_tool_json_for_wechat(cleaned)
+    if not cleaned:
+        return fallback
 
     try:
         parsed = json.loads(cleaned)
@@ -669,6 +672,21 @@ def _sanitize_wechat_outbound_reply(text: str) -> str:
         suffix = "\n\n完整内容已在 Edge 主对话里生成。"
         return cleaned[: max(0, max_chars - len(suffix))].rstrip() + suffix
     return cleaned
+
+
+def _strip_leading_tool_json_for_wechat(text: str) -> str:
+    if not text.startswith("{"):
+        return text
+    decoder = json.JSONDecoder()
+    try:
+        parsed, end_index = decoder.raw_decode(text)
+    except Exception:
+        return text
+    if not isinstance(parsed, dict):
+        return text
+    if not {"output", "exit_code", "error"}.issubset(parsed.keys()):
+        return text
+    return text[end_index:].strip()
 
 
 def _result_preview_text_for_wechat(card: Dict[str, Any]) -> str:

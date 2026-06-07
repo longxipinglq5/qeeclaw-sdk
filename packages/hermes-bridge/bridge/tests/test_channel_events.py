@@ -467,6 +467,30 @@ def test_wechat_followup_text_unwraps_result_preview_json():
     )
 
 
+def test_wechat_followup_text_removes_terminal_json_before_user_summary():
+    from bridge.api.channels import _wechat_followup_text_from_result
+
+    result = {
+        "renderable_reply_text": (
+            '{"card_type":"result_preview","speech":"内容已生成。",'
+            '"data":{"title":"工具结果","preview":"预览",'
+            '"full_output":"{\\"output\\":\\"{\\\\n  \\\\\\"os\\\\\\": \\\\\\"Darwin\\\\\\",\\\\n  \\\\\\"arch\\\\\\": \\\\\\"x86_64\\\\\\",\\\\n'
+            '  \\\\\\"system_ram_gb\\\\\\": 36.0,\\\\n  \\\\\\"verdict\\\\\\": \\\\\\"cloud\\\\\\"\\\\n}\\",'
+            '\\"exit_code\\":2,\\"error\\":null}\\n\\n'
+            "林总，图这块有点情况——这台机器是 Intel Mac 跑 Rosetta，本地跑不了 ComfyUI。"
+            "\\n有两个方案：\\n1. Comfy Cloud：云端生成。\\n2. 我帮你找现成的高清图。\"}}"
+        ),
+        "final_response": "内容已生成。",
+    }
+
+    text = _wechat_followup_text_from_result(result)
+
+    assert text.startswith("林总，图这块有点情况")
+    assert '"output"' not in text
+    assert '"exit_code"' not in text
+    assert "system_ram_gb" not in text
+
+
 async def test_app_im_free_text_returns_tool_output_as_renderable_result_card(tmp_path):
     from httpx import ASGITransport, AsyncClient
 

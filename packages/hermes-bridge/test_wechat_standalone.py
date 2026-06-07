@@ -292,3 +292,24 @@ def test_wechat_sync_reply_unwraps_safe_result_preview_card():
     sanitized = wechat_gateway._sanitize_wechat_outbound_reply(json.dumps(result_preview, ensure_ascii=False))
 
     assert sanitized == "朋友圈文案：\n马尔代夫的蓝，专治加班后遗症。\n\n配图：https://example.test/image.jpg"
+
+
+def test_wechat_sync_reply_removes_terminal_json_before_user_summary():
+    import wechat_gateway
+
+    text = (
+        '{"output":"{\\n  \\"os\\": \\"Darwin\\",\\n  \\"arch\\": \\"x86_64\\",\\n'
+        '  \\"system_ram_gb\\": 36.0,\\n  \\"verdict\\": \\"cloud\\"\\n}",'
+        '"exit_code":2,"error":null}\n\n'
+        "林总，图这块有点情况——这台机器是 Intel Mac 跑 Rosetta，本地跑不了 ComfyUI。\n"
+        "有两个方案：\n"
+        "1. Comfy Cloud：云端生成。\n"
+        "2. 我帮你找现成的：搜一张高清马尔代夫无水印图。"
+    )
+
+    sanitized = wechat_gateway._sanitize_wechat_outbound_reply(text)
+
+    assert sanitized.startswith("林总，图这块有点情况")
+    assert '"output"' not in sanitized
+    assert '"exit_code"' not in sanitized
+    assert "system_ram_gb" not in sanitized
