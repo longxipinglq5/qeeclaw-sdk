@@ -37,6 +37,10 @@ from bridge.runtime_facade.run_manager import RunManager
 from bridge.runtime_facade.session_store import SessionStore
 from bridge.runtime_facade.session_ids import SessionIdBuilder
 from bridge.runtime_facade.skill_catalog_provider import EdgeSkillCatalogProvider
+from bridge.runtime_facade.skill_intent_adapter import (
+    extract_skill_use_intent,
+    validate_skill_use_intent,
+)
 from bridge.runtime_facade.store import InMemoryStore
 from bridge.runtime_facade.timeline import TimelineStore
 
@@ -199,6 +203,108 @@ class HermesRuntimeFacade:
             },
             trace_id=run.trace_id,
         )
+        intent = extract_skill_use_intent(result)
+        if intent:
+            validation = validate_skill_use_intent(intent, tools=self.skill_catalog.as_dicts())
+            if validation.status == "accepted":
+                reply_text = (
+                    validation.intent.summary
+                    or validation.intent.speech
+                    or "我帮你打开工具生成。"
+                )
+                self.events.append(
+                    session_id=session_id,
+                    run_id=run.run_id,
+                    type="open_skill_app",
+                    payload={
+                        "skill_id": validation.intent.skill_id,
+                        "skill_name": validation.intent.skill_name,
+                        "summary": validation.intent.summary,
+                        "speech": validation.intent.speech,
+                        "prefilled": validation.intent.prefilled,
+                        "auto_run": validation.intent.auto_run,
+                    },
+                    trace_id=run.trace_id,
+                )
+                self.runs.complete_run(
+                    run.run_id,
+                    result_text=reply_text,
+                    usage=usage,
+                    done_payload={
+                        "skill_id": validation.intent.skill_id,
+                        "usage": usage,
+                    },
+                )
+                self.sessions.append_turn(
+                    session_id,
+                    user_text=user_text,
+                    assistant_text=reply_text,
+                    metadata={"run_id": run.run_id},
+                )
+                return {
+                    **result,
+                    "final_response": reply_text,
+                    "renderable_reply_text": reply_text,
+                    "run_id": run.run_id,
+                    "session_id": session_id,
+                    "agent_profile": agent_profile,
+                    "skill_intent": validation.intent.model_dump(mode="json"),
+                }
+            if validation.status == "needs_clarification":
+                clarify_text = (
+                    f"还需要补充：{', '.join(validation.missing_inputs)}，"
+                    f"我才能打开「{validation.intent.skill_name or validation.intent.skill_id}」生成。"
+                )
+                # TODO: Feed missing_inputs back into Hermes for complex
+                # clarification turns so it can re-check full session context.
+                self.events.append(
+                    session_id=session_id,
+                    run_id=run.run_id,
+                    type="clarify_required",
+                    payload={
+                        "text": clarify_text,
+                        "summary": clarify_text,
+                        "skill_id": validation.intent.skill_id,
+                        "missing_inputs": validation.missing_inputs,
+                    },
+                    trace_id=run.trace_id,
+                )
+                self.runs.complete_run(
+                    run.run_id,
+                    result_text=clarify_text,
+                    usage=usage,
+                    done_payload={
+                        "skill_id": validation.intent.skill_id,
+                        "missing_inputs": validation.missing_inputs,
+                        "usage": usage,
+                    },
+                )
+                self.sessions.append_turn(
+                    session_id,
+                    user_text=user_text,
+                    assistant_text=clarify_text,
+                    metadata={"run_id": run.run_id},
+                )
+                return {
+                    **result,
+                    "final_response": clarify_text,
+                    "renderable_reply_text": clarify_text,
+                    "run_id": run.run_id,
+                    "session_id": session_id,
+                    "agent_profile": agent_profile,
+                    "skill_intent": validation.intent.model_dump(mode="json"),
+                    "skill_intent_validation": validation.model_dump(mode="json"),
+                }
+            self.events.append(
+                session_id=session_id,
+                run_id=run.run_id,
+                type="skill_intent_rejected",
+                payload={
+                    "skill_id": intent.skill_id,
+                    "reason": validation.reason,
+                },
+                trace_id=run.trace_id,
+            )
         self.runs.complete_run(
             run.run_id,
             result_text=str(result.get("final_response") or ""),

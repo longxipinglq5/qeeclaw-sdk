@@ -384,6 +384,130 @@ async def test_app_im_free_text_invokes_supervisor_and_returns_renderable_reply(
     ]
 
 
+async def test_app_im_free_text_emits_open_skill_app_from_hermes_intent(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        {
+            "final_response": (
+                '{"card_type":"open_skill_app","speech":"我帮你打开工具生成。",'
+                '"data":{"skill_id":"poster-generator","skill_name":"海报生成器",'
+                '"summary":"生成马尔代夫朋友圈配图","auto_run":true,'
+                '"prefilled":{"purpose":"朋友圈配图","theme":"马尔代夫海景"}}}'
+            )
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    app.state.runtime_facade.skill_catalog.as_dicts = lambda: [
+        {
+            "name": "poster-generator",
+            "description": "生成海报、朋友圈配图、小红书封面",
+            "input_schema": {
+                "type": "object",
+                "properties": {"purpose": {}, "theme": {}},
+                "required": ["purpose", "theme"],
+            },
+        }
+    ]
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_open_skill_001", "配张海景图就行"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {"type": "free_text", "text": "配张海景图就行"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["mode"] == "sync_reply"
+    assert body["reply"] == {"text": "生成马尔代夫朋友圈配图"}
+    timeline = app.state.runtime_facade.timeline.list_session(supervisor_session_id)
+    open_skill_events = [
+        event
+        for event in timeline.events
+        if event.card and event.card.get("card_type") == "open_skill_app"
+    ]
+    assert open_skill_events
+    assert open_skill_events[-1].card["data"]["skill_id"] == "poster-generator"
+    assert open_skill_events[-1].card["data"]["prefilled"]["theme"] == "马尔代夫海景"
+
+
+async def test_app_im_free_text_skill_intent_missing_required_field_clarifies(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        {
+            "final_response": (
+                '{"card_type":"open_skill_app","speech":"我帮你打开工具生成。",'
+                '"data":{"skill_id":"poster-generator","skill_name":"海报生成器",'
+                '"summary":"生成朋友圈配图","auto_run":true,'
+                '"prefilled":{"purpose":"朋友圈配图"}}}'
+            )
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(app.state.runtime, artifact_root_dir=tmp_path)
+    app.state.runtime_facade.skill_catalog.as_dicts = lambda: [
+        {
+            "name": "poster-generator",
+            "description": "生成海报、朋友圈配图、小红书封面",
+            "input_schema": {
+                "type": "object",
+                "properties": {"purpose": {}, "theme": {}},
+                "required": ["purpose", "theme"],
+            },
+        }
+    ]
+
+    supervisor_session_id = "edge:owner_1:supervisor:conv_abc"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/channels/events",
+            json={
+                **_external_event("app_msg_skill_clarify_001", "帮我配图"),
+                "channel_key": "app_im",
+                "conversation_key": "conv_abc",
+                "sender_id": "owner_1",
+                "metadata": {
+                    "supervisor_session_id": supervisor_session_id,
+                    "action": {"type": "free_text", "text": "帮我配图"},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["reply"]["text"] == "还需要补充：theme，我才能打开「海报生成器」生成。"
+    timeline = app.state.runtime_facade.timeline.list_session(supervisor_session_id)
+    clarify_events = [
+        event
+        for event in timeline.events
+        if event.source_event_type == "clarify_required"
+    ]
+    assert clarify_events
+    assert clarify_events[-1].payload["missing_inputs"] == ["theme"]
+
+
 async def test_app_im_free_text_times_out_with_async_wechat_followup(tmp_path, monkeypatch):
     import asyncio
 
