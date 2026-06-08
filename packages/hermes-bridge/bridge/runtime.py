@@ -105,6 +105,7 @@ class HermesRuntime:
             "quiet_mode": True,
             "model": settings.hermes_model,
             "provider": settings.hermes_provider,
+            "base_url": settings.deepseek_base_url,
             "load_soul_identity": True,
         }
         if settings.deepseek_api_key:

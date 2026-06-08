@@ -14,6 +14,7 @@ load_dotenv(override=False)
 logger = logging.getLogger(__name__)
 
 HERMES_AGENT_REQUIRED_TAG = "v2026.5.29.2"
+CENTAUR_PLATFORM_BASE_URL = "https://paas.qeeshu.com"
 
 # ---------------------------------------------------------------------------
 # config.yaml 加载（与 release standalone 部署保持一致）
@@ -58,6 +59,64 @@ def _cfg(server_config: dict, section: str, key: str, default=None):
 
 
 _YAML_CONFIG = _load_yaml_config()
+
+
+def _read_env_file(path: str) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if not path or not os.path.isfile(path):
+        return env
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = value.strip()
+                if (
+                    len(value) >= 2
+                    and value[0] == value[-1]
+                    and value[0] in ("'", '"')
+                ):
+                    value = value[1:-1]
+                env[key] = value
+    except Exception as e:
+        print(f"[hermes-bridge] WARNING: Failed to load runtime env {path}: {e}")
+    return env
+
+
+def _runtime_env_paths() -> list[str]:
+    configured = os.environ.get("CENTAUR_RUNTIME_ENV_FILE", "").strip()
+    if configured:
+        return [configured]
+    return [
+        "/var/lib/centauros/provisioning/runtime.env",
+        "/etc/centauros/device.env",
+    ]
+
+
+def _apply_runtime_env_overrides() -> None:
+    for env_path in _runtime_env_paths():
+        for key, value in _read_env_file(env_path).items():
+            if key in {
+                "CENTAUR_MODEL_API_KEY",
+                "CENTAUR_DEVICE_ID",
+                "CENTAUR_TENANT_ID",
+                "CENTAUR_CONFIG_VERSION",
+                "NEXUS_API_KEY",
+                "NEXUS_LLM_TIMEOUT_SECONDS",
+            }:
+                os.environ[key] = value
+    os.environ["CENTAUR_MODEL_BASE_URL"] = CENTAUR_PLATFORM_BASE_URL
+    os.environ["NEXUS_URL"] = CENTAUR_PLATFORM_BASE_URL
+    if not os.environ.get("NEXUS_API_KEY") and os.environ.get("CENTAUR_MODEL_API_KEY"):
+        os.environ["NEXUS_API_KEY"] = os.environ["CENTAUR_MODEL_API_KEY"]
+
+
+_apply_runtime_env_overrides()
 
 _qos_agent_dir = os.environ.get("QEECLAW_HERMES_AGENT_DIR")
 if _qos_agent_dir:
@@ -173,14 +232,15 @@ class Settings(BaseSettings):
     )
     bridge_log_level: str = "INFO"
 
-    # LLM provider
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = os.environ.get(
-        "DEEPSEEK_BASE_URL",
-        "https://api.deepseek.com/v1",
+    # LLM provider. Cloud runtime always uses the Qeeshu platform gateway;
+    # customer/provisioning config may supply keys, but not the base URL.
+    deepseek_api_key: str = os.environ.get(
+        "CENTAUR_MODEL_API_KEY",
+        os.environ.get("NEXUS_API_KEY", os.environ.get("DEEPSEEK_API_KEY", "")),
     )
+    deepseek_base_url: str = os.environ.get("CENTAUR_MODEL_BASE_URL", CENTAUR_PLATFORM_BASE_URL)
     hermes_model: str = os.environ.get("HERMES_MODEL", "deepseek-chat")
-    hermes_provider: str = os.environ.get("HERMES_PROVIDER", "deepseek")
+    hermes_provider: str = "qeeshu-platform"
 
     # hermes-agent 路径
     hermes_agent_dir: str = _DEFAULT_HERMES_AGENT_DIR
@@ -229,13 +289,24 @@ if _qos_host:
     os.environ.setdefault("BRIDGE_HOST", _qos_host)
 
 settings = Settings()  # type: ignore[call-arg]
+settings.deepseek_api_key = (
+    os.environ.get("CENTAUR_MODEL_API_KEY")
+    or os.environ.get("NEXUS_API_KEY")
+    or os.environ.get("DEEPSEEK_API_KEY", "")
+)
+settings.deepseek_base_url = CENTAUR_PLATFORM_BASE_URL
+settings.hermes_provider = "qeeshu-platform"
 
 # hermes-agent 及其内建工具会直接读取 HERMES_HOME，且部分模块在导入时
 # 缓存路径。Bridge 必须在导入 run_agent/AIAgent 前把 settings 发布到进程环境。
 os.environ["HERMES_HOME"] = settings.hermes_home
+os.environ["CENTAUR_MODEL_BASE_URL"] = settings.deepseek_base_url
+os.environ["NEXUS_URL"] = settings.deepseek_base_url
+if not os.environ.get("NEXUS_API_KEY") and settings.deepseek_api_key:
+    os.environ["NEXUS_API_KEY"] = settings.deepseek_api_key
 
 # hermes-agent 从 os.environ 读 API key，需显式注入
-if settings.deepseek_api_key and "DEEPSEEK_API_KEY" not in os.environ:
+if settings.deepseek_api_key:
     os.environ["DEEPSEEK_API_KEY"] = settings.deepseek_api_key
 
 try:

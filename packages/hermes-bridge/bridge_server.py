@@ -45,6 +45,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 BRIDGE_VERSION = "0.2.0"
+CENTAUR_PLATFORM_BASE_URL = "https://paas.qeeshu.com"
 
 # ---------------------------------------------------------------------------
 # 配置加载（优先级：环境变量 > config.yaml > 默认值）
@@ -73,6 +74,64 @@ def _cfg(section: str, key: str, default: Any = None) -> Any:
 
 # 加载配置
 _server_config = _load_config()
+
+
+def _read_env_file(path: str) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    if not path or not os.path.isfile(path):
+        return env
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                if not key:
+                    continue
+                value = value.strip()
+                if (
+                    len(value) >= 2
+                    and value[0] == value[-1]
+                    and value[0] in ("'", '"')
+                ):
+                    value = value[1:-1]
+                env[key] = value
+    except Exception as e:
+        print(f"[hermes-bridge] WARNING: Failed to load runtime env {path}: {e}")
+    return env
+
+
+def _runtime_env_paths() -> List[str]:
+    configured = os.environ.get("CENTAUR_RUNTIME_ENV_FILE", "").strip()
+    if configured:
+        return [configured]
+    return [
+        "/var/lib/centauros/provisioning/runtime.env",
+        "/etc/centauros/device.env",
+    ]
+
+
+def _apply_runtime_env_overrides() -> None:
+    for env_path in _runtime_env_paths():
+        for key, value in _read_env_file(env_path).items():
+            if key in {
+                "CENTAUR_MODEL_API_KEY",
+                "CENTAUR_DEVICE_ID",
+                "CENTAUR_TENANT_ID",
+                "CENTAUR_CONFIG_VERSION",
+                "NEXUS_API_KEY",
+                "NEXUS_LLM_TIMEOUT_SECONDS",
+            }:
+                os.environ[key] = value
+    os.environ["CENTAUR_MODEL_BASE_URL"] = CENTAUR_PLATFORM_BASE_URL
+    os.environ["NEXUS_URL"] = CENTAUR_PLATFORM_BASE_URL
+    if not os.environ.get("NEXUS_API_KEY") and os.environ.get("CENTAUR_MODEL_API_KEY"):
+        os.environ["NEXUS_API_KEY"] = os.environ["CENTAUR_MODEL_API_KEY"]
+
+
+_apply_runtime_env_overrides()
 
 # 服务端监听：默认 0.0.0.0（服务端模式，接受网络连接）
 BRIDGE_HOST = os.environ.get(
@@ -1411,6 +1470,8 @@ def _infer_provider_from_url(base_url: str) -> str:
     if not base_url:
         return "openai"
     base_url = base_url.lower()
+    if "paas.qeeshu.com" in base_url:
+        return "qeeshu-platform"
     if "openrouter" in base_url:
         return "openrouter"
     if "deepseek" in base_url:
@@ -1552,6 +1613,13 @@ def _env_first(*keys: str) -> str:
 
 def _provider_env_api_key(provider_name: Optional[str]) -> str:
     provider = _normalize_provider_name(provider_name)
+    if provider == "qeeshu-platform":
+        return _env_first(
+            "CENTAUR_MODEL_API_KEY",
+            "NEXUS_API_KEY",
+            "DEEPSEEK_API_KEY",
+            "OPENAI_API_KEY",
+        )
     provider_key = f"{provider.upper()}_API_KEY" if provider else ""
     keys = [key for key in (provider_key, "OPENAI_API_KEY") if key]
     return _env_first(*keys)
@@ -1559,6 +1627,8 @@ def _provider_env_api_key(provider_name: Optional[str]) -> str:
 
 def _provider_env_base_url(provider_name: Optional[str]) -> str:
     provider = _normalize_provider_name(provider_name)
+    if provider == "qeeshu-platform":
+        return _env_first("CENTAUR_MODEL_BASE_URL") or CENTAUR_PLATFORM_BASE_URL
     if provider == "deepseek":
         return _env_first("DEEPSEEK_BASE_URL") or "https://api.deepseek.com/v1"
     if provider == "openrouter":
@@ -1746,6 +1816,9 @@ def _resolve_runtime_provider(
     if scoped_provider:
         return scoped_provider
 
+    if _normalize_runtime_scope(runtime_scope) != "local":
+        return "qeeshu-platform"
+
     env_provider = _normalize_provider_name(
         os.environ.get("HERMES_PROVIDER")
         or os.environ.get("QEECLAW_MODEL_PROVIDER")
@@ -1816,6 +1889,11 @@ def _resolve_runtime_client_config(
         resolved_model,
         runtime_scope=runtime_scope,
     )
+    platform_runtime = _normalize_runtime_scope(runtime_scope) != "local"
+    if platform_runtime:
+        resolved_provider = "qeeshu-platform"
+        credential_pool = None
+        credential_entry = None
     runtime_api_key = None
     runtime_base_url = None
     if credential_entry is not None:
@@ -1840,7 +1918,10 @@ def _resolve_runtime_client_config(
         else:
             runtime_base_url = _provider_env_base_url(resolved_provider) or os.environ.get("OPENAI_BASE_URL") or ""
 
-    runtime_base_url = _normalize_openai_compatible_base_url(str(runtime_base_url or ""))
+    if platform_runtime:
+        runtime_base_url = _env_first("CENTAUR_MODEL_BASE_URL") or CENTAUR_PLATFORM_BASE_URL
+    else:
+        runtime_base_url = _normalize_openai_compatible_base_url(str(runtime_base_url or ""))
 
     return {
         "provider": resolved_provider or _normalize_provider_name(_infer_provider_from_url(str(runtime_base_url))) or "",

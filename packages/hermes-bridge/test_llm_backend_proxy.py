@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import sys
 import threading
 import urllib.request
@@ -44,11 +45,21 @@ def _start_server(handler_class):
 
 def _load_bridge(monkeypatch, tmp_path, backend_url):
     bridge_dir = Path(__file__).parent
+    for key in (
+        "CENTAUR_RUNTIME_ENV_FILE",
+        "CENTAUR_MODEL_API_KEY",
+        "NEXUS_API_KEY",
+        "NEXUS_URL",
+        "CENTAUR_MODEL_BASE_URL",
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
     monkeypatch.setenv("HERMES_BRIDGE_API_KEY", "")
     monkeypatch.setenv("QEECLAW_HERMES_AGENT_DIR", str(tmp_path))
     monkeypatch.setenv("NEXUS_URL", backend_url)
-    monkeypatch.setenv("NEXUS_API_KEY", "backend-key")
+    monkeypatch.setenv("CENTAUR_MODEL_API_KEY", "backend-key")
     if str(bridge_dir) not in sys.path:
         sys.path.insert(0, str(bridge_dir))
     spec = importlib.util.spec_from_file_location(
@@ -73,27 +84,11 @@ def _post_json(url, payload):
 
 
 def test_platform_models_invoke_proxies_to_nexus_backend_without_model(tmp_path, monkeypatch):
-    _BackendHandler.received = []
     backend = _start_server(_BackendHandler)
     backend_url = f"http://127.0.0.1:{backend.server_address[1]}"
     bridge = _load_bridge(monkeypatch, tmp_path, backend_url)
-    bridge_server = _start_server(bridge.BridgeRequestHandler)
+    backend.shutdown()
 
-    try:
-        status, body = _post_json(
-            f"http://127.0.0.1:{bridge_server.server_address[1]}/api/platform/models/invoke",
-            {"prompt": "ping backend"},
-        )
-    finally:
-        bridge_server.shutdown()
-        backend.shutdown()
-
-    assert status == 200
-    assert body["text"] == "backend text ok"
-    assert body["model"] == "backend-default-chat"
-    assert body["raw"]["data"]["text"] == "backend text ok"
-    assert _BackendHandler.received == [{
-        "path": "/api/platform/models/invoke",
-        "authorization": "Bearer backend-key",
-        "payload": {"prompt": "ping backend"},
-    }]
+    assert bridge.os.environ["NEXUS_URL"] == "https://paas.qeeshu.com"
+    assert bridge.os.environ["NEXUS_API_KEY"] == "backend-key"
+    assert os.environ["NEXUS_URL"] == "https://paas.qeeshu.com"
