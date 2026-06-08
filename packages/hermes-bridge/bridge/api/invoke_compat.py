@@ -100,5 +100,7 @@ async def invoke_compat(req: CompatInvokeRequest, request: Request) -> JSONRespo
         content["_skill_command_resolved"] = dispatch.skill_command_resolved
     if result.get("run_id"):
         content["run_id"] = result["run_id"]
+    if isinstance(result.get("ui_intent"), dict):
+        content["ui_intent"] = result["ui_intent"]
 
     return JSONResponse(status_code=200, content=content)

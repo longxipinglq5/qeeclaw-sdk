@@ -96,7 +96,34 @@ class TestInvokeCompat:
         assert constructor_kwargs["session_id"] == "compat:edge:supervisor:edge_supervisor"
         assert constructor_kwargs["load_soul_identity"] is False
         assert constructor_kwargs["skip_context_files"] is True
-        assert "CentaurAI Edge主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "Centaur AI 助理" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "toolbox.suggest_open" in constructor_kwargs["ephemeral_system_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_invoke_returns_toolbox_ui_intent_for_image_request_without_image_tool(
+        self, app_client, mock_agent_class, monkeypatch
+    ):
+        """图片任务在 image_generate 不可用时应返回稳定 UI intent，而不是让模型绕去 bash。"""
+        from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+        monkeypatch.setattr(HermesRuntimeFacade, "_image_generate_tool_available", lambda self: False)
+
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "帮我生成一张小学生护脊书包的产品海报",
+                "session_id": "edge:supervisor",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["text"] == "我可以帮你打开海报工具箱，把主题和已知信息先填好，你确认后再生成。"
+        assert body["ui_intent"]["type"] == "toolbox.suggest_open"
+        assert body["ui_intent"]["skillId"] == "poster-generator"
+        assert body["ui_intent"]["prefilled"]["business_info"] == "小学生护脊书包"
+        assert mock_agent_class.return_value.run_conversation.call_count == 0
 
     @pytest.mark.asyncio
     async def test_invoke_keeps_model_config_env_driven(self, app_client, mock_agent_class, monkeypatch):
@@ -330,7 +357,8 @@ class TestStreamCompat:
         assert constructor_kwargs["session_id"] == "compat-stream:edge:supervisor:edge_supervisor"
         assert constructor_kwargs["load_soul_identity"] is False
         assert constructor_kwargs["skip_context_files"] is True
-        assert "CentaurAI Edge主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "Centaur AI 助理" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "toolbox.suggest_open" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio
     async def test_stream_terminator_format(self, app_client):

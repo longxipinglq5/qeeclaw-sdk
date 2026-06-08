@@ -55,7 +55,8 @@ async def test_supervisor_invoke_delegates_tool_decision_to_hermes(tmp_path):
     assert invoke_call["session_id"] == "edge:owner_1:supervisor:conv_abc"
     assert invoke_call["user_text"] == "帮我生成儿童护眼台灯的小红书"
     assert invoke_call["agent_profile"] == "edge_supervisor"
-    assert "json object" in invoke_call["system_prompt"]
+    assert "toolbox.suggest_open" in invoke_call["system_prompt"]
+    assert "不要输出旧卡片协议" in invoke_call["system_prompt"]
     assert invoke_call["conversation_history"] == []
 
 

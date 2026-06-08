@@ -200,10 +200,14 @@ async def test_session_context_api_includes_artifact_summaries_after_skill_run(t
         await client.post(
             "/api/runs",
             json={
-                "kind": "invoke",
+                "kind": "skill_run",
                 "session_id": "edge:owner_1:supervisor:conv_abc",
-                "agent_profile": "edge_supervisor",
-                "input": {"text": "帮我生成儿童护眼台灯的小红书"},
+                "capability_id": "xiaohongshu_note_writer",
+                "input": {
+                    "product": "儿童护眼台灯",
+                    "tone": "真实种草",
+                    "platform": "xiaohongshu",
+                },
                 "metadata": {"owner_id": "owner_1", "created_by": "web"},
             },
         )
@@ -219,5 +223,5 @@ async def test_session_context_api_includes_artifact_summaries_after_skill_run(t
         if message["metadata"].get("section") == "artifact_summaries"
     ]
     assert len(artifact_messages) == 1
-    assert "art_run_000002" in artifact_messages[0]["content"]
+    assert "art_run_000001" in artifact_messages[0]["content"]
     assert "小红书种草文" in artifact_messages[0]["content"]

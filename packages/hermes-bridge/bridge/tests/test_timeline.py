@@ -11,8 +11,8 @@ def test_timeline_standard_projection_filters_runtime_noise():
         bus.append(session_id="session_1", run_id="run_skill_001", type="run_started"),
         bus.append(session_id="session_1", run_id="run_skill_001", type="token", payload={"text": "正在"}),
         bus.append(session_id="session_1", run_id="run_skill_001", type="reasoning", payload={"text": "..."}),
-        bus.append(session_id="session_1", run_id="run_skill_001", type="tool_started", payload={"tool_name": "image_generator"}),
-        bus.append(session_id="session_1", run_id="run_skill_001", type="tool_completed", payload={"tool_name": "image_generator"}),
+        bus.append(session_id="session_1", run_id="run_skill_001", type="tool_call.started", payload={"tool_name": "image_generator"}),
+        bus.append(session_id="session_1", run_id="run_skill_001", type="tool_call.completed", payload={"tool_name": "image_generator"}),
         bus.append(session_id="session_1", run_id="run_skill_001", type="artifact_created", payload={"artifact_id": "art_moments_001"}),
         bus.append(
             session_id="session_1",

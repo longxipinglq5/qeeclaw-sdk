@@ -104,10 +104,56 @@ class TestInvoke:
         assert "skills" not in disabled_toolsets
         assert mock_agent_class.call_args.kwargs["load_soul_identity"] is False
         assert mock_agent_class.call_args.kwargs["skip_context_files"] is True
-        assert mock_agent_class.call_args.kwargs["request_overrides"] == {
-            "response_format": {"type": "json_object"}
-        }
+        assert "request_overrides" not in mock_agent_class.call_args.kwargs
         assert mock_agent_class.call_args.kwargs["prefill_messages"] == []
+
+    async def test_edge_supervisor_initializes_knowledge_mcp(
+        self, fresh_runtime, mock_agent_class, standard_agent_response, monkeypatch
+    ):
+        calls = []
+
+        monkeypatch.setattr(
+            "bridge.knowledge_mcp_config.ensure_knowledge_mcp_for_profile",
+            lambda profile: calls.append(profile) or True,
+            raising=False,
+        )
+        mock_agent_class.return_value.run_conversation.return_value = (
+            standard_agent_response
+        )
+
+        await fresh_runtime.invoke_raw(
+            session_id="edge:supervisor",
+            user_text="查一下会员日活动资料",
+            agent_profile="edge_supervisor",
+        )
+
+        assert calls == ["edge_supervisor"]
+
+    async def test_edge_supervisor_stream_initializes_knowledge_mcp(
+        self, fresh_runtime, mock_agent_class, standard_agent_response, monkeypatch
+    ):
+        calls = []
+
+        monkeypatch.setattr(
+            "bridge.knowledge_mcp_config.ensure_knowledge_mcp_for_profile",
+            lambda profile: calls.append(profile) or True,
+            raising=False,
+        )
+        mock_agent_class.return_value.run_conversation.return_value = (
+            standard_agent_response
+        )
+
+        handle = await fresh_runtime.stream_raw(
+            session_id="edge:supervisor",
+            user_text="查一下会员日活动资料",
+            agent_profile="edge_supervisor",
+        )
+        while True:
+            event_type, _payload = await handle.queue.get()
+            if event_type in {"done", "error"}:
+                break
+
+        assert calls == ["edge_supervisor"]
 
     async def test_invoke_raw_history_is_isolated_by_session(
         self, fresh_runtime, mock_agent_class, standard_agent_response

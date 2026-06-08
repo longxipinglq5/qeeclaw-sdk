@@ -179,6 +179,107 @@ def test_event_bus_appends_and_reads_ordered_run_events():
     ]
 
 
+def test_renderable_reply_text_ignores_skill_view_metadata_tool_output():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    response_text = HermesRuntimeFacade._renderable_reply_text(
+        {
+            "final_response": (
+                "```json\n"
+                '{"moments_copy":"雨天也别让护理间闲着，今天到店护理满99减20。"}'
+                "\n```"
+            ),
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_name": "skill_view",
+                    "name": "skill_view",
+                    "content": (
+                        '{"success":true,"name":"weather-day-promo-generator",'
+                        '"skill_dir":"/skills/weather-day-promo-generator",'
+                        '"content":"# 雨天拉客\\n这是工具定义，不是生成结果"}'
+                    ),
+                    "tool_call_id": "call_skill_view_001",
+                }
+            ],
+        }
+    )
+
+    assert "weather-day-promo-generator" not in response_text
+    assert "skill_dir" not in response_text
+    assert "moments_copy" in response_text
+
+
+def test_renderable_reply_text_ignores_missing_internal_tool_output():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    response_text = HermesRuntimeFacade._renderable_reply_text(
+        {
+            "final_response": "已经生成海报方案，请打开工具箱确认后出图。",
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_name": "bash",
+                    "name": "bash",
+                    "content": (
+                        "Tool 'bash' does not exist. Available tools: memory, "
+                        "session_search, skill_view, image_generate"
+                    ),
+                    "tool_call_id": "call_bash_001",
+                }
+            ],
+        }
+    )
+
+    assert response_text == "已经生成海报方案，请打开工具箱确认后出图。"
+    assert "Tool 'bash' does not exist" not in response_text
+    assert '"card_type": "result_preview"' not in response_text
+
+
+def test_renderable_reply_text_ignores_memory_tool_output():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    response_text = HermesRuntimeFacade._renderable_reply_text(
+        {
+            "final_response": "好，记下了。你接下来想做海报还是朋友圈文案？",
+            "messages": [
+                {
+                    "role": "tool",
+                    "tool_name": "memory",
+                    "name": "memory",
+                    "content": (
+                        '{"success":true,"target":"user","entries":["真实姓名：林岚。"],'
+                        '"usage":"23%","entry_count":8,"message":"Entry added."}'
+                    ),
+                    "tool_call_id": "call_memory_001",
+                }
+            ],
+        }
+    )
+
+    assert response_text == "好，记下了。你接下来想做海报还是朋友圈文案？"
+    assert "真实姓名" not in response_text
+    assert '"card_type": "result_preview"' not in response_text
+
+
+def test_renderable_reply_text_hides_image_runtime_implementation_leak():
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    response_text = HermesRuntimeFacade._renderable_reply_text(
+        {
+            "final_response": (
+                "我现在没有生图执行环境（ComfyUI 没装、也没有终端权限），"
+                "所以没法直接跑图。"
+            )
+        }
+    )
+
+    assert "ComfyUI" not in response_text
+    assert "终端权限" not in response_text
+    assert "生图执行环境" not in response_text
+    assert "工具箱" in response_text
+
+
 def test_session_store_creates_updates_and_preserves_message_order():
     from bridge.runtime_facade.session_store import SessionStore
     from bridge.runtime_facade.store import InMemoryStore
@@ -325,11 +426,121 @@ async def test_facade_invoke_raw_wraps_legacy_runtime_and_records_events():
     run = facade.get_run("run_000001")
     assert run is not None
     assert run.result_text == "测试回复"
-    assert [event.type for event in facade.get_run_events("run_000001")] == [
-        "run_started",
-        "metering",
-        "done",
-    ]
+    event_types = [event.type for event in facade.get_run_events("run_000001")]
+    assert event_types[0] == "run_started"
+    assert event_types.count("message") == 2
+    assert "metering" in event_types
+    assert "done" in event_types
+
+
+async def test_edge_supervisor_image_request_suggests_toolbox_when_image_generate_unavailable(monkeypatch):
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime()
+    facade = HermesRuntimeFacade(legacy)
+    monkeypatch.setattr(facade, "_image_generate_tool_available", lambda: False)
+
+    result = await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="帮我生成一张小学生护脊书包的产品海报",
+        agent_profile="edge_supervisor",
+    )
+
+    assert legacy.invoke_calls == []
+    assert result["final_response"] == "我可以帮你打开海报工具箱，把主题和已知信息先填好，你确认后再生成。"
+    assert result["ui_intent"] == {
+        "type": "toolbox.suggest_open",
+        "summary": "我可以帮你打开海报工具箱，把主题和已知信息先填好，你确认后再生成。",
+        "appId": "poster-generator",
+        "appName": "海报生成器",
+        "skillId": "poster-generator",
+        "prefilled": {
+            "purpose": "产品介绍海报",
+            "theme": "小学生护脊书包的产品海报",
+            "business_info": "小学生护脊书包",
+        },
+        "missingFields": ["视觉风格", "画面比例"],
+        "confidence": "high",
+        "requiresConfirmation": True,
+        "autoRun": False,
+        "useKnowledgeDefault": True,
+    }
+
+    events = facade.get_run_events("run_000001")
+    event_types = [event.type for event in events]
+    assert "tool_call.started" not in event_types
+    assert "tool_call.failed" not in event_types
+    done = next(event for event in events if event.type == "done")
+    assert done.payload["ui_intent"] == result["ui_intent"]
+    assert "bash" not in done.payload["text"]
+    assert "ComfyUI" not in done.payload["text"]
+
+
+async def test_edge_supervisor_image_request_prefills_pronoun_from_session_context(monkeypatch):
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime({"final_response": "收到，记下这个产品。"})
+    facade = HermesRuntimeFacade(legacy)
+
+    await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="我的产品是小学生人体工学护脊书包。",
+        agent_profile="edge_supervisor",
+    )
+    monkeypatch.setattr(facade, "_image_generate_tool_available", lambda: False)
+
+    result = await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="帮我给它做一张产品海报",
+        agent_profile="edge_supervisor",
+    )
+
+    prefilled = result["ui_intent"]["prefilled"]
+    assert prefilled["theme"] == "小学生人体工学护脊书包的产品海报"
+    assert prefilled["business_info"] == "小学生人体工学护脊书包"
+
+
+async def test_edge_supervisor_english_image_request_suggests_toolbox(monkeypatch):
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime()
+    facade = HermesRuntimeFacade(legacy)
+    monkeypatch.setattr(facade, "_image_generate_tool_available", lambda: False)
+
+    result = await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="Generate a product poster for an ergonomic backpack.",
+        agent_profile="edge_supervisor",
+    )
+
+    prefilled = result["ui_intent"]["prefilled"]
+    assert result["ui_intent"]["type"] == "toolbox.suggest_open"
+    assert prefilled["theme"] == "an ergonomic backpack product poster"
+    assert prefilled["business_info"] == "an ergonomic backpack"
+
+
+async def test_edge_supervisor_english_image_request_prefills_pronoun_from_session_context(monkeypatch):
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+    legacy = FakeLegacyRuntime({"final_response": "Got it."})
+    facade = HermesRuntimeFacade(legacy)
+
+    await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="My product is an ergonomic backpack for primary school students.",
+        agent_profile="edge_supervisor",
+    )
+    monkeypatch.setattr(facade, "_image_generate_tool_available", lambda: False)
+
+    result = await facade.invoke_raw(
+        session_id="edge:owner_1:supervisor:conv_abc",
+        user_text="Generate a product poster for it.",
+        agent_profile="edge_supervisor",
+    )
+
+    prefilled = result["ui_intent"]["prefilled"]
+    assert prefilled["theme"] == "an ergonomic backpack for primary school students product poster"
+    assert prefilled["business_info"] == "an ergonomic backpack for primary school students"
 
 
 async def test_facade_stream_raw_wraps_legacy_stream_and_records_events():
@@ -430,11 +641,11 @@ async def test_run_and_session_rest_apis_read_facade_state():
     assert run_resp.status_code == 200
     assert run_resp.json()["run"]["run_id"] == "run_000001"
     assert events_resp.status_code == 200
-    assert [event["type"] for event in events_resp.json()["events"]] == [
-        "run_started",
-        "metering",
-        "done",
-    ]
+    event_types = [event["type"] for event in events_resp.json()["events"]]
+    assert event_types[0] == "run_started"
+    assert event_types.count("message") == 2
+    assert "metering" in event_types
+    assert "done" in event_types
     assert sessions_resp.status_code == 200
     assert sessions_resp.json()["sessions"][0]["session_id"] == "edge:owner_1:supervisor:conv_abc"
     assert session_resp.status_code == 200

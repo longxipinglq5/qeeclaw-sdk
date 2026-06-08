@@ -45,6 +45,10 @@ from bridge.runtime_facade.skill_intent_adapter import (
 )
 from bridge.runtime_facade.store import InMemoryStore
 from bridge.runtime_facade.timeline import TimelineStore
+from bridge.runtime_facade.tool_events import (
+    coerce_tool_content_to_text,
+    extract_tool_call_events,
+)
 
 
 class HermesRuntimeFacade:
@@ -310,6 +314,51 @@ class HermesRuntimeFacade:
             payload={"role": "user", "text": user_text},
             trace_id=run.trace_id,
         )
+        if agent_profile == "edge_supervisor" and self._should_apply_main_chat_image_guard(metadata):
+            image_toolbox_intent = self._image_toolbox_intent_when_generation_unavailable(
+                user_text,
+                conversation_history=conversation_history,
+            )
+            if image_toolbox_intent is not None:
+                reply_text = str(image_toolbox_intent["summary"])
+                self.runs.complete_run(
+                    run.run_id,
+                    result_text=reply_text,
+                    usage={},
+                    done_payload={
+                        "text": reply_text,
+                        "usage": {},
+                        "ui_intent": image_toolbox_intent,
+                    },
+                )
+                self.events.append(
+                    session_id=session_id,
+                    run_id=run.run_id,
+                    type="message",
+                    payload={"role": "assistant", "text": reply_text},
+                    trace_id=run.trace_id,
+                )
+                self.sessions.append_turn(
+                    session_id,
+                    user_text=user_text,
+                    assistant_text=reply_text,
+                    metadata={"run_id": run.run_id, "ui_intent": image_toolbox_intent},
+                )
+                return {
+                    "final_response": reply_text,
+                    "renderable_reply_text": reply_text,
+                    "run_id": run.run_id,
+                    "session_id": session_id,
+                    "agent_profile": agent_profile,
+                    "ui_intent": image_toolbox_intent,
+                    "completed": True,
+                    "failed": False,
+                    "model": "",
+                    "provider": "",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "total_tokens": 0,
+                }
         try:
             result = await self._legacy_runtime.invoke_raw(
                 session_id=session_id,
@@ -344,6 +393,12 @@ class HermesRuntimeFacade:
                 if cache_prefix_changed
                 else None,
             },
+            trace_id=run.trace_id,
+        )
+        self._emit_tool_call_events(
+            result=result,
+            session_id=session_id,
+            run_id=run.run_id,
             trace_id=run.trace_id,
         )
         intent = extract_skill_use_intent(result) if settings.native_skill_intent_enabled else None
@@ -658,7 +713,9 @@ class HermesRuntimeFacade:
 
     @classmethod
     def _renderable_reply_text(cls, result: dict[str, Any]) -> str:
-        final_response = cls._unwrap_skill_card_text(str(result.get("final_response") or "")).strip()
+        final_response = cls._sanitize_renderable_final_response(
+            cls._unwrap_skill_card_text(str(result.get("final_response") or "")).strip()
+        )
         tool_outputs = cls._extract_tool_outputs(result)
         if not tool_outputs:
             return final_response
@@ -676,6 +733,163 @@ class HermesRuntimeFacade:
             speech=final_response or "工具结果已生成。",
             tool_name=latest_tool["tool_name"],
         )
+
+    def _image_toolbox_intent_when_generation_unavailable(
+        self,
+        user_text: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any] | None:
+        if not self._looks_like_image_generation_request(user_text):
+            return None
+        if self._image_generate_tool_available():
+            return None
+
+        subject = self._image_request_subject(user_text, conversation_history=conversation_history)
+        summary = "我可以帮你打开海报工具箱，把主题和已知信息先填好，你确认后再生成。"
+        return {
+            "type": "toolbox.suggest_open",
+            "summary": summary,
+            "appId": "poster-generator",
+            "appName": "海报生成器",
+            "skillId": "poster-generator",
+            "prefilled": {
+                "purpose": "产品介绍海报",
+                "theme": subject,
+                "business_info": self._business_info_from_image_subject(subject),
+            },
+            "missingFields": ["视觉风格", "画面比例"],
+            "confidence": "high",
+            "requiresConfirmation": True,
+            "autoRun": False,
+            "useKnowledgeDefault": True,
+        }
+
+    @staticmethod
+    def _should_apply_main_chat_image_guard(metadata: dict[str, Any] | None) -> bool:
+        if not metadata:
+            return True
+        return not (
+            metadata.get("source_channel_key")
+            or metadata.get("channel_key")
+            or metadata.get("external_event_id")
+            or metadata.get("action")
+        )
+
+    @staticmethod
+    def _looks_like_image_generation_request(user_text: str) -> bool:
+        text = user_text.strip()
+        if not text:
+            return False
+        has_generate_intent = any(term in text for term in ("生成", "做", "制作", "设计", "出", "画"))
+        has_image_target = any(term in text for term in ("海报", "图片", "配图", "封面", "宣传图", "产品图"))
+        lowered = text.lower()
+        has_english_generate_intent = any(
+            term in lowered for term in ("generate", "make", "create", "design")
+        )
+        has_english_image_target = any(
+            term in lowered for term in ("poster", "image", "cover", "visual")
+        )
+        return (has_generate_intent and has_image_target) or (
+            has_english_generate_intent and has_english_image_target
+        )
+
+    @staticmethod
+    def _image_request_subject(
+        user_text: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+    ) -> str:
+        subject = user_text.strip()
+        subject = re.sub(r"^(帮我|请|麻烦|给我|可以帮我|能不能帮我)", "", subject).strip()
+        if re.match(r"(?i)^(generate|make|create|design)\b", subject):
+            return HermesRuntimeFacade._english_image_request_subject(
+                subject,
+                conversation_history=conversation_history,
+            )
+        if re.search(r"(给)?(它|这个|该产品|这个产品)", subject):
+            contextual_subject = HermesRuntimeFacade._latest_product_subject(conversation_history or [])
+            if contextual_subject:
+                return f"{contextual_subject}的产品海报"
+        subject = re.sub(r"^(生成|做|制作|设计|出|画)(一张|一个|一下|点)?", "", subject).strip()
+        subject = re.sub(r"^给(它|这个|该产品|这个产品)", "", subject).strip()
+        subject = re.sub(r"^(一张|一个)", "", subject).strip()
+        return subject or "海报"
+
+    @staticmethod
+    def _english_image_request_subject(
+        user_text: str,
+        *,
+        conversation_history: list[dict[str, Any]] | None = None,
+    ) -> str:
+        subject = user_text.strip().rstrip(".!? ")
+        subject = re.sub(r"(?i)^(generate|make|create|design)\s+(a|an|the)?\s*", "", subject).strip()
+        subject = re.sub(r"(?i)^product\s+poster\s+for\s+", "", subject).strip()
+        subject = re.sub(r"(?i)^poster\s+for\s+", "", subject).strip()
+        if re.fullmatch(r"(?i)(it|this|this product|that product)", subject or ""):
+            contextual_subject = HermesRuntimeFacade._latest_product_subject(conversation_history or [])
+            if contextual_subject:
+                return f"{contextual_subject} product poster"
+        if subject and not re.search(r"(?i)\b(poster|image|cover|visual)\b", subject):
+            subject = f"{subject} product poster"
+        return subject or "product poster"
+
+    @staticmethod
+    def _latest_product_subject(conversation_history: list[dict[str, Any]]) -> str | None:
+        for message in reversed(conversation_history):
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "user":
+                continue
+            content = str(message.get("content") or "").strip()
+            if not content:
+                continue
+            for pattern in (
+                r"(?:我的|这个|产品是|产品叫)?产品是(?P<product>[^。！？\n]+)",
+                r"我(?:在)?做(?:的是)?(?P<product>[^。！？\n]+)",
+                r"(?i)\bmy\s+product\s+is\s+(?P<product>[^.!?\n]+)",
+                r"(?i)\bthe\s+product\s+is\s+(?P<product>[^.!?\n]+)",
+            ):
+                match = re.search(pattern, content)
+                if match:
+                    product = match.group("product").strip(" ：:，,。 ")
+                    if product:
+                        return product
+        return None
+
+    @staticmethod
+    def _business_info_from_image_subject(subject: str) -> str:
+        cleaned = re.sub(r"(的)?(产品介绍)?海报|配图|图片|封面|宣传图|产品图", "", subject).strip()
+        cleaned = re.sub(r"的?产品$", "", cleaned).strip()
+        cleaned = re.sub(r"(?i)\s+(product\s+)?(poster|image|cover|visual)$", "", cleaned).strip()
+        return cleaned or subject
+
+    @staticmethod
+    def _image_generate_tool_available() -> bool:
+        try:
+            from model_tools import get_tool_definitions
+
+            tools = get_tool_definitions(quiet_mode=True)
+        except Exception:
+            return False
+        return any(
+            tool.get("function", {}).get("name") == "image_generate"
+            for tool in tools
+            if isinstance(tool, dict)
+        )
+
+    @staticmethod
+    def _sanitize_renderable_final_response(text: str) -> str:
+        if not text:
+            return text
+        leaked_terms = ("ComfyUI", "终端权限", "bash", "FAL_KEY", "provider")
+        image_failure_terms = ("没有生图执行环境", "没法直接跑图", "无法直接跑图")
+        if any(term in text for term in leaked_terms) and any(term in text for term in image_failure_terms):
+            return (
+                "当前主对话不能直接执行这一步图片生成。我可以先生成海报方案和生图提示词，"
+                "也可以帮你打开海报工具箱继续生成。"
+            )
+        return text
 
     @staticmethod
     def _result_preview_reply_text(
@@ -728,44 +942,52 @@ class HermesRuntimeFacade:
     @staticmethod
     def _is_non_renderable_tool_output(tool_name: str, content: str) -> bool:
         normalized_tool = tool_name.strip().lower()
+        if normalized_tool == "memory":
+            return True
         if normalized_tool == "clarify" and "not available in this execution context" in content:
             return True
         stripped = content.strip()
+        if HermesRuntimeFacade._is_missing_internal_tool_output(stripped):
+            return True
         if not stripped.startswith("{"):
             return False
         try:
             parsed = json.loads(stripped)
         except json.JSONDecodeError:
             return False
+        if normalized_tool == "skill_view" and HermesRuntimeFacade._is_skill_view_metadata(parsed):
+            return True
         error = parsed.get("error") if isinstance(parsed, dict) else None
-        return isinstance(error, str) and "not available in this execution context" in error
+        return isinstance(error, str) and (
+            "not available in this execution context" in error
+            or HermesRuntimeFacade._is_missing_internal_tool_output(error)
+        )
+
+    @staticmethod
+    def _is_missing_internal_tool_output(content: str) -> bool:
+        return bool(re.search(r"^Tool ['\"][^'\"]+['\"] does not exist\. Available tools:", content))
+
+    @staticmethod
+    def _is_skill_view_metadata(parsed: Any) -> bool:
+        if not isinstance(parsed, dict):
+            return False
+        if parsed.get("success") is not True:
+            return False
+        has_skill_name = isinstance(parsed.get("name"), str) and bool(parsed["name"].strip())
+        has_definition_path = any(
+            isinstance(parsed.get(key), str) and bool(parsed[key].strip())
+            for key in ("skill_dir", "path")
+        )
+        content = parsed.get("content")
+        if not isinstance(content, str):
+            return False
+        stripped_content = content.lstrip()
+        has_manifest_content = stripped_content.startswith("---") or stripped_content.startswith("#")
+        return has_skill_name and has_definition_path and has_manifest_content
 
     @staticmethod
     def _coerce_tool_content_to_text(content: Any) -> str:
-        if content is None:
-            return ""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts: list[str] = []
-            for item in content:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    text = item.get("text") or item.get("content")
-                    if text:
-                        parts.append(str(text))
-            return "\n".join(parts)
-        if isinstance(content, dict):
-            text_summary = content.get("text_summary")
-            if text_summary:
-                return str(text_summary)
-            for key in ("text", "body", "output", "result", "content"):
-                value = content.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value
-            return json.dumps(content, ensure_ascii=False, default=str)
-        return str(content)
+        return coerce_tool_content_to_text(content)
 
     @staticmethod
     def _title_from_tool_output(tool_text: str, tool_name: str) -> str:
@@ -1039,7 +1261,12 @@ class HermesRuntimeFacade:
             },
             trace_id=run.trace_id,
         )
-        self._emit_skill_tool_events(request=request, capability=capability, run=run)
+        self._emit_tool_call_events(
+            result=result,
+            session_id=request.session_id,
+            run_id=run.run_id,
+            trace_id=run.trace_id,
+        )
 
         final_response = self._sanitize_skill_final_response(
             str(result.get("final_response") or ""),
@@ -1092,6 +1319,14 @@ class HermesRuntimeFacade:
             title=capability.title,
             content=artifact_content,
             metadata=artifact_metadata,
+        )
+        self._append_artifact_summary(
+            session_id=request.session_id,
+            artifact_id=artifact.artifact_id,
+            title=artifact.title,
+            kind=artifact.kind,
+            summary=final_response,
+            run_id=run.run_id,
         )
         self.events.append(
             session_id=request.session_id,
@@ -1155,6 +1390,37 @@ class HermesRuntimeFacade:
         if capability.capability_id.startswith("moments_copywriter"):
             return "moments_copy"
         return capability.capability_id
+
+    def _append_artifact_summary(
+        self,
+        *,
+        session_id: str,
+        artifact_id: str,
+        title: str,
+        kind: str,
+        summary: str,
+        run_id: str,
+    ) -> None:
+        session = self.sessions.get(session_id)
+        existing = list((session.metadata if session else {}).get("artifact_summaries") or [])
+        normalized = [
+            item
+            for item in existing
+            if isinstance(item, dict) and item.get("artifact_id") != artifact_id
+        ]
+        normalized.append(
+            {
+                "artifact_id": artifact_id,
+                "run_id": run_id,
+                "kind": kind,
+                "title": title,
+                "summary": summary.strip()[:500],
+            }
+        )
+        self.sessions.update_metadata(
+            session_id,
+            {"artifact_summaries": normalized[-10:]},
+        )
 
     @staticmethod
     def _artifact_metadata_from_input(input_payload: CreateRunInput) -> dict[str, Any]:
@@ -1357,29 +1623,21 @@ class HermesRuntimeFacade:
     def _input_field(input_payload: CreateRunInput, field_name: str) -> Any:
         return input_payload.model_dump(exclude_none=True).get(field_name)
 
-    def _emit_skill_tool_events(
+    def _emit_tool_call_events(
         self,
         *,
-        request: CreateRunRequest,
-        capability: CapabilityManifest,
-        run: RuntimeRun,
+        result: dict[str, Any],
+        session_id: str,
+        run_id: str,
+        trace_id: str | None,
     ) -> None:
-        if capability.capability_id != "moments_copywriter_with_image":
-            return
-        for tool_name in ("朋友圈文案生成", "配图生成"):
+        for event in extract_tool_call_events(result):
             self.events.append(
-                session_id=request.session_id,
-                run_id=run.run_id,
-                type="tool_started",
-                payload={"tool_name": tool_name},
-                trace_id=run.trace_id,
-            )
-            self.events.append(
-                session_id=request.session_id,
-                run_id=run.run_id,
-                type="tool_completed",
-                payload={"tool_name": tool_name},
-                trace_id=run.trace_id,
+                session_id=session_id,
+                run_id=run_id,
+                type=event["type"],
+                payload=event["payload"],
+                trace_id=trace_id,
             )
 
     def get_run(self, run_id: str) -> RuntimeRun | None:

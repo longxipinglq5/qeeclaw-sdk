@@ -43,6 +43,7 @@ dev = [
 [project.scripts]
 qeeclaw-hermes-bridge = "bridge_server:main"
 qeeclaw-bridge = "bridge.main:cli"
+qeeclaw-knowledge-mcp = "bridge.knowledge_mcp_server:main"
 
 [tool.setuptools]
 py-modules = ["bridge_server", "bailian_image", "wechat_gateway", "knowledge_store", "memory_store", "session_manager", "cloud_tunnel"]

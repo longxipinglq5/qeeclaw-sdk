@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 
-def test_supervisor_prompt_routes_image_confirmation_to_poster_skill():
+def test_supervisor_prompt_is_centaur_assistant_not_hermes_card_router():
     from bridge.scenarios import get_system_prompt
 
     prompt = get_system_prompt("supervisor", agent_profile="edge_supervisor")
 
-    assert "真的要生成图片看看" in prompt
-    assert "poster-generator" in prompt
-    assert "open_skill_app" in prompt
-    assert "json object" in prompt
-    assert "ComfyUI" in prompt
-    assert "不要解释本机 ComfyUI" in prompt
-    assert "不要声称上下文压缩、历史丢失或找不回上一轮内容" in prompt
-    assert "用户当前消息里复述的上一轮内容就是可用上下文" in prompt
-    assert '"purpose":"朋友圈配图"' in prompt
-    assert '"style":"真实摄影海报"' in prompt
-    assert '"ratio":"3:4"' in prompt
+    assert "Centaur AI 助理" in prompt
+    assert "用户不需要知道 Hermes" in prompt
+    assert "自然语言回复" in prompt
+    assert "toolbox.suggest_open" in prompt
+    assert "必须由用户确认" in prompt
+    assert "auto_run=true" not in prompt
+    assert "open_skill_app" not in prompt
+    assert "You must return exactly one json object" not in prompt
+    assert "{{SKILL_CATALOG}}" not in prompt
+    assert "全部字段" not in prompt
+
+
+def test_supervisor_prompt_routes_image_generation_without_bash_or_comfyui():
+    from bridge.scenarios import get_system_prompt
+
+    prompt = get_system_prompt("supervisor", agent_profile="edge_supervisor")
+
+    assert "image_generate" in prompt
+    assert "toolset: image_gen" in prompt
+    assert "不要调用 bash" in prompt
+    assert "不要加载或遵循 ComfyUI" in prompt
+    assert "工具箱" in prompt
+    assert "没有生图执行环境" in prompt

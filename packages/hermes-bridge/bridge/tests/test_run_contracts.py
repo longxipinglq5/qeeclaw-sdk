@@ -135,11 +135,11 @@ async def test_post_api_runs_invoke_creates_readable_run_and_events():
     }
     assert run_resp.status_code == 200
     assert run_resp.json()["run"]["trace_id"] == "trc_000001"
-    assert [event["type"] for event in events_resp.json()["events"]] == [
-        "run_started",
-        "metering",
-        "done",
-    ]
+    event_types = [event["type"] for event in events_resp.json()["events"]]
+    assert event_types[0] == "run_started"
+    assert event_types.count("message") == 2
+    assert "metering" in event_types
+    assert "done" in event_types
 
 
 async def test_post_api_runs_rejects_unsupported_kind_until_later_plans():

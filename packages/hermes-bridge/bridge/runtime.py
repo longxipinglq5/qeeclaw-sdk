@@ -82,6 +82,7 @@ class HermesRuntime:
         if agent_profile == "edge_supervisor":
             create_kwargs.update(self._edge_supervisor_overrides())
 
+        self._ensure_knowledge_mcp_for_profile(agent_profile)
         agent = self._create_agent(
             cache_key,
             ephemeral_system_prompt=ephemeral_system_prompt,
@@ -109,9 +110,19 @@ class HermesRuntime:
         return {
             "load_soul_identity": False,
             "skip_context_files": True,
-            "request_overrides": {"response_format": {"type": "json_object"}},
             "prefill_messages": [],
         }
+
+    @staticmethod
+    def _ensure_knowledge_mcp_for_profile(agent_profile: str | None) -> None:
+        if agent_profile != "edge_supervisor":
+            return
+        try:
+            from bridge.knowledge_mcp_config import ensure_knowledge_mcp_for_profile
+
+            ensure_knowledge_mcp_for_profile(agent_profile)
+        except Exception:
+            logger.warning("edge_supervisor knowledge MCP init failed", exc_info=True)
 
     def _history_for(self, cache_key: str) -> list[dict[str, str]]:
         with self._cache_lock:
@@ -265,6 +276,7 @@ class HermesRuntime:
         if agent_profile == "edge_supervisor":
             create_kwargs.update(self._edge_supervisor_overrides())
 
+        self._ensure_knowledge_mcp_for_profile(agent_profile)
         agent = self._create_agent(
             f"compat-stream:{session_id}:{agent_profile}",
             ephemeral_system_prompt=system_prompt,
