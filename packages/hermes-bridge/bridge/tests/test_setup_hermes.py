@@ -143,7 +143,7 @@ class TestHermesAgentVersionLock:
         (agent_dir / ".git").write_text("gitdir: ../.git/worktrees/hermes-agent\n", encoding="utf-8")
 
         def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(args[0], 0, stdout="v2026.5.29.2\n", stderr="")
+            return subprocess.CompletedProcess(args[0], 0, stdout="v2026.6.5\n", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -159,7 +159,7 @@ class TestHermesAgentVersionLock:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        with pytest.raises(HermesAgentVersionError, match="v2026.5.29.2"):
+        with pytest.raises(HermesAgentVersionError, match="v2026.6.5"):
             validate_hermes_agent_version(agent_dir)
 
     def test_allows_explicit_skip_for_local_integration_agent(self, tmp_path, monkeypatch):

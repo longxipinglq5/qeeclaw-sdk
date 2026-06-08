@@ -13,7 +13,7 @@ load_dotenv(override=False)
 
 logger = logging.getLogger(__name__)
 
-HERMES_AGENT_REQUIRED_TAG = "v2026.5.29.2"
+HERMES_AGENT_REQUIRED_TAG = "v2026.6.5"
 
 # ---------------------------------------------------------------------------
 # config.yaml 加载（与 release standalone 部署保持一致）
