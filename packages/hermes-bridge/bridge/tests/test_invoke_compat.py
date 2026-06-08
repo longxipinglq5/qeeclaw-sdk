@@ -96,7 +96,7 @@ class TestInvokeCompat:
         assert constructor_kwargs["session_id"] == "compat:edge:supervisor:edge_supervisor"
         assert constructor_kwargs["load_soul_identity"] is False
         assert constructor_kwargs["skip_context_files"] is True
-        assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "CentaurAI Edge主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio
     async def test_invoke_keeps_model_config_env_driven(self, app_client, mock_agent_class, monkeypatch):
@@ -330,7 +330,7 @@ class TestStreamCompat:
         assert constructor_kwargs["session_id"] == "compat-stream:edge:supervisor:edge_supervisor"
         assert constructor_kwargs["load_soul_identity"] is False
         assert constructor_kwargs["skip_context_files"] is True
-        assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "CentaurAI Edge主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio
     async def test_stream_terminator_format(self, app_client):

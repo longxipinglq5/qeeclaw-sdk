@@ -50,15 +50,13 @@ async def test_supervisor_invoke_delegates_tool_decision_to_hermes(tmp_path):
         if event["type"] in {"capability_selected", "approval_required", "clarify_required"}
     ]
 
-    assert app.state.runtime.invoke_calls == [
-        {
-            "session_id": "edge:owner_1:supervisor:conv_abc",
-            "user_text": "帮我生成儿童护眼台灯的小红书",
-            "agent_profile": "edge_supervisor",
-            "system_prompt": None,
-            "conversation_history": [],
-        }
-    ]
+    assert len(app.state.runtime.invoke_calls) == 1
+    invoke_call = app.state.runtime.invoke_calls[0]
+    assert invoke_call["session_id"] == "edge:owner_1:supervisor:conv_abc"
+    assert invoke_call["user_text"] == "帮我生成儿童护眼台灯的小红书"
+    assert invoke_call["agent_profile"] == "edge_supervisor"
+    assert "json object" in invoke_call["system_prompt"]
+    assert invoke_call["conversation_history"] == []
 
 
 async def test_supervisor_followup_keeps_context_for_hermes_instead_of_local_routing(tmp_path):
@@ -120,6 +118,59 @@ async def test_supervisor_followup_keeps_context_for_hermes_instead_of_local_rou
     ]
     assert app.state.runtime.invoke_calls[-1]["user_text"] == "再帮我生成这个产品的朋友圈，并配一张图"
     assert app.state.runtime.invoke_calls[-1]["conversation_history"]
+
+
+async def test_supervisor_text_card_projects_readable_body_to_timeline(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={
+            "final_response": (
+                '{"card_type":"text","speech":"我可以帮你梳理。",'
+                '"data":{"body":"我可以帮你写文案、做海报、整理客户消息。",'
+                '"suggestions":["写小红书","生成海报"]}}'
+            )
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "你能帮我做什么"},
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        run_resp = await client.get("/api/runs/run_000001")
+        timeline_resp = await client.get(
+            "/api/sessions/edge:owner_1:supervisor:conv_abc/timeline"
+        )
+
+    assert response.status_code == 200
+    assert run_resp.json()["run"]["result_text"] == "我可以帮你写文案、做海报、整理客户消息。"
+
+    events = timeline_resp.json()["events"]
+    assistant_messages = [
+        event
+        for event in events
+        if event["kind"] == "message" and event["role"] == "assistant"
+    ]
+    assert len(assistant_messages) == 1
+    assert assistant_messages[0]["text"] == "我可以帮你写文案、做海报、整理客户消息。"
+    assert '"card_type"' not in assistant_messages[0]["text"]
 
 
 async def test_moments_image_skill_calls_nexus_and_attaches_image_url(tmp_path, monkeypatch):

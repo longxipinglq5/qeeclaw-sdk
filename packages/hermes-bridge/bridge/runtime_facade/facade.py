@@ -448,12 +448,13 @@ class HermesRuntimeFacade:
                 },
                 trace_id=run.trace_id,
             )
+        response_text = self._renderable_reply_text(result)
         self.runs.complete_run(
             run.run_id,
-            result_text=str(result.get("final_response") or ""),
+            result_text=response_text,
             usage=usage,
             done_payload={
-                "text": str(result.get("final_response") or ""),
+                "text": response_text,
                 "usage": usage,
             },
         )
@@ -461,19 +462,20 @@ class HermesRuntimeFacade:
             session_id=session_id,
             run_id=run.run_id,
             type="message",
-            payload={"role": "assistant", "text": str(result.get("final_response") or "")},
+            payload={"role": "assistant", "text": response_text},
             trace_id=run.trace_id,
         )
         self.sessions.append_turn(
             session_id,
             user_text=user_text,
-            assistant_text=str(result.get("final_response") or ""),
+            assistant_text=response_text,
             metadata={"run_id": run.run_id},
         )
 
         return {
             **result,
-            "renderable_reply_text": self._renderable_reply_text(result),
+            "final_response": response_text,
+            "renderable_reply_text": response_text,
             "run_id": run.run_id,
             "session_id": session_id,
             "agent_profile": agent_profile,
@@ -520,7 +522,7 @@ class HermesRuntimeFacade:
             session_id=request.session_id,
             user_text=request.input.text,
             agent_profile=request.agent_profile,
-            system_prompt=None,
+            system_prompt=self._supervisor_system_prompt(request.agent_profile),
             trace_id=trace_id,
             created_by=request.metadata.get("created_by"),
             source=request.metadata.get("source"),
@@ -656,7 +658,7 @@ class HermesRuntimeFacade:
 
     @classmethod
     def _renderable_reply_text(cls, result: dict[str, Any]) -> str:
-        final_response = str(result.get("final_response") or "").strip()
+        final_response = cls._unwrap_skill_card_text(str(result.get("final_response") or "")).strip()
         tool_outputs = cls._extract_tool_outputs(result)
         if not tool_outputs:
             return final_response
