@@ -378,7 +378,7 @@ async def test_app_im_free_text_invokes_supervisor_and_returns_renderable_reply(
             "session_id": supervisor_session_id,
             "user_text": "请用一句话回复收到",
             "agent_profile": "edge_supervisor",
-            "system_prompt": None,
+            "system_prompt": app.state.runtime_facade._supervisor_system_prompt("edge_supervisor"),
             "conversation_history": [],
         }
     ]
@@ -513,7 +513,7 @@ async def test_app_im_toolbox_request_uses_hermes_intent_not_bridge_projection(t
             "session_id": supervisor_session_id,
             "user_text": user_text,
             "agent_profile": "edge_supervisor",
-            "system_prompt": None,
+            "system_prompt": app.state.runtime_facade._supervisor_system_prompt("edge_supervisor"),
             "conversation_history": [],
         }
     ]
@@ -1039,7 +1039,7 @@ async def test_app_im_free_text_delegates_xhs_toolbox_request_to_hermes_intent(t
             "session_id": supervisor_session_id,
             "user_text": "请用AI工具箱的小红书笔记生成器，为便携护眼台灯生成一段种草文",
             "agent_profile": "edge_supervisor",
-            "system_prompt": None,
+            "system_prompt": app.state.runtime_facade._supervisor_system_prompt("edge_supervisor"),
             "conversation_history": [],
         }
     ]

@@ -13,6 +13,20 @@ from bridge.scenarios import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
+EDGE_SUPERVISOR_DISABLED_TOOLSETS = [
+    "browser",
+    "terminal",
+    "file",
+    "debugging",
+    "code_execution",
+    "computer_use",
+    "delegation",
+    "todo",
+    "skills",
+    "image_gen",
+    "video_gen",
+]
+
 
 @dataclass
 class StreamHandle:
@@ -53,15 +67,24 @@ class HermesRuntime:
         self,
         cache_key: str,
         ephemeral_system_prompt: str | None = None,
+        agent_profile: str | None = None,
     ) -> Any:
         with self._cache_lock:
             if cache_key in self._cache:
                 self._cache.move_to_end(cache_key)
                 return self._cache[cache_key]
 
+        create_kwargs: dict[str, Any] = {}
+        disabled_toolsets = self._disabled_toolsets_for_profile(agent_profile)
+        if disabled_toolsets is not None:
+            create_kwargs["disabled_toolsets"] = disabled_toolsets
+        if agent_profile == "edge_supervisor":
+            create_kwargs.update(self._edge_supervisor_overrides())
+
         agent = self._create_agent(
             cache_key,
             ephemeral_system_prompt=ephemeral_system_prompt,
+            **create_kwargs,
         )
 
         with self._cache_lock:
@@ -73,6 +96,21 @@ class HermesRuntime:
                 logger.info("LRU 淘汰: %s", evicted_key)
 
         return agent
+
+    @staticmethod
+    def _disabled_toolsets_for_profile(agent_profile: str | None) -> list[str] | None:
+        if agent_profile == "edge_supervisor":
+            return list(EDGE_SUPERVISOR_DISABLED_TOOLSETS)
+        return None
+
+    @staticmethod
+    def _edge_supervisor_overrides() -> dict[str, Any]:
+        return {
+            "load_soul_identity": False,
+            "skip_context_files": True,
+            "request_overrides": {"response_format": {"type": "json_object"}},
+            "prefill_messages": [],
+        }
 
     def _history_for(self, cache_key: str) -> list[dict[str, str]]:
         with self._cache_lock:
@@ -193,6 +231,7 @@ class HermesRuntime:
         agent = self.get_or_create(
             cache_key,
             ephemeral_system_prompt=system_prompt,
+            agent_profile=agent_profile,
         )
         result = await asyncio.to_thread(
             agent.run_conversation,
@@ -218,10 +257,18 @@ class HermesRuntime:
         def on_delta(delta: str) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
 
+        create_kwargs: dict[str, Any] = {}
+        disabled_toolsets = self._disabled_toolsets_for_profile(agent_profile)
+        if disabled_toolsets is not None:
+            create_kwargs["disabled_toolsets"] = disabled_toolsets
+        if agent_profile == "edge_supervisor":
+            create_kwargs.update(self._edge_supervisor_overrides())
+
         agent = self._create_agent(
             f"compat-stream:{session_id}:{agent_profile}",
             ephemeral_system_prompt=system_prompt,
             stream_delta_callback=on_delta,
+            **create_kwargs,
         )
 
         async def _run() -> None:

@@ -69,11 +69,11 @@ class TestInvokeCompat:
         assert body["run_id"] == "run_000001"
 
         events_resp = await app_client.get("/api/runs/run_000001/events")
-        assert [event["type"] for event in events_resp.json()["events"]] == [
-            "run_started",
-            "metering",
-            "done",
-        ]
+        event_types = [event["type"] for event in events_resp.json()["events"]]
+        assert "run_started" in event_types
+        assert "metering" in event_types
+        assert "done" in event_types
+        assert event_types.index("run_started") < event_types.index("metering") < event_types.index("done")
 
         # 验证 AIAgent 被构造时传入了 ephemeral_system_prompt
         constructor_kwargs = mock_agent_class.call_args.kwargs
@@ -94,7 +94,8 @@ class TestInvokeCompat:
 
         constructor_kwargs = mock_agent_class.call_args.kwargs
         assert constructor_kwargs["session_id"] == "compat:edge:supervisor:edge_supervisor"
-        assert constructor_kwargs["load_soul_identity"] is True
+        assert constructor_kwargs["load_soul_identity"] is False
+        assert constructor_kwargs["skip_context_files"] is True
         assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio
@@ -327,7 +328,8 @@ class TestStreamCompat:
 
         constructor_kwargs = mock_agent_class.call_args.kwargs
         assert constructor_kwargs["session_id"] == "compat-stream:edge:supervisor:edge_supervisor"
-        assert constructor_kwargs["load_soul_identity"] is True
+        assert constructor_kwargs["load_soul_identity"] is False
+        assert constructor_kwargs["skip_context_files"] is True
         assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio

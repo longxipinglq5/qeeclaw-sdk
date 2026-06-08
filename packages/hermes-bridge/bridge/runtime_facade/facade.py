@@ -12,6 +12,7 @@ from typing import Any
 from bridge.config import settings
 from bridge.invocation import resolve_skill_dispatch
 from bridge.runtime import StreamHandle
+from bridge.scenarios import get_system_prompt
 from bridge.runtime_facade.approvals import ApprovalStore
 from bridge.runtime_facade.artifacts import JsonArtifactStore
 from bridge.runtime_facade.automation_status import AutomationRunStatus, AutomationStatusProjector
@@ -106,6 +107,7 @@ class HermesRuntimeFacade:
             session_id=session_id,
             user_text=user_text,
             agent_profile=agent_profile,
+            system_prompt=self._supervisor_system_prompt(agent_profile),
             metadata=metadata,
         )
         if self._is_headless_skill_channel(metadata or {}) and isinstance(result.get("skill_intent"), dict):
@@ -266,6 +268,12 @@ class HermesRuntimeFacade:
             "wechat_personal_plugin",
             "wechat",
         }
+
+    @staticmethod
+    def _supervisor_system_prompt(agent_profile: str) -> str | None:
+        if agent_profile != "edge_supervisor":
+            return None
+        return get_system_prompt("supervisor", agent_profile=agent_profile)
 
     async def _invoke_raw_with_run_metadata(
         self,

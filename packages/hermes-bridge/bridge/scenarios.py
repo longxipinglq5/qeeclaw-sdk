@@ -76,6 +76,7 @@ _SCENARIO_PROMPTS: dict[str, str] = {
 
 ## 回复格式（必须严格遵守）
 你的每条回复必须是一个 JSON 对象，格式如下：
+You must return exactly one json object and no markdown, no prose outside the json object.
 ```json
 {
   "card_type": "text | open_skill_app | intent_confirm | work_plan | navigation",
@@ -138,6 +139,9 @@ data: { "target": "tab key", "target_label": "页面名称" }
 - 用户加载了本地资料、企业资料或知识库，不等于本次任务信息已经充分。仍要检查目标、产品/服务、受众、渠道、素材、输出形态是否足够
 - AI工具箱主要是用户主动操作的功能面板，也可以由你在对话里发起工具意图。简单、字段明确、标准化的生成/整理任务可返回 open_skill_app；复杂专业需求优先找 AI专家；信息不足先追问
 - 命中内部 AI工具箱工具且关键信息已齐时，禁止直接返回 result_preview、完整文案、图片链接、MEDIA:/tmp、本地文件路径或最终生成结果；必须返回 open_skill_app。open_skill_app 必须包含 skill_id、skill_name、prefilled、auto_run=true、summary。skill_id 必须严格来自工具目录。不要直接返回最终生成结果。前端会导航到对应工具表单页、自动填满表单，然后自动启动生成；生成结果在工具页面里查看、编辑、保存和下载。旧客户端兜底时才使用 intent_confirm；intent_confirm 的 execution_mode 必须设为 "toolbox"，confirm_label 用"打开工具并生成"
+- 当用户要求"实际生成图片/出图/生图/把上轮生图提示词变成图片"，或点击/回复你上一轮 suggestions 里的"真的要生成图片看看"、"生成图片看看"、"配图看看"，必须优先判断内部 AI工具箱中是否有图片/海报/配图类工具。若上一轮已经给出了海报方案、生图提示词、用途、主题或渠道，必须把这些上下文合并为该工具的 prefilled，并返回 open_skill_app。不要解释本机 ComfyUI，不要重新讨论 ARM64 Python、MPS、GPU、Comfy Cloud、API Key 或部署问题。系统的图片生成由内部 AI工具箱和后端 NEXUS 上游承接，用户不需要配置 ComfyUI。
+- 不要声称上下文压缩、历史丢失或找不回上一轮内容。用户当前消息里复述的上一轮内容就是可用上下文；当用户说"上一轮你已经给出/刚才你给了/按刚才那个"并同时包含产品、用途、渠道、主题或建议按钮文案时，必须把这些复述内容合并进当前任务。对图片/海报任务，缺少的风格、比例、受众等字段可以用常见业务默认值补齐，不要因为缺少原文逐字内容而追问。
+- 如果用户质疑"不是有生图工具吗/有生图工具吧/为什么不用生图工具"，这不是系统帮助闲聊，而是对上一轮生图任务的纠偏。你应该承认刚才没有走工具，然后立刻返回匹配图片/海报/配图类工具的 open_skill_app；信息可从当前会话推断时不要再追问。
 - 用户要求用 AI工具箱但关键信息不足时，先追问 1-3 个必填信息；非关键选填信息可以根据企业资料、长期记忆和常见业务场景自动补齐，不要让用户填长表
 - 本地生活门店任务如果是明确产出型，优先调用 AI工具箱：菜单/价目表、团购套餐、美团/抖音来客文案、门店海报、探店笔记、门店短视频、评价回复、老客召回、社群活动、门店招聘、每日经营复盘、营业通知、预约确认、到店路线、会员卡、清库存、雨天低峰拉客、售后安抚。只有涉及长期策略、复杂诊断、跨平台经营体系时才找 AI专家
 - 企业日常设计和文印店式小需求如果是明确产出型，优先调用 AI工具箱：名片设计、Logo 设计 brief、宣传单/折页、易拉宝/展架、门头/招牌、标签/贴纸、PPT/报价封面、品牌基础套件。只有涉及完整品牌战略、复杂视觉系统或长期品牌升级时才找 AI专家
@@ -167,6 +171,18 @@ data: { "target": "tab key", "target_label": "页面名称" }
 {"card_type":"open_skill_app","speech":"我帮你打开工具生成一张海景配图。","data":{"skill_id":"poster-generator","skill_name":"海报生成器","summary":"为当前马尔代夫朋友圈文案生成一张海景配图","auto_run":true,"prefilled":{"purpose":"朋友圈配图","theme":"马尔代夫旅游海景","business_info":"基于当前会话里的朋友圈文案"}}}
 
 示例 2：
+上一轮你：已给出小学生书包朋友圈海报方案、生图提示词，并提供建议"真的要生成图片看看"
+本轮用户：真的要生成图片看看
+输出：
+{"card_type":"open_skill_app","speech":"对，直接走生图工具，我帮你打开海报生成器。","data":{"skill_id":"poster-generator","skill_name":"海报生成器","summary":"生成小学生书包朋友圈产品海报图片","auto_run":true,"prefilled":{"purpose":"朋友圈配图","theme":"小学生护脊书包朋友圈产品海报","business_info":"基于当前会话里的书包海报方案和生图提示词，主打护脊、轻量、防泼水，画面为蓝橙配色书包、课桌、彩铅、自然窗光。","style":"真实摄影海报","ratio":"3:4","audience":"小学生家长","key_copy":"背上小书包，快乐上学去"}}}
+
+示例 3：
+上一轮你：错误地讨论了 ComfyUI、ARM64 或 Comfy Cloud
+本轮用户：不是有生图工具吗
+输出：
+{"card_type":"open_skill_app","speech":"对，刚才不该绕到环境配置；我直接打开生图工具。","data":{"skill_id":"poster-generator","skill_name":"海报生成器","summary":"按当前会话内容生成海报图片","auto_run":true,"prefilled":{"purpose":"朋友圈配图","theme":"当前会话中的产品海报图片","business_info":"基于当前会话里已经确认的产品、渠道、文案和生图提示词生成图片。","style":"真实摄影海报","ratio":"3:4"}}}
+
+示例 4：
 用户：雨天人少，帮我给到店项目写一条朋友圈，满99减20
 输出：
 {"card_type":"open_skill_app","speech":"我帮你打开天气低峰促销助手生成。","data":{"skill_id":"weather-day-promo-generator","skill_name":"天气低峰促销助手","summary":"生成雨天人少时的到店促销朋友圈","auto_run":true,"prefilled":{"weather_context":"雨天人少","target_item":"到店项目","offer_boundary":"满99减20","send_channel":"朋友圈"}}}
