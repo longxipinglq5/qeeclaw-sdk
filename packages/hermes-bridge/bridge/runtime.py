@@ -22,8 +22,9 @@ EDGE_SUPERVISOR_DISABLED_TOOLSETS = [
     "computer_use",
     "delegation",
     "todo",
-    "skills",
-    "image_gen",
+    # "skills",
+    "clarify",
+    # "image_gen",
     "video_gen",
 ]
 

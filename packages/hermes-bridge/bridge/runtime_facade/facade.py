@@ -711,20 +711,34 @@ class HermesRuntimeFacade:
                 continue
             if message.get("role") != "tool":
                 continue
+            tool_name = str(message.get("tool_name") or message.get("name") or "tool")
             content = HermesRuntimeFacade._coerce_tool_content_to_text(message.get("content"))
             if not content.strip():
                 continue
+            if HermesRuntimeFacade._is_non_renderable_tool_output(tool_name, content):
+                continue
             outputs.append(
                 {
-                    "tool_name": str(
-                        message.get("tool_name")
-                        or message.get("name")
-                        or "tool"
-                    ),
+                    "tool_name": tool_name,
                     "content": content,
                 }
             )
         return outputs
+
+    @staticmethod
+    def _is_non_renderable_tool_output(tool_name: str, content: str) -> bool:
+        normalized_tool = tool_name.strip().lower()
+        if normalized_tool == "clarify" and "not available in this execution context" in content:
+            return True
+        stripped = content.strip()
+        if not stripped.startswith("{"):
+            return False
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            return False
+        error = parsed.get("error") if isinstance(parsed, dict) else None
+        return isinstance(error, str) and "not available in this execution context" in error
 
     @staticmethod
     def _coerce_tool_content_to_text(content: Any) -> str:

@@ -173,6 +173,70 @@ async def test_supervisor_text_card_projects_readable_body_to_timeline(tmp_path)
     assert '"card_type"' not in assistant_messages[0]["text"]
 
 
+async def test_supervisor_clarify_tool_error_projects_readable_question(tmp_path):
+    from httpx import ASGITransport, AsyncClient
+
+    from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
+    from bridge.tests.test_runtime_facade import FakeLegacyRuntime
+
+    app = create_app()
+    app.state.runtime = FakeLegacyRuntime(
+        response_overrides={
+            "final_response": (
+                "测试用户总，设计会员卡需要你定几个方向：\n\n"
+                "1. 卡种：储值卡、次卡、月卡/季卡，还是权益卡？\n"
+                "2. 价格和权益：比如充500送100。\n"
+                "你给我几个关键词就行。"
+            ),
+            "messages": [
+                {"role": "assistant", "content": "我需要追问几个方向。"},
+                {
+                    "role": "tool",
+                    "tool_name": "clarify",
+                    "content": {
+                        "error": "Clarify tool is not available in this execution context."
+                    },
+                },
+            ],
+        }
+    )
+    app.state.runtime_facade = HermesRuntimeFacade(
+        app.state.runtime,
+        artifact_root_dir=tmp_path,
+    )
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/runs",
+            json={
+                "kind": "invoke",
+                "session_id": "edge:owner_1:supervisor:conv_abc",
+                "agent_profile": "edge_supervisor",
+                "input": {"text": "设计一个美甲店的会员卡"},
+                "metadata": {"owner_id": "owner_1", "created_by": "web"},
+            },
+        )
+        run_resp = await client.get("/api/runs/run_000001")
+        timeline_resp = await client.get(
+            "/api/sessions/edge:owner_1:supervisor:conv_abc/timeline"
+        )
+
+    assert response.status_code == 200
+    assert "设计会员卡需要你定几个方向" in run_resp.json()["run"]["result_text"]
+
+    events = timeline_resp.json()["events"]
+    assistant_message = next(
+        event
+        for event in events
+        if event["kind"] == "message" and event["role"] == "assistant"
+    )
+    assert "设计会员卡需要你定几个方向" in assistant_message["text"]
+    assert '"card_type"' not in assistant_message["text"]
+    assert "Clarify tool is not available" not in assistant_message["text"]
+
+
 async def test_moments_image_skill_calls_nexus_and_attaches_image_url(tmp_path, monkeypatch):
     import urllib.request
 

@@ -99,8 +99,9 @@ class TestInvoke:
             "computer_use",
             "delegation",
             "todo",
-            "skills",
+            "clarify",
         }.issubset(disabled_toolsets)
+        assert "skills" not in disabled_toolsets
         assert mock_agent_class.call_args.kwargs["load_soul_identity"] is False
         assert mock_agent_class.call_args.kwargs["skip_context_files"] is True
         assert mock_agent_class.call_args.kwargs["request_overrides"] == {
