@@ -77,6 +77,7 @@ async def post_channel_event(request: Request) -> JSONResponse:
                     timeout=sync_reply_timeout_ms / 1000,
                 )
             except asyncio.TimeoutError:
+                _append_app_im_async_progress(facade, session_id, body)
                 _schedule_app_im_free_text_followup(invoke_task, body)
                 return JSONResponse(
                     {
@@ -226,6 +227,27 @@ def _schedule_app_im_free_text_followup(task: asyncio.Task, body: dict) -> None:
             traceback.print_exc()
 
     asyncio.create_task(_send_when_done())
+
+
+def _append_app_im_async_progress(facade, session_id: str, body: dict) -> None:
+    facade.timeline.append_manual_event(
+        source_event_id=f"{body['external_message_id']}:async_progress",
+        source_event_type="app_im_async_progress",
+        session_id=session_id,
+        run_id=str(body.get("binding_target_id") or ""),
+        source="channel",
+        kind="operation_log",
+        role="assistant",
+        payload={
+            "label": "正在继续处理",
+            "status": "running",
+            "detail": "收到，正在生成，完成后发你。",
+            "app_name": "Centaur AI",
+            "app_icon": "H",
+            "content": body.get("content"),
+            "channel_key": body.get("channel_key"),
+        },
+    )
 
 
 def _wechat_followup_text_from_result(result: dict) -> str:

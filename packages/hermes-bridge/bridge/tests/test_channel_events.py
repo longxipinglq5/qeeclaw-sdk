@@ -684,6 +684,16 @@ async def test_app_im_free_text_times_out_with_async_wechat_followup(tmp_path, m
     assert body["mode"] == "accepted_async"
     assert body["reply"] == {"text": "收到，正在生成，完成后发你。"}
     assert body["outbox_followup"] is True
+    timeline_events = app.state.runtime_facade.timeline.list_session(supervisor_session_id).events
+    operation_events = [
+        event
+        for event in timeline_events
+        if event.kind == "operation_log" and event.source_event_type == "app_im_async_progress"
+    ]
+    assert operation_events
+    assert operation_events[-1].role == "assistant"
+    assert operation_events[-1].payload["status"] == "running"
+    assert operation_events[-1].payload["detail"] == "收到，正在生成，完成后发你。"
     assert sent_messages == [
         {
             "chat_id": "wx_chat_001",
