@@ -1017,6 +1017,31 @@ class HermesRuntimeFacade:
         )
         trace_id = f"trc_{self.runs.next_run_number:06d}"
         user_text = request.input.text or ""
+        runtime_note = self._expert_runtime_note(
+            owner_id=owner_id,
+            conversation_id=conversation_id,
+            context_refs=request.context_refs,
+        )
+        dispatch = resolve_skill_dispatch(
+            user_text,
+            skill_command=expert.hermes_skill,
+            runtime_note=runtime_note,
+        )
+        if dispatch.error:
+            if dispatch.error.get("code") == "unknown_skill_command":
+                raise ValueError(
+                    json.dumps(
+                        {
+                            "code": "EXPERT_SKILL_NOT_FOUND",
+                            "details": {
+                                "expert_id": expert.expert_id,
+                                "hermes_skill": expert.hermes_skill,
+                            },
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            raise ValueError(json.dumps(dispatch.error, ensure_ascii=False))
         self.sessions.get_or_create(
             session_id=request.session_id,
             agent_profile=request.agent_profile,
@@ -1041,15 +1066,18 @@ class HermesRuntimeFacade:
             session_id=request.session_id,
             agent_profile=expert.hermes_profile,
             kind=RunKind.EXPERT_RUN,
-            input_text=user_text,
+            input_text=dispatch.user_text,
             trace_id=trace_id,
             parent_run_id=request.parent_run_id,
             created_by=request.metadata.get("created_by"),
-            source=request.metadata.get("source"),
+            source=request.metadata.get("source") or "edge_expert_run",
             metadata={
                 **request.metadata,
                 "expert_id": expert.expert_id,
+                "expert_name": expert.name,
+                "hermes_skill": expert.hermes_skill,
                 "linked_session_id": linked_session_id,
+                "source": request.metadata.get("source") or "edge_expert_run",
             },
         )
         self.events.append(
@@ -1058,30 +1086,45 @@ class HermesRuntimeFacade:
             type="expert_selected",
             payload={
                 "expert_id": expert.expert_id,
+                "expert_name": expert.name,
+                "hermes_skill": expert.hermes_skill,
+                "category": expert.category,
                 "linked_session_id": linked_session_id,
             },
             trace_id=run.trace_id,
         )
         artifact_id = self._input_field(request.input, "artifact_id")
-        required_context = [f"artifact:{artifact_id}"] if artifact_id else []
+        context_refs = list(request.context_refs)
+        if artifact_id:
+            context_refs.append(f"artifact:{artifact_id}")
         self.events.append(
             session_id=request.session_id,
             run_id=run.run_id,
             type="readiness_check",
-            payload={"status": "ready", "required_context": required_context},
+            payload={
+                "status": "ready",
+                "context_refs": context_refs,
+            },
             trace_id=run.trace_id,
         )
         self.events.append(
             session_id=request.session_id,
             run_id=run.run_id,
             type="work_plan",
-            payload={"summary": "先判断语气，再给出两版修改建议"},
+            payload={
+                "steps": [
+                    "理解当前目标和业务上下文",
+                    "按专家方法形成判断和行动建议",
+                    "输出可执行的下一步方案",
+                ],
+                "summary": "理解目标、形成判断、输出行动方案",
+            },
             trace_id=run.trace_id,
         )
         try:
             result = await self._legacy_runtime.invoke_raw(
                 session_id=linked_session_id,
-                user_text=user_text,
+                user_text=dispatch.user_text,
                 agent_profile=expert.hermes_profile,
                 system_prompt=None,
                 conversation_history=conversation_history,
@@ -1091,15 +1134,29 @@ class HermesRuntimeFacade:
             raise
 
         final_response = str(result.get("final_response") or "")
+        usage = self._usage_from_result(result)
+        self._emit_tool_call_events(
+            result=result,
+            session_id=request.session_id,
+            run_id=run.run_id,
+            trace_id=run.trace_id,
+        )
         self.runs.complete_run(
             run.run_id,
             result_text=final_response,
-            usage=self._usage_from_result(result),
-            done_payload={"summary": final_response},
+            usage=usage,
+            done_payload={
+                "text": final_response,
+                "summary": final_response,
+                "expert_id": expert.expert_id,
+                "expert_name": expert.name,
+                "hermes_skill": expert.hermes_skill,
+                "usage": usage,
+            },
         )
         self.sessions.append_turn(
             linked_session_id,
-            user_text=user_text,
+            user_text=dispatch.user_text,
             assistant_text=final_response,
             metadata={"run_id": run.run_id, "expert_id": expert.expert_id},
         )
@@ -1119,6 +1176,22 @@ class HermesRuntimeFacade:
             status=RunStatus.COMPLETED,
             trace_id=trace_id,
             urls=RunUrls.for_run(run.run_id, request.session_id),
+        )
+
+    @staticmethod
+    def _expert_runtime_note(
+        *,
+        owner_id: str,
+        conversation_id: str,
+        context_refs: list[str],
+    ) -> str:
+        refs = ", ".join(context_refs)
+        return (
+            "[Centaur expert context]\n"
+            "- use_knowledge: true\n"
+            f"- context_refs: {refs}\n"
+            f"- owner_id: {owner_id}\n"
+            f"- conversation_id: {conversation_id}"
         )
 
     def _validate_expert_run_fields(self, request: CreateRunRequest) -> dict[str, Any] | None:

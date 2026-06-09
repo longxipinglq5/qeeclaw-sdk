@@ -13,6 +13,7 @@ from bridge.api.approvals import router as approvals_router
 from bridge.api.automation import router as automation_router
 from bridge.api.capabilities import router as capabilities_router
 from bridge.api.channels import router as channels_router
+from bridge.api.experts import router as experts_router
 from bridge.api.invoke import router as invoke_router
 from bridge.api.invoke_compat import router as invoke_compat_router
 from bridge.api.knowledge import router as knowledge_router
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     # Facade-owned native run APIs must stay before any future legacy fallback
     # routers. Existing non-/api routes remain legacy until explicitly migrated.
     app.include_router(runs_router, tags=["runs"])
+    app.include_router(experts_router, tags=["experts"])
     app.include_router(automation_router, tags=["automation"])
     app.include_router(timeline_router, tags=["timeline"])
     app.include_router(approvals_router, tags=["approvals"])

@@ -178,11 +178,31 @@ class CapabilitySelection(BaseModel):
 
 class ExpertManifest(BaseModel):
     expert_id: str
+    name: str = ""
     title: str
     description: str
+    category: str = "legacy"
+    source_agent_id: str = ""
+    source_path: str = ""
+    hermes_skill: str = ""
+    recommended_tool_ids: list[str] = Field(default_factory=list)
+    starter_prompts: list[str] = Field(default_factory=list)
+    ui: dict[str, Any] = Field(default_factory=dict)
     context_scope: Literal["owner", "conversation"]
     hermes_profile: str
     permissions: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def fill_compat_defaults(self) -> "ExpertManifest":
+        if not self.name:
+            self.name = self.title
+        if not self.source_agent_id:
+            self.source_agent_id = self.expert_id
+        if not self.source_path:
+            self.source_path = f"legacy/{self.expert_id}.md"
+        if not self.hermes_skill:
+            self.hermes_skill = self.expert_id
+        return self
 
     def session_id_for(self, *, owner_id: str, conversation_id: str) -> str:
         base = f"edge:{owner_id}:expert:{self.expert_id}"

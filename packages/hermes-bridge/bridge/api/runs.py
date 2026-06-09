@@ -49,14 +49,28 @@ async def create_run(request: Request) -> JSONResponse:
                 400,
                 error["details"] or {"kind": req.kind.value},
             )
+        if error["code"] == "EXPERT_SKILL_NOT_FOUND":
+            return api_error(
+                "EXPERT_SKILL_NOT_FOUND",
+                "Expert skill not found",
+                404,
+                error["details"] if isinstance(error["details"], dict) else {},
+            )
         raise
     except KeyError as exc:
-        capability_id = str(exc).strip("'")
+        missing_id = str(exc).strip("'")
+        if req.kind.value == "expert_run":
+            return api_error(
+                "EXPERT_NOT_FOUND",
+                "Expert not found",
+                404,
+                {"expert_id": missing_id},
+            )
         return api_error(
             "CAPABILITY_NOT_FOUND",
             "Capability not found",
             404,
-            {"capability_id": capability_id},
+            {"capability_id": missing_id},
         )
     return JSONResponse(response.model_dump(mode="json"))
 
