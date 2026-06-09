@@ -4,7 +4,7 @@ test_session_agent.py — 多人多轮对话 + 多智体 单元测试
 
 覆盖:
   Part A: session_manager.py 单元测试 (无需 HTTP)
-  Part B: bridge_server.py HTTP 端点集成测试
+  Part B: legacy HTTP 端点集成测试
 
 运行:
   cd sdk/qeeclaw-hermes-bridge
@@ -373,7 +373,7 @@ class TestSessionManager:
 
 
 # ===================================================================
-# Part B: bridge_server.py HTTP 端点集成测试
+# Part B: legacy HTTP 端点集成测试
 # ===================================================================
 
 
@@ -405,7 +405,7 @@ _TEST_PORT = 0  # will be assigned
 
 @pytest.fixture(scope="module")
 def bridge_server():
-    """启动一个真实的 bridge_server 用于集成测试。"""
+    """启动一个真实的 legacy request handler 用于集成测试。"""
     global _TEST_PORT
 
     # 重置 session_manager 单例
@@ -418,13 +418,13 @@ def bridge_server():
     # 禁止 hermes-agent 检查（通过设置目录为临时目录）
     os.environ["QEECLAW_HERMES_AGENT_DIR"] = test_tmpdir
 
-    # 导入 bridge_server
+    # 导入 legacy helper module
     import importlib
-    if "bridge_server" in sys.modules:
+    if "bridge.legacy_server" in sys.modules:
         # 需要 reload 以使用新环境
-        bs_mod = importlib.reload(sys.modules["bridge_server"])
+        bs_mod = importlib.reload(sys.modules["bridge.legacy_server"])
     else:
-        bs_mod = importlib.import_module("bridge_server")
+        bs_mod = importlib.import_module("bridge.legacy_server")
 
     # 创建 server，用 port=0 让 OS 分配随机端口
     handler_class = bs_mod.BridgeRequestHandler
@@ -1247,7 +1247,7 @@ class TestHTTPBillingEndpoints:
         assert data["total_recharge"] == 0
 
     def test_recorded_usage_updates_local_finance_views(self, bridge_server):
-        import bridge_server as bs_mod
+        from bridge import legacy_server as bs_mod
 
         try:
             bs_mod._save_finance_usage_records([])

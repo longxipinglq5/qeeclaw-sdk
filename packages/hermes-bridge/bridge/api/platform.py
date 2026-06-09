@@ -85,7 +85,7 @@ def _message_to_history(msg: dict[str, Any], idx: int, session: Any) -> dict[str
 @router.get("/api/users/me/context")
 async def user_context():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         profile = _bs._load_user_profile()
         teams = profile.get("teams", [{"id": 1, "name": "local", "is_personal": True, "owner_id": 1}])
         first_team = teams[0] if teams else {}
@@ -107,7 +107,7 @@ async def user_context():
 @router.get("/api/users/me")
 async def user_profile_get():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         return _ok(_bs._load_user_profile())
     except Exception as exc:
         traceback.print_exc()
@@ -117,7 +117,7 @@ async def user_profile_get():
 @router.put("/api/users/me")
 async def user_profile_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         profile = _bs._load_user_profile()
         for key in ("full_name", "email", "phone"):
@@ -133,7 +133,7 @@ async def user_profile_update(request: Request):
 @router.put("/api/users/me/preference")
 async def user_preference_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         preferred_model = body.get("preferred_model", "")
         profile = _bs._load_user_profile()
@@ -153,7 +153,7 @@ async def user_products():
 @router.get("/api/users")
 async def users_list(page: int = Query(default=1), page_size: int = Query(default=20)):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         profile = _bs._load_user_profile()
         return _ok({"total": 1, "page": page, "page_size": page_size, "items": [profile]})
     except Exception as exc:
@@ -188,7 +188,7 @@ async def company_verification_submit():
 @router.get("/workflow/list")
 async def workflow_list():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         return _ok(_bs._load_workflows())
     except Exception as exc:
         traceback.print_exc()
@@ -198,7 +198,7 @@ async def workflow_list():
 @router.get("/workflow/run/{wf_id}")
 async def workflow_get(wf_id: str):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         for wf in _bs._load_workflows():
             if str(wf.get("id")) == wf_id:
                 return _ok(wf)
@@ -211,7 +211,7 @@ async def workflow_get(wf_id: str):
 @router.post("/workflow/save")
 async def workflow_save(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         wf_id = body.get("id") or f"wf_{uuid.uuid4().hex[:12]}"
         workflows = _bs._load_workflows()
@@ -241,7 +241,7 @@ async def workflow_save(request: Request):
 @router.get("/api/platform/approvals")
 async def approvals_list(page: int = Query(default=1), page_size: int = Query(default=20), status: str | None = Query(default=None)):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         items = _bs._load_approvals()
         if status:
             items = [a for a in items if a.get("status") == status]
@@ -256,7 +256,7 @@ async def approvals_list(page: int = Query(default=1), page_size: int = Query(de
 @router.post("/api/platform/approvals/request")
 async def approval_request(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         expires_seconds = body.get("expires_in_seconds", 86400)
@@ -286,7 +286,7 @@ async def approval_request(request: Request):
 @router.get("/api/platform/approvals/{approval_id}")
 async def approval_get(approval_id: str):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         for item in _bs._load_approvals():
             if item.get("approval_id") == approval_id:
                 return _ok(item)
@@ -299,7 +299,7 @@ async def approval_get(approval_id: str):
 @router.post("/api/platform/approvals/{approval_id}/resolve")
 async def approval_resolve(approval_id: str, request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         items = _bs._load_approvals()
@@ -328,7 +328,7 @@ async def approval_resolve(approval_id: str, request: Request):
 @router.get("/api/platform/audit/events")
 async def audit_events(page: int = Query(default=1), page_size: int = Query(default=50)):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         events = _bs._load_audit_events()
         total = len(events)
         start = (page - 1) * page_size
@@ -341,7 +341,7 @@ async def audit_events(page: int = Query(default=1), page_size: int = Query(defa
 @router.post("/api/platform/audit/events")
 async def audit_record(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         event = {
@@ -370,7 +370,7 @@ async def audit_record(request: Request):
 @router.get("/api/platform/audit/summary")
 async def audit_summary():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         events = _bs._load_audit_events()
         approvals = _bs._load_approvals()
         return _ok({
@@ -395,7 +395,7 @@ async def audit_summary():
 @router.get("/api/builder/projects")
 async def builder_projects_list():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         return _ok(_bs.list_builder_projects())
     except Exception as exc:
         traceback.print_exc()
@@ -405,7 +405,7 @@ async def builder_projects_list():
 @router.get("/api/builder/projects/{project_id}")
 async def builder_project_get(project_id: str):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         if not _bs._sanitize_builder_project_id(project_id):
             return _err(400, "invalid builder project id")
         project = _bs.load_builder_project(project_id)
@@ -420,7 +420,7 @@ async def builder_project_get(project_id: str):
 @router.post("/api/builder/projects")
 async def builder_project_create(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         if not isinstance(body.get("blueprint"), dict):
             return _err(400, "blueprint is required")
@@ -433,7 +433,7 @@ async def builder_project_create(request: Request):
 @router.put("/api/builder/projects/{project_id}")
 async def builder_project_update(project_id: str, request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         if not _bs._sanitize_builder_project_id(project_id):
             return _err(400, "invalid builder project id")
         body = await request.json()
@@ -449,7 +449,7 @@ async def builder_project_update(project_id: str, request: Request):
 @router.post("/api/builder/projects/{project_id}/test-runs")
 async def builder_project_test_run(project_id: str):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         if not _bs._sanitize_builder_project_id(project_id):
             return _err(400, "invalid builder project id")
         project = _bs.load_builder_project(project_id)
@@ -464,7 +464,7 @@ async def builder_project_test_run(project_id: str):
 @router.delete("/api/builder/projects/{project_id}")
 async def builder_project_delete(project_id: str):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         _bs.delete_builder_project(project_id)
         return _ok(None)
     except Exception as exc:
@@ -480,7 +480,7 @@ async def builder_project_delete(project_id: str):
 @router.get("/api/platform/devices")
 async def devices_list():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         info = _bs._load_device_info()
         info["last_seen"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         return _ok([info])
@@ -492,7 +492,7 @@ async def devices_list():
 @router.get("/api/platform/devices/account-state")
 async def device_account_state(installation_id: str = Query(default="")):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         info = _bs._load_device_info()
         return _ok({
             "installation_id": installation_id or info.get("installation_id", ""),
@@ -509,7 +509,7 @@ async def device_account_state(installation_id: str = Query(default="")):
 @router.get("/api/platform/devices/online")
 async def devices_online():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         info = _bs._load_device_info()
         return _ok({
             "runtime_type": "hermes",
@@ -529,7 +529,7 @@ async def devices_online():
 @router.post("/api/platform/devices/bootstrap")
 async def device_bootstrap(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         info = _bs._load_device_info()
         for key in ("device_name", "hostname", "os_info", "installation_id"):
@@ -572,7 +572,7 @@ async def device_claim(request: Request):
 @router.put("/api/platform/devices/{device_id}")
 async def device_update(device_id: str, request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         info = _bs._load_device_info()
         if body.get("device_name"):
@@ -587,7 +587,7 @@ async def device_update(device_id: str, request: Request):
 @router.delete("/api/platform/devices/{device_id}")
 async def device_delete(device_id: str):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         import os
         if os.path.isfile(_bs._DEVICE_INFO_FILE):
             os.remove(_bs._DEVICE_INFO_FILE)
@@ -642,7 +642,20 @@ async def conversations_groups(limit: int = Query(default=50)):
 
 
 @router.get("/api/platform/conversations/history")
-async def conversations_history(limit: int = Query(default=50)):
+async def conversations_history(
+    request: Request,
+    session_id: str | None = Query(default=None),
+    limit: int = Query(default=50),
+):
+    if session_id and hasattr(request.app.state, "runtime_facade"):
+        facade_session = request.app.state.runtime_facade.sessions.get(session_id)
+        if facade_session is not None:
+            return _ok(
+                request.app.state.runtime_facade.sessions.get_recent_messages(
+                    session_id,
+                    token_budget=None,
+                )
+            )
     try:
         from session_manager import get_session_manager
         sm = get_session_manager()

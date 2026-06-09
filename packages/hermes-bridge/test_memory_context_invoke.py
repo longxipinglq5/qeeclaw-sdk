@@ -78,7 +78,7 @@ def _load_bridge(monkeypatch, tmp_path):
     sys.path.insert(0, str(Path(__file__).parent))
     spec = importlib.util.spec_from_file_location(
         "bridge_under_test",
-        Path(__file__).with_name("bridge_server.py"),
+        Path(__file__).parent / "bridge" / "legacy_server.py",
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules["bridge_under_test"] = module

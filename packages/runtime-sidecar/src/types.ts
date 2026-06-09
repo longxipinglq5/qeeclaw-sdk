@@ -241,6 +241,7 @@ export interface ChannelReply {
   text?: string;
   attachments?: ChannelAttachment[];
   rawMeta?: Record<string, unknown>;
+  suppressed?: boolean;
 }
 
 export interface ChannelAdapterStatus {

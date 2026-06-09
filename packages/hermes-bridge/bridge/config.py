@@ -13,7 +13,7 @@ load_dotenv(override=False)
 
 logger = logging.getLogger(__name__)
 
-HERMES_AGENT_REQUIRED_TAG = "v2026.5.29.2"
+HERMES_AGENT_REQUIRED_TAG = "v2026.6.5"
 
 # ---------------------------------------------------------------------------
 # config.yaml 加载（与 release standalone 部署保持一致）
@@ -198,6 +198,12 @@ class Settings(BaseSettings):
 
     # runtime
     cache_max_size: int = 32
+    context_recent_message_limit: int = 24
+    context_recent_token_budget: int = 6000
+    native_skill_intent_enabled: bool = os.getenv("HERMES_NATIVE_SKILL_INTENT", "1") == "1"
+    headless_skill_sync_timeout_ms: int = int(
+        os.getenv("HERMES_HEADLESS_SKILL_SYNC_TIMEOUT_MS", "1500")
+    )
 
     @property
     def hermes_agent_path(self) -> Path:

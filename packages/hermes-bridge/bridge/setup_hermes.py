@@ -8,6 +8,8 @@ from pathlib import Path
 import yaml
 
 from bridge.config import settings
+from bridge.expert_catalog import load_centaur_experts
+from bridge.expert_workspace import ensure_expert_external_dir, sync_expert_workspaces
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,9 @@ def ensure_hermes_home() -> None:
 
     _register_bundled_skills(home)
     _register_bundled_plugins(home)
+    expert_dir = sync_expert_workspaces(home, load_centaur_experts())
+    ensure_expert_external_dir(home, expert_dir)
+    _reload_skill_commands()
 
     logger.info("hermes home 就绪: %s", home)
 
@@ -85,12 +90,16 @@ def _migrate_legacy_memories(home: Path) -> None:
 
 def validate_hermes_agent_version(agent_dir: Path | None = None) -> None:
     agent_path = agent_dir or settings.hermes_agent_path
+    expected = settings.hermes_agent_required_tag
+    if str(expected).lower() in {"skip", "none", "disabled"}:
+        logger.info("hermes-agent tag 校验已通过 HERMES_AGENT_REQUIRED_TAG=%s 跳过: %s", expected, agent_path)
+        return
+
     git_marker = agent_path / ".git"
     if not git_marker.exists():
         logger.info("hermes-agent 非 git checkout，跳过 tag 校验: %s", agent_path)
         return
 
-    expected = settings.hermes_agent_required_tag
     try:
         result = subprocess.run(
             ["git", "-C", str(agent_path), "describe", "--tags", "--exact-match"],
@@ -206,3 +215,12 @@ def _write_if_missing(path: Path, content: str) -> None:
     if not path.exists():
         path.write_text(content, encoding="utf-8")
         logger.info("写入默认文件: %s", path)
+
+
+def _reload_skill_commands() -> None:
+    try:
+        from agent.skill_commands import reload_skills
+
+        reload_skills()
+    except Exception as exc:
+        logger.warning("刷新 Hermes skill cache 失败: %s", exc)

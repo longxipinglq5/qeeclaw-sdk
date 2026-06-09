@@ -99,7 +99,9 @@ export class ChannelManager {
       attachments: materializedAttachments,
     };
     const reply = await this.options.invoker.invoke(normalizedMessage);
-    await adapter.sendReply(normalizedMessage, reply);
+    if (!reply.suppressed) {
+      await adapter.sendReply(normalizedMessage, reply);
+    }
 
     return {
       accepted: true,

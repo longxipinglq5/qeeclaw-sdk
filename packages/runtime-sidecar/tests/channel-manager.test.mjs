@@ -117,6 +117,27 @@ test("channel manager drops duplicate channel message ids before runtime invocat
   await manager.stop();
 });
 
+test("channel manager skips adapter sendReply for suppressed replies", async (t) => {
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "qeeclaw-channel-suppressed-"));
+  t.after(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  const testAdapter = new TestChannelAdapter();
+  const manager = new ChannelManager({
+    attachmentStore: new ChannelAttachmentStore(tmpDir),
+    adapters: [testAdapter],
+    invoker: new CallbackRuntimeInvoker(() => ({ suppressed: true, rawMeta: { mode: "suppressed" } })),
+  });
+
+  await manager.start();
+  await testAdapter.emitInbound({ messageId: "suppressed-001", text: "duplicate" });
+
+  assert.equal(testAdapter.sentReplies.length, 0);
+
+  await manager.stop();
+});
+
 test("channel manager can replace a running adapter", async (t) => {
   const tmpDir = await mkdtemp(path.join(os.tmpdir(), "qeeclaw-channel-replace-"));
   t.after(async () => {

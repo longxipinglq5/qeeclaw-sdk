@@ -13,6 +13,21 @@ from bridge.scenarios import get_system_prompt
 
 logger = logging.getLogger(__name__)
 
+EDGE_SUPERVISOR_DISABLED_TOOLSETS = [
+    "browser",
+    "terminal",
+    "file",
+    "debugging",
+    "code_execution",
+    "computer_use",
+    "delegation",
+    "todo",
+    # "skills",
+    "clarify",
+    # "image_gen",
+    "video_gen",
+]
+
 
 @dataclass
 class StreamHandle:
@@ -53,15 +68,25 @@ class HermesRuntime:
         self,
         cache_key: str,
         ephemeral_system_prompt: str | None = None,
+        agent_profile: str | None = None,
     ) -> Any:
         with self._cache_lock:
             if cache_key in self._cache:
                 self._cache.move_to_end(cache_key)
                 return self._cache[cache_key]
 
+        create_kwargs: dict[str, Any] = {}
+        disabled_toolsets = self._disabled_toolsets_for_profile(agent_profile)
+        if disabled_toolsets is not None:
+            create_kwargs["disabled_toolsets"] = disabled_toolsets
+        if agent_profile == "edge_supervisor":
+            create_kwargs.update(self._edge_supervisor_overrides())
+
+        self._ensure_knowledge_mcp_for_profile(agent_profile)
         agent = self._create_agent(
             cache_key,
             ephemeral_system_prompt=ephemeral_system_prompt,
+            **create_kwargs,
         )
 
         with self._cache_lock:
@@ -73,6 +98,31 @@ class HermesRuntime:
                 logger.info("LRU 淘汰: %s", evicted_key)
 
         return agent
+
+    @staticmethod
+    def _disabled_toolsets_for_profile(agent_profile: str | None) -> list[str] | None:
+        if agent_profile == "edge_supervisor":
+            return list(EDGE_SUPERVISOR_DISABLED_TOOLSETS)
+        return None
+
+    @staticmethod
+    def _edge_supervisor_overrides() -> dict[str, Any]:
+        return {
+            "load_soul_identity": False,
+            "skip_context_files": True,
+            "prefill_messages": [],
+        }
+
+    @staticmethod
+    def _ensure_knowledge_mcp_for_profile(agent_profile: str | None) -> None:
+        if agent_profile != "edge_supervisor":
+            return
+        try:
+            from bridge.knowledge_mcp_config import ensure_knowledge_mcp_for_profile
+
+            ensure_knowledge_mcp_for_profile(agent_profile)
+        except Exception:
+            logger.warning("edge_supervisor knowledge MCP init failed", exc_info=True)
 
     def _history_for(self, cache_key: str) -> list[dict[str, str]]:
         with self._cache_lock:
@@ -183,6 +233,7 @@ class HermesRuntime:
         user_text: str,
         agent_profile: str = "default",
         system_prompt: str | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """兼容 core-sdk HermesAdapter 的非流式调用。
 
@@ -192,13 +243,15 @@ class HermesRuntime:
         agent = self.get_or_create(
             cache_key,
             ephemeral_system_prompt=system_prompt,
+            agent_profile=agent_profile,
         )
         result = await asyncio.to_thread(
             agent.run_conversation,
             user_message=user_text,
-            conversation_history=self._history_for(cache_key),
+            conversation_history=conversation_history if conversation_history is not None else self._history_for(cache_key),
         )
-        self._append_history(cache_key, user_text, result)
+        if conversation_history is None:
+            self._append_history(cache_key, user_text, result)
         return result
 
     async def stream_raw(
@@ -207,6 +260,7 @@ class HermesRuntime:
         user_text: str,
         agent_profile: str = "default",
         system_prompt: str | None = None,
+        conversation_history: list[dict[str, Any]] | None = None,
     ) -> StreamHandle:
         """兼容 core-sdk HermesAdapter 的流式调用：跳过 scenario 映射，按需注入 system_prompt。"""
         queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
@@ -215,10 +269,19 @@ class HermesRuntime:
         def on_delta(delta: str) -> None:
             loop.call_soon_threadsafe(queue.put_nowait, ("delta", delta))
 
+        create_kwargs: dict[str, Any] = {}
+        disabled_toolsets = self._disabled_toolsets_for_profile(agent_profile)
+        if disabled_toolsets is not None:
+            create_kwargs["disabled_toolsets"] = disabled_toolsets
+        if agent_profile == "edge_supervisor":
+            create_kwargs.update(self._edge_supervisor_overrides())
+
+        self._ensure_knowledge_mcp_for_profile(agent_profile)
         agent = self._create_agent(
             f"compat-stream:{session_id}:{agent_profile}",
             ephemeral_system_prompt=system_prompt,
             stream_delta_callback=on_delta,
+            **create_kwargs,
         )
 
         async def _run() -> None:
@@ -226,10 +289,13 @@ class HermesRuntime:
                 result = await asyncio.to_thread(
                     agent.run_conversation,
                     user_message=user_text,
-                    conversation_history=self._history_for(f"compat:{session_id}:{agent_profile}"),
+                    conversation_history=conversation_history
+                    if conversation_history is not None
+                    else self._history_for(f"compat:{session_id}:{agent_profile}"),
                 )
                 final = result.get("final_response") or ""
-                self._append_history(f"compat:{session_id}:{agent_profile}", user_text, result)
+                if conversation_history is None:
+                    self._append_history(f"compat:{session_id}:{agent_profile}", user_text, result)
                 await queue.put(("done", final))
             except Exception as exc:
                 logger.exception("stream_raw run_conversation 异常")

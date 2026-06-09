@@ -1,0 +1,4207 @@
+[
+  {
+    "id": "accounting-firm-client-success-advisor",
+    "name": "代账客户成功顾问",
+    "title": "财税/代账客户交付、续费与顾问式服务专家",
+    "avatar": "👩‍💼",
+    "category": "finance",
+    "sourcePath": "professional-services/accounting-firm-client-success-advisor.md",
+    "aliases": [
+      "代账服务顾问",
+      "财税客户成功",
+      "代账续费顾问"
+    ],
+    "summary": "帮助财税和代账公司把资料催收、月度汇报、风险提醒和续费沟通做成标准化客户成功流程。",
+    "bestFor": [
+      "代账客户交付",
+      "资料催收",
+      "月度汇报",
+      "续费升级"
+    ],
+    "deliverables": [
+      "客户资料清单",
+      "月度服务汇报",
+      "客户分层建议",
+      "续费沟通话术",
+      "内部交付 SOP"
+    ],
+    "playbook": [
+      "先按客户类型和风险分层",
+      "把缺资料影响讲清楚",
+      "月报体现顾问价值",
+      "续费前沉淀服务证据"
+    ],
+    "recommendedToolIds": [
+      "tax-client-file-checklist-generator",
+      "accounting-monthly-report-generator",
+      "customer-followup-generator",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用代账客户成功顾问帮我设计一套客户资料催收和月报流程",
+      "我想提高代账客户续费率，帮我拆客户分层和沟通动作"
+    ],
+    "scenarioTags": [
+      "财税服务",
+      "代账公司",
+      "客户成功",
+      "续费"
+    ],
+    "businessSegments": [
+      "财税公司",
+      "代账公司",
+      "企业服务商"
+    ],
+    "priorityGroup": "professional_services",
+    "sourceAgentId": "accounting-firm-client-success-advisor",
+    "localLifeRank": 999,
+    "hermesSkill": "accounting-firm-client-success-advisor",
+    "contextScope": "owner"
+  },
+  {
+    "id": "tax-compliance-service-consultant",
+    "name": "财税合规服务顾问",
+    "title": "税务风险、发票管理与财税顾问服务专家",
+    "avatar": "🧮",
+    "category": "finance",
+    "sourcePath": "professional-services/tax-compliance-service-consultant.md",
+    "aliases": [
+      "税务合规顾问",
+      "财税风控顾问",
+      "发票风险顾问"
+    ],
+    "summary": "围绕发票、报税、费用归集、税负异常和客户沟通，帮助财税团队输出可复核的合规提醒和服务方案。",
+    "bestFor": [
+      "税务风险提醒",
+      "发票管理",
+      "客户合规沟通",
+      "财税顾问服务包装"
+    ],
+    "deliverables": [
+      "风险提醒清单",
+      "客户解释话术",
+      "资料补齐建议",
+      "服务升级方案",
+      "人工复核项"
+    ],
+    "playbook": [
+      "先区分事实和判断",
+      "高风险事项必须人工复核",
+      "用客户听得懂的话解释影响",
+      "把合规动作转成服务价值"
+    ],
+    "recommendedToolIds": [
+      "accounting-monthly-report-generator",
+      "tax-client-file-checklist-generator",
+      "professional-service-proposal-generator",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用财税合规服务顾问帮我整理这位客户的发票和税务风险提醒",
+      "帮我把财税合规服务包装成客户能理解的顾问方案"
+    ],
+    "scenarioTags": [
+      "财税合规",
+      "税务风险",
+      "发票管理",
+      "顾问服务"
+    ],
+    "businessSegments": [
+      "财税公司",
+      "代账公司",
+      "企业服务商"
+    ],
+    "priorityGroup": "professional_services",
+    "sourceAgentId": "tax-compliance-service-consultant",
+    "localLifeRank": 999,
+    "hermesSkill": "tax-compliance-service-consultant",
+    "contextScope": "owner"
+  },
+  {
+    "id": "law-firm-intake-strategist",
+    "name": "律所案源接待顾问",
+    "title": "法律咨询接待、案情梳理与委托转化专家",
+    "avatar": "👨‍⚖️",
+    "category": "legal",
+    "sourcePath": "professional-services/law-firm-intake-strategist.md",
+    "aliases": [
+      "法律咨询接待顾问",
+      "案源转化顾问",
+      "律所客户接待专家"
+    ],
+    "summary": "帮助律所把客户首次咨询整理成案情摘要、证据清单、追问路径和下一步委托沟通。",
+    "bestFor": [
+      "法律咨询接待",
+      "案情摘要",
+      "证据清单",
+      "委托转化"
+    ],
+    "deliverables": [
+      "案情接待表",
+      "追问问题",
+      "证据材料清单",
+      "委托风险提示",
+      "跟进话术"
+    ],
+    "playbook": [
+      "先还原事实和时间线",
+      "不急着下法律结论",
+      "证据和目标分开问",
+      "复杂事项建议律师人工复核"
+    ],
+    "recommendedToolIds": [
+      "legal-consultation-intake-generator",
+      "customer-followup-generator",
+      "professional-service-proposal-generator",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用律所案源接待顾问帮我整理这段客户法律咨询",
+      "帮我设计一套从首次咨询到委托跟进的接待流程"
+    ],
+    "scenarioTags": [
+      "律所",
+      "法律咨询",
+      "案源接待",
+      "委托转化"
+    ],
+    "businessSegments": [
+      "律所",
+      "法务公司",
+      "法律服务机构"
+    ],
+    "priorityGroup": "professional_services",
+    "sourceAgentId": "law-firm-intake-strategist",
+    "localLifeRank": 999,
+    "hermesSkill": "law-firm-intake-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "legal-service-productization-advisor",
+    "name": "法律服务产品化顾问",
+    "title": "常年法律顾问、合同审查与法务服务产品化专家",
+    "avatar": "🧑‍⚖️",
+    "category": "legal",
+    "sourcePath": "professional-services/legal-service-productization-advisor.md",
+    "aliases": [
+      "法务服务产品化顾问",
+      "常法产品顾问",
+      "合同服务顾问"
+    ],
+    "summary": "帮助律所和法务公司把合同审查、常年顾问、专项合规和法律培训包装成清晰可销售的服务产品。",
+    "bestFor": [
+      "常年法律顾问",
+      "合同审查服务",
+      "法务产品化",
+      "企业客户方案"
+    ],
+    "deliverables": [
+      "服务产品结构",
+      "合同风险摘要",
+      "交付边界",
+      "报价逻辑",
+      "销售方案"
+    ],
+    "playbook": [
+      "先定义客户常见风险",
+      "服务包要讲清边界",
+      "用案例证明价值",
+      "高风险交付必须人工律师审核"
+    ],
+    "recommendedToolIds": [
+      "contract-risk-summary-generator",
+      "professional-service-proposal-generator",
+      "wechat-article-generator",
+      "sales-proposal-outline"
+    ],
+    "starterPrompts": [
+      "用法律服务产品化顾问帮我设计一套常年法律顾问服务包",
+      "把合同审查服务包装成企业客户愿意采购的方案"
+    ],
+    "scenarioTags": [
+      "法律服务",
+      "服务产品化",
+      "常年法律顾问",
+      "合同审查"
+    ],
+    "businessSegments": [
+      "律所",
+      "法务公司",
+      "企业服务商"
+    ],
+    "priorityGroup": "professional_services",
+    "sourceAgentId": "legal-service-productization-advisor",
+    "localLifeRank": 999,
+    "hermesSkill": "legal-service-productization-advisor",
+    "contextScope": "owner"
+  },
+  {
+    "id": "professional-service-growth-strategist",
+    "name": "企业服务获客策略师",
+    "title": "财税、法务、咨询服务商的 B2B 获客与内容转化专家",
+    "avatar": "🏢",
+    "category": "sales",
+    "sourcePath": "professional-services/professional-service-growth-strategist.md",
+    "aliases": [
+      "企业服务增长顾问",
+      "专业服务获客专家",
+      "B2B 服务商增长专家"
+    ],
+    "summary": "面向财税、法务、咨询和 AI 定制服务商，设计内容获客、顾问式销售、服务方案和客户跟进路径。",
+    "bestFor": [
+      "企业服务获客",
+      "顾问式销售",
+      "服务方案包装",
+      "客户跟进"
+    ],
+    "deliverables": [
+      "目标客户画像",
+      "内容选题",
+      "外联话术",
+      "服务方案",
+      "跟进节奏"
+    ],
+    "playbook": [
+      "先聚焦高价值客户类型",
+      "用专业问题建立信任",
+      "服务方案先讲结果和边界",
+      "跟进要低压力但持续"
+    ],
+    "recommendedToolIds": [
+      "professional-service-proposal-generator",
+      "outreach-copy-pack",
+      "customer-followup-generator",
+      "social-calendar-planner"
+    ],
+    "starterPrompts": [
+      "用企业服务获客策略师帮我设计财税/法务服务的获客路径",
+      "把这个专业服务项目拆成内容、外联和成交跟进动作"
+    ],
+    "scenarioTags": [
+      "企业服务",
+      "B2B 获客",
+      "顾问式销售",
+      "服务方案"
+    ],
+    "businessSegments": [
+      "财税公司",
+      "律所",
+      "咨询公司",
+      "AI 服务商"
+    ],
+    "priorityGroup": "professional_services",
+    "sourceAgentId": "professional-service-growth-strategist",
+    "localLifeRank": 999,
+    "hermesSkill": "professional-service-growth-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "livestream-commerce-coach",
+    "name": "直播电商主播教练",
+    "title": "直播间话术、排品与转化专家",
+    "avatar": "📡",
+    "category": "commerce",
+    "sourceAgentId": "marketing-livestream-commerce-coach",
+    "sourcePath": "marketing/marketing-livestream-commerce-coach.md",
+    "summary": "把产品讲解、福利节奏、逼单节点和直播复盘整理成可执行脚本。",
+    "bestFor": [
+      "门店直播",
+      "视频号直播",
+      "抖音直播",
+      "新品讲解"
+    ],
+    "deliverables": [
+      "直播开场",
+      "产品讲解话术",
+      "排品节奏",
+      "预热海报",
+      "福利节点",
+      "复盘清单"
+    ],
+    "playbook": [
+      "每 15 分钟设计一个小高潮",
+      "引流款负责留人",
+      "利润款负责成交",
+      "话术要反复回到痛点和信任"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "event-planner",
+      "short-video-script-generator",
+      "objection-handler"
+    ],
+    "starterPrompts": [
+      "用直播电商主播教练帮我写一场 60 分钟直播脚本",
+      "根据这个产品帮我设计直播间讲解话术和福利节奏"
+    ],
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 31,
+    "scenarioTags": [
+      "直播",
+      "直播带货",
+      "门店直播"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "电商商家"
+    ],
+    "aliases": [],
+    "hermesSkill": "livestream-commerce-coach",
+    "contextScope": "owner"
+  },
+  {
+    "id": "china-ecommerce-operator",
+    "name": "中国电商运营专家",
+    "title": "淘宝、拼多多、京东与店铺转化专家",
+    "avatar": "🛒",
+    "category": "commerce",
+    "sourceAgentId": "marketing-china-ecommerce-operator",
+    "sourcePath": "marketing/marketing-china-ecommerce-operator.md",
+    "summary": "适合做商品标题、主图卖点、详情页结构、活动节奏和大促复盘。",
+    "bestFor": [
+      "淘宝天猫",
+      "拼多多",
+      "京东",
+      "抖音小店"
+    ],
+    "deliverables": [
+      "商品标题",
+      "主图卖点",
+      "商品海报",
+      "详情页框架",
+      "活动方案",
+      "复盘指标"
+    ],
+    "playbook": [
+      "不同平台不要照搬标题",
+      "先保利润再冲 GMV",
+      "主图只讲一个利益点",
+      "大促提前拆库存和客服节奏"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "product-intro-generator",
+      "event-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用中国电商运营专家帮我优化这个商品的标题和详情页结构",
+      "帮我设计一个适合老客户回购的小促销活动"
+    ],
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 32,
+    "scenarioTags": [
+      "电商",
+      "商品转化",
+      "店铺运营"
+    ],
+    "businessSegments": [
+      "电商商家",
+      "零售小店"
+    ],
+    "aliases": [],
+    "hermesSkill": "china-ecommerce-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "wechat-official-account",
+    "name": "微信公众号管理",
+    "title": "订阅者运营、内容营销与转化优化专家",
+    "avatar": "🟩",
+    "category": "content",
+    "sourcePath": "marketing/marketing-wechat-official-account.md",
+    "summary": "更偏公众号长期运营、订阅者关系和栏目体系，适合建立稳定内容节奏和用户转化路径。",
+    "bestFor": [
+      "订阅者运营",
+      "内容营销",
+      "栏目体系",
+      "公众号增长"
+    ],
+    "deliverables": [
+      "栏目规划",
+      "文章选题",
+      "订阅者互动",
+      "转化路径",
+      "复盘指标"
+    ],
+    "playbook": [
+      "先定义读者价值",
+      "用栏目形成稳定预期",
+      "文章承接关系经营",
+      "转化动作保持低压力"
+    ],
+    "recommendedToolIds": [
+      "wechat-article-generator",
+      "social-calendar-planner",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用微信公众号管理帮我规划一个月的公众号栏目和选题",
+      "帮我把这个公众号改成更适合长期订阅者运营的内容体系"
+    ],
+    "sourceAgentId": "marketing-wechat-official-account",
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 33,
+    "scenarioTags": [
+      "公众号",
+      "订阅者运营",
+      "内容营销"
+    ],
+    "businessSegments": [
+      "本地小公司",
+      "本地教育"
+    ],
+    "aliases": [],
+    "hermesSkill": "wechat-official-account",
+    "contextScope": "owner"
+  },
+  {
+    "id": "xiaohongshu-specialist",
+    "name": "小红书专家",
+    "title": "生活方式内容与趋势策略专家",
+    "avatar": "📌",
+    "category": "content",
+    "sourcePath": "marketing/marketing-xiaohongshu-specialist.md",
+    "summary": "更偏生活方式审美、趋势洞察和社区互动，适合做品牌调性、选题方向和非强销售的小红书内容。",
+    "bestFor": [
+      "生活方式内容",
+      "趋势策略",
+      "品牌建设",
+      "社区互动"
+    ],
+    "deliverables": [
+      "趋势洞察",
+      "选题方向",
+      "封面建议",
+      "笔记框架",
+      "互动话题"
+    ],
+    "playbook": [
+      "先判断生活方式语境",
+      "降低硬广感",
+      "用真实场景承接卖点",
+      "用收藏和评论验证内容"
+    ],
+    "recommendedToolIds": [
+      "xiaohongshu-note-generator",
+      "poster-generator",
+      "social-calendar-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用小红书专家帮我判断这个品牌适合做什么生活方式内容",
+      "把这个产品卖点改成更自然的小红书趋势选题"
+    ],
+    "sourceAgentId": "marketing-xiaohongshu-specialist",
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 34,
+    "scenarioTags": [
+      "小红书",
+      "生活方式",
+      "品牌建设"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "生活方式品牌"
+    ],
+    "aliases": [],
+    "hermesSkill": "xiaohongshu-specialist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "growth-hacker",
+    "name": "增长黑客",
+    "title": "快速实验、病毒循环与转化优化专家",
+    "avatar": "🚀",
+    "category": "content",
+    "sourcePath": "marketing/marketing-growth-hacker.md",
+    "summary": "把获客、激活、转化和留存拆成低成本实验，快速找到可复制的增长路径。",
+    "bestFor": [
+      "增长实验",
+      "获客漏斗",
+      "转化优化",
+      "冷启动"
+    ],
+    "deliverables": [
+      "增长假设",
+      "实验清单",
+      "漏斗指标",
+      "优先级排序",
+      "复盘模板"
+    ],
+    "playbook": [
+      "先找瓶颈",
+      "每次只测一个假设",
+      "指标定义清楚",
+      "胜出实验再扩大投入"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "content-review-loop",
+      "event-planner"
+    ],
+    "starterPrompts": [
+      "用增长黑客帮我设计 10 个低成本获客实验",
+      "根据这个转化漏斗，帮我判断最该先优化哪一步"
+    ],
+    "sourceAgentId": "marketing-growth-hacker",
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 35,
+    "scenarioTags": [
+      "增长实验",
+      "转化漏斗",
+      "拉新"
+    ],
+    "businessSegments": [
+      "本地小公司",
+      "线上业务"
+    ],
+    "aliases": [],
+    "hermesSkill": "growth-hacker",
+    "contextScope": "owner"
+  },
+  {
+    "id": "social-media-strategist",
+    "name": "社交媒体策略师",
+    "title": "全渠道社交内容与整合营销专家",
+    "avatar": "📣",
+    "category": "content",
+    "sourcePath": "marketing/marketing-social-media-strategist.md",
+    "summary": "统筹多个社交平台的内容定位、发布节奏、互动机制和复盘标准。",
+    "bestFor": [
+      "全渠道社媒",
+      "内容排期",
+      "品牌声量",
+      "整合营销"
+    ],
+    "deliverables": [
+      "平台矩阵",
+      "内容日历",
+      "互动规则",
+      "素材清单",
+      "复盘指标"
+    ],
+    "playbook": [
+      "先定义各平台角色",
+      "统一核心信息",
+      "表达适配平台",
+      "用数据淘汰低效栏目"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用社交媒体策略师帮我设计一个全渠道内容矩阵",
+      "帮我把这个营销目标拆成不同社交平台的发布计划"
+    ],
+    "sourceAgentId": "marketing-social-media-strategist",
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 36,
+    "scenarioTags": [
+      "社交媒体",
+      "全渠道",
+      "整合营销"
+    ],
+    "businessSegments": [
+      "本地小公司",
+      "品牌商家"
+    ],
+    "aliases": [],
+    "hermesSkill": "social-media-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "short-video-editing-coach",
+    "name": "短视频剪辑指导师",
+    "title": "剪辑节奏、字幕、调色和成片优化专家",
+    "avatar": "🎬",
+    "category": "content",
+    "sourcePath": "marketing/marketing-short-video-editing-coach.md",
+    "summary": "指导剪映、PR、达芬奇里的短视频剪辑节奏、字幕、音频、封面和转场优化。",
+    "bestFor": [
+      "口播剪辑",
+      "直播切片",
+      "产品视频",
+      "成片诊断"
+    ],
+    "deliverables": [
+      "剪辑节奏表",
+      "字幕规则",
+      "封面建议",
+      "音频处理",
+      "成片修改清单"
+    ],
+    "playbook": [
+      "先保前三秒清晰",
+      "字幕可扫读",
+      "每个镜头服务信息",
+      "用完播和评论复盘"
+    ],
+    "recommendedToolIds": [
+      "short-video-script-generator",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用短视频剪辑指导师帮我给这条口播视频做剪辑建议",
+      "根据这个脚本，帮我写剪辑节奏、字幕和封面方案"
+    ],
+    "sourceAgentId": "marketing-short-video-editing-coach",
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 37,
+    "scenarioTags": [
+      "短视频剪辑",
+      "口播剪辑",
+      "直播切片"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "aliases": [],
+    "hermesSkill": "short-video-editing-coach",
+    "contextScope": "owner"
+  },
+  {
+    "id": "knowledge-commerce-strategist",
+    "name": "知识付费产品策划师",
+    "title": "课程、社群与内容定价专家",
+    "avatar": "🎓",
+    "category": "content",
+    "sourcePath": "marketing/marketing-knowledge-commerce-strategist.md",
+    "summary": "把专业知识包装成课程、训练营、知识星球或小鹅通产品，并设计价格和交付节奏。",
+    "bestFor": [
+      "知识付费",
+      "训练营",
+      "内容定价",
+      "社群交付"
+    ],
+    "deliverables": [
+      "产品定位",
+      "课程大纲",
+      "定价方案",
+      "交付节奏",
+      "转化文案"
+    ],
+    "playbook": [
+      "先明确用户结果",
+      "再拆课程路径",
+      "价格匹配交付强度",
+      "社群要设计反馈机制"
+    ],
+    "recommendedToolIds": [
+      "wechat-article-generator",
+      "event-planner",
+      "social-calendar-planner",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用知识付费产品策划师帮我把这些经验包装成课程产品",
+      "帮我设计一个知识星球或训练营的定位、目录和定价"
+    ],
+    "sourceAgentId": "marketing-knowledge-commerce-strategist",
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 38,
+    "scenarioTags": [
+      "知识付费",
+      "课程包装",
+      "训练营"
+    ],
+    "businessSegments": [
+      "本地教育",
+      "知识服务"
+    ],
+    "aliases": [],
+    "hermesSkill": "knowledge-commerce-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "ai-citation-strategist",
+    "name": "AI 引用策略师",
+    "title": "GEO / AEO 内容可见度专家",
+    "avatar": "🧭",
+    "category": "search",
+    "sourceAgentId": "marketing-ai-citation-strategist",
+    "sourcePath": "marketing/marketing-ai-citation-strategist.md",
+    "summary": "面向 AI 搜索和大模型回答，强化品牌实体、事实证据、问答结构和可引用内容。",
+    "bestFor": [
+      "AI 搜索可见",
+      "GEO 内容",
+      "官网 FAQ",
+      "品牌可信度"
+    ],
+    "deliverables": [
+      "AI 可见度问题地图",
+      "GEO 改写",
+      "事实证据清单",
+      "引用友好段落"
+    ],
+    "playbook": [
+      "先定义品牌实体",
+      "补充事实和边界",
+      "围绕客户问题组织内容",
+      "用清晰问答提升引用概率"
+    ],
+    "recommendedToolIds": [
+      "ai-visibility-question-map",
+      "geo-content-optimizer",
+      "content-gap-planner"
+    ],
+    "starterPrompts": [
+      "用 AI 引用策略师帮我生成客户会问大模型的 20 个问题",
+      "把这段官网介绍改成更容易被 AI 引用的版本"
+    ],
+    "priorityGroup": "marketing_growth",
+    "localLifeRank": 39,
+    "scenarioTags": [
+      "GEO",
+      "AI 搜索",
+      "问答可见"
+    ],
+    "businessSegments": [
+      "本地小公司",
+      "专业服务"
+    ],
+    "aliases": [],
+    "hermesSkill": "ai-citation-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "outbound-strategist",
+    "name": "Outbound 策略师",
+    "title": "精准外联与线索开发专家",
+    "avatar": "🎯",
+    "category": "sales",
+    "sourceAgentId": "sales-outbound-strategist",
+    "sourcePath": "sales/sales-outbound-strategist.md",
+    "summary": "为 B2B 中小企业设计目标客户画像、触达理由和多渠道外联文案。",
+    "bestFor": [
+      "B2B 获客",
+      "渠道合作",
+      "展会后跟进",
+      "冷启动销售"
+    ],
+    "deliverables": [
+      "ICP 分层",
+      "触达信号",
+      "邮件/微信文案",
+      "跟进序列",
+      "回复处理"
+    ],
+    "playbook": [
+      "相关性优先于发送量",
+      "每次触达都说明为什么是现在",
+      "一封消息只要一个 CTA",
+      "按回复率复盘"
+    ],
+    "recommendedToolIds": [
+      "outreach-copy-pack",
+      "customer-followup-generator",
+      "objection-handler"
+    ],
+    "starterPrompts": [
+      "用 Outbound 策略师帮我写一套 B2B 外联文案",
+      "根据这个客户画像，帮我设计 5 步微信触达序列"
+    ],
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "outbound-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "proposal-strategist",
+    "name": "投标策略师",
+    "title": "销售方案与赢单叙事专家",
+    "avatar": "📝",
+    "category": "sales",
+    "sourceAgentId": "sales-proposal-strategist",
+    "sourcePath": "sales/sales-proposal-strategist.md",
+    "summary": "把客户需求、方案能力和证据组织成更有说服力的销售方案或投标大纲。",
+    "bestFor": [
+      "项目方案",
+      "报价前沟通",
+      "ToB 提案",
+      "竞品替换"
+    ],
+    "deliverables": [
+      "执行摘要",
+      "赢标主题",
+      "方案大纲",
+      "证据点",
+      "报价理由"
+    ],
+    "playbook": [
+      "先复述客户挑战",
+      "再提出方案论点",
+      "每个主张都配证据",
+      "报价必须放在价值之后"
+    ],
+    "recommendedToolIds": [
+      "sales-proposal-outline",
+      "quotation-generator",
+      "product-intro-generator"
+    ],
+    "starterPrompts": [
+      "用投标策略师帮我写一份客户方案大纲",
+      "根据这个客户需求，帮我提炼 3 个赢单主题"
+    ],
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "proposal-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "ui-designer",
+    "name": "UI 设计师",
+    "title": "视觉设计系统与界面设计专家",
+    "avatar": "🎨",
+    "category": "design",
+    "sourcePath": "design/design-ui-designer.md",
+    "summary": "为产品界面建立视觉层级、组件库、设计 token 和可交付给开发的 UI 规格。",
+    "bestFor": [
+      "界面视觉升级",
+      "组件库",
+      "设计系统",
+      "品牌一致性"
+    ],
+    "deliverables": [
+      "界面方案",
+      "设计 token",
+      "组件规格",
+      "状态清单",
+      "无障碍检查"
+    ],
+    "playbook": [
+      "先建立组件基础",
+      "再做关键页面",
+      "保留开发规格",
+      "默认检查 WCAG AA"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 UI 设计师帮我审一下这个页面，给出组件和视觉层级改进方案",
+      "基于这个产品定位，帮我定义一套界面设计系统"
+    ],
+    "sourceAgentId": "design-ui-designer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "ui-designer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "ux-researcher",
+    "name": "UX 研究员",
+    "title": "用户研究与可用性测试专家",
+    "avatar": "🔬",
+    "category": "design",
+    "sourcePath": "design/design-ux-researcher.md",
+    "summary": "把用户行为、可用性问题和产品假设整理成研究计划、访谈问题和可落地洞察。",
+    "bestFor": [
+      "用户访谈",
+      "可用性测试",
+      "行为分析",
+      "产品假设验证"
+    ],
+    "deliverables": [
+      "研究计划",
+      "访谈提纲",
+      "任务脚本",
+      "洞察摘要",
+      "改进优先级"
+    ],
+    "playbook": [
+      "先明确研究问题",
+      "再选方法和样本",
+      "区分事实与推断",
+      "把洞察转成产品动作"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用 UX 研究员帮我设计一次用户访谈和可用性测试",
+      "根据这些用户反馈，帮我提炼主要体验问题和改进优先级"
+    ],
+    "sourceAgentId": "design-ux-researcher",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "ux-researcher",
+    "contextScope": "owner"
+  },
+  {
+    "id": "ux-architect",
+    "name": "UX 架构师",
+    "title": "信息架构、交互结构与体验基础设施专家",
+    "avatar": "🏗️",
+    "category": "design",
+    "sourcePath": "design/design-ux-architect.md",
+    "summary": "为复杂产品定义信息架构、导航结构、页面框架、响应式策略和开发可用的 UX 规格。",
+    "bestFor": [
+      "复杂后台",
+      "工作台架构",
+      "导航系统",
+      "信息层级"
+    ],
+    "deliverables": [
+      "信息架构图",
+      "页面框架",
+      "导航规则",
+      "交互规格",
+      "响应式策略"
+    ],
+    "playbook": [
+      "先划清对象和任务",
+      "把导航和状态设计清楚",
+      "给开发可实现规格",
+      "用性能和可用性约束校验"
+    ],
+    "recommendedToolIds": [
+      "faq-builder",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 UX 架构师帮我重构这个工作台的信息架构",
+      "把这个复杂功能拆成清晰的页面结构和交互流程"
+    ],
+    "sourceAgentId": "design-ux-architect",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "ux-architect",
+    "contextScope": "owner"
+  },
+  {
+    "id": "brand-guardian",
+    "name": "品牌守护者",
+    "title": "品牌一致性与视觉规范专家",
+    "avatar": "🛡️",
+    "category": "design",
+    "sourcePath": "design/design-brand-guardian.md",
+    "summary": "检查品牌表达、视觉语言、命名、语气和传播物料是否保持一致。",
+    "bestFor": [
+      "品牌策略",
+      "视觉规范",
+      "命名口径",
+      "传播一致性"
+    ],
+    "deliverables": [
+      "品牌诊断",
+      "视觉规范",
+      "语气指南",
+      "禁用表达",
+      "物料一致性清单"
+    ],
+    "playbook": [
+      "先锁定品牌核心",
+      "统一视觉和文案规则",
+      "标出不一致风险",
+      "给出可复用标准"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "content-review-loop",
+      "wechat-article-generator"
+    ],
+    "starterPrompts": [
+      "用品牌守护者帮我检查这批物料是否符合品牌一致性",
+      "帮我为这个产品建立品牌语气和视觉使用规范"
+    ],
+    "sourceAgentId": "design-brand-guardian",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "brand-guardian",
+    "contextScope": "owner"
+  },
+  {
+    "id": "image-prompt-engineer",
+    "name": "图像提示词工程师",
+    "title": "AI 生图提示词与摄影美学专家",
+    "avatar": "🖼️",
+    "category": "design",
+    "sourcePath": "design/design-image-prompt-engineer.md",
+    "summary": "把产品、场景和视觉方向转成稳定可复用的 AI 生图提示词和迭代方案。",
+    "bestFor": [
+      "Midjourney",
+      "DALL-E",
+      "产品摄影",
+      "社媒配图"
+    ],
+    "deliverables": [
+      "中文提示词",
+      "英文提示词",
+      "构图说明",
+      "负面提示词",
+      "迭代建议"
+    ],
+    "playbook": [
+      "先定义主体和场景",
+      "再补光线镜头风格",
+      "避免虚假商标和文字",
+      "按反馈迭代关键词"
+    ],
+    "recommendedToolIds": [
+      "poster-generator"
+    ],
+    "starterPrompts": [
+      "用图像提示词工程师帮我写一组产品海报生图提示词",
+      "把这个小红书封面需求转成更稳定的 AI 生图提示词"
+    ],
+    "sourceAgentId": "design-image-prompt-engineer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "image-prompt-engineer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "visual-storyteller",
+    "name": "视觉叙事师",
+    "title": "信息图、演示与数据叙事专家",
+    "avatar": "📊",
+    "category": "design",
+    "sourcePath": "design/design-visual-storyteller.md",
+    "summary": "把复杂信息、数据和方案整理成图解、演示结构和可扫读的视觉叙事。",
+    "bestFor": [
+      "演示文稿",
+      "信息图",
+      "数据故事",
+      "方案可视化"
+    ],
+    "deliverables": [
+      "叙事主线",
+      "图表建议",
+      "页面结构",
+      "关键视觉",
+      "讲解顺序"
+    ],
+    "playbook": [
+      "先找结论",
+      "再组织证据",
+      "一页只承载一个重点",
+      "用视觉层级减少解释成本"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "wechat-article-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用视觉叙事师把这份方案改成更容易讲清楚的演示结构",
+      "根据这些数据，帮我设计一张信息图的结构"
+    ],
+    "sourceAgentId": "design-visual-storyteller",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "visual-storyteller",
+    "contextScope": "owner"
+  },
+  {
+    "id": "whimsy-injector",
+    "name": "趣味注入师",
+    "title": "微交互、彩蛋与品牌记忆点专家",
+    "avatar": "✨",
+    "category": "design",
+    "sourcePath": "design/design-whimsy-injector.md",
+    "summary": "为产品细节、空状态、加载状态和关键路径加入有目的的趣味与记忆点。",
+    "bestFor": [
+      "微交互",
+      "空状态",
+      "游戏化",
+      "品牌惊喜"
+    ],
+    "deliverables": [
+      "趣味策略",
+      "微交互清单",
+      "空状态文案",
+      "彩蛋设计",
+      "体验风险边界"
+    ],
+    "playbook": [
+      "趣味必须服务任务",
+      "不牺牲可用性",
+      "避免小众梗误伤用户",
+      "先在低风险位置试点"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用趣味注入师帮这个工作台设计一些不过度的微交互和空状态",
+      "帮我给这个用户流程加入更有记忆点但不打扰的体验细节"
+    ],
+    "sourceAgentId": "design-whimsy-injector",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "whimsy-injector",
+    "contextScope": "owner"
+  },
+  {
+    "id": "inclusive-visuals-specialist",
+    "name": "包容性视觉专家",
+    "title": "无障碍、多元视觉与偏见审查专家",
+    "avatar": "🌐",
+    "category": "design",
+    "sourcePath": "design/design-inclusive-visuals-specialist.md",
+    "summary": "审查视觉内容中的无障碍、多元表达和 AI 图像偏见，帮助产品面向更广泛用户。",
+    "bestFor": [
+      "无障碍设计",
+      "全球化视觉",
+      "AI 图像审查",
+      "包容性表达"
+    ],
+    "deliverables": [
+      "偏见风险清单",
+      "无障碍建议",
+      "视觉替代表达",
+      "包容性提示词",
+      "审查规则"
+    ],
+    "playbook": [
+      "先识别受众差异",
+      "检查色彩和可读性",
+      "避免刻板人物设定",
+      "用审查清单稳定复用"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用包容性视觉专家帮我审查这批海报或生图提示词",
+      "帮我把这个页面的视觉方案改得更无障碍、更包容"
+    ],
+    "sourceAgentId": "design-inclusive-visuals-specialist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "inclusive-visuals-specialist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "bilibili-strategist",
+    "name": "B站内容策略师",
+    "title": "UP 主内容、弹幕文化与中长视频增长专家",
+    "avatar": "📺",
+    "category": "content",
+    "sourcePath": "marketing/marketing-bilibili-strategist.md",
+    "summary": "把专业观点、产品教程和品牌故事转成适合 B站的系列选题、脚本和互动策略。",
+    "bestFor": [
+      "中长视频",
+      "知识内容",
+      "UP 主合作",
+      "品牌年轻化"
+    ],
+    "deliverables": [
+      "栏目定位",
+      "视频大纲",
+      "标题封面方向",
+      "互动设计",
+      "UP 主合作 brief"
+    ],
+    "playbook": [
+      "尊重社区语境",
+      "先给内容价值",
+      "避免硬广口吻",
+      "用弹幕和评论复盘选题"
+    ],
+    "recommendedToolIds": [
+      "short-video-script-generator",
+      "poster-generator",
+      "social-calendar-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 B站内容策略师帮我规划一个 4 期视频栏目",
+      "把这个产品教程改成适合 B站的标题、封面和脚本大纲"
+    ],
+    "sourceAgentId": "marketing-bilibili-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "bilibili-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "kuaishou-strategist",
+    "name": "快手策略师",
+    "title": "社区信任、下沉市场与直播电商专家",
+    "avatar": "⚡",
+    "category": "commerce",
+    "sourcePath": "marketing/marketing-kuaishou-strategist.md",
+    "summary": "面向快手社区信任和直播电商，设计人设、内容节奏、福利机制和转化路径。",
+    "bestFor": [
+      "快手运营",
+      "直播带货",
+      "下沉市场",
+      "社区信任"
+    ],
+    "deliverables": [
+      "账号人设",
+      "内容栏目",
+      "直播节奏",
+      "福利话术",
+      "复盘指标"
+    ],
+    "playbook": [
+      "真实关系优先",
+      "讲清产品使用场景",
+      "控制夸张承诺",
+      "用老客反馈建立信任"
+    ],
+    "recommendedToolIds": [
+      "short-video-script-generator",
+      "event-planner",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用快手策略师帮我设计一个适合快手的账号人设和内容栏目",
+      "根据这个商品，帮我写一套快手直播讲品和互动话术"
+    ],
+    "sourceAgentId": "marketing-kuaishou-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "kuaishou-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "ecommerce-operator",
+    "name": "电商运营师",
+    "title": "电商全平台运营简洁版专家",
+    "avatar": "📦",
+    "category": "commerce",
+    "sourcePath": "marketing/marketing-ecommerce-operator.md",
+    "summary": "用轻量方式处理淘宝、拼多多、京东、直播带货和大促运营的常见问题。",
+    "bestFor": [
+      "店铺基础运营",
+      "商品优化",
+      "直播带货",
+      "大促执行"
+    ],
+    "deliverables": [
+      "商品优化清单",
+      "活动节奏",
+      "直播配合",
+      "客服话术",
+      "复盘表"
+    ],
+    "playbook": [
+      "先找转化短板",
+      "商品页和活动同步优化",
+      "客服口径要统一",
+      "用数据复盘下轮动作"
+    ],
+    "recommendedToolIds": [
+      "product-intro-generator",
+      "event-planner",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用电商运营师帮我快速诊断这个商品页和活动方案",
+      "帮我把这个产品做成电商平台的标题、卖点和活动节奏"
+    ],
+    "sourceAgentId": "marketing-ecommerce-operator",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "ecommerce-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "cross-border-ecommerce-operator",
+    "name": "跨境电商运营专家",
+    "title": "Amazon、Shopee、Lazada 与品牌出海运营专家",
+    "avatar": "🌏",
+    "category": "commerce",
+    "sourcePath": "marketing/marketing-cross-border-ecommerce.md",
+    "summary": "面向跨境电商选品、Listing、物流、广告、海外仓和品牌出海全链路做运营规划。",
+    "bestFor": [
+      "Amazon",
+      "Shopee/Lazada",
+      "独立站",
+      "海外仓"
+    ],
+    "deliverables": [
+      "选品判断",
+      "Listing 结构",
+      "广告策略",
+      "物流风险",
+      "出海运营排期"
+    ],
+    "playbook": [
+      "先验证市场和利润",
+      "Listing 本地化",
+      "广告与库存联动",
+      "合规和物流风险前置"
+    ],
+    "recommendedToolIds": [
+      "product-intro-generator",
+      "seo-article-writer",
+      "social-calendar-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用跨境电商运营专家帮我判断这个产品适不适合出海",
+      "帮我把这个商品资料改成 Amazon Listing 和广告卖点"
+    ],
+    "sourceAgentId": "marketing-cross-border-ecommerce",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "cross-border-ecommerce-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "weibo-strategist",
+    "name": "微博运营策略师",
+    "title": "热搜、超话、舆情和粉丝经济专家",
+    "avatar": "🔥",
+    "category": "content",
+    "sourcePath": "marketing/marketing-weibo-strategist.md",
+    "summary": "适合微博热点借势、话题运营、超话互动、舆情回应和粉丝资产经营。",
+    "bestFor": [
+      "微博运营",
+      "热点借势",
+      "舆情公关",
+      "粉丝互动"
+    ],
+    "deliverables": [
+      "话题策略",
+      "微博文案",
+      "互动机制",
+      "舆情预案",
+      "复盘指标"
+    ],
+    "playbook": [
+      "先判断舆论风险",
+      "借势要贴合品牌",
+      "互动要及时",
+      "敏感议题先降风险"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "content-review-loop",
+      "poster-generator"
+    ],
+    "starterPrompts": [
+      "用微博运营策略师帮我设计一次热点借势内容",
+      "根据这个品牌事件，帮我写微博回应和舆情风险清单"
+    ],
+    "sourceAgentId": "marketing-weibo-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "weibo-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "podcast-strategist",
+    "name": "播客内容策略师",
+    "title": "音频内容、访谈结构与商业化专家",
+    "avatar": "🎧",
+    "category": "content",
+    "sourcePath": "marketing/marketing-podcast-strategist.md",
+    "summary": "把专业观点、创始人 IP 和客户故事设计成播客选题、访谈提纲和增长路径。",
+    "bestFor": [
+      "小宇宙",
+      "喜马拉雅",
+      "访谈节目",
+      "知识型品牌"
+    ],
+    "deliverables": [
+      "节目定位",
+      "单集大纲",
+      "访谈问题",
+      "分发文案",
+      "商业化路径"
+    ],
+    "playbook": [
+      "先确定听众承诺",
+      "访谈问题要推动故事",
+      "摘录适合二次分发",
+      "商业化不能破坏信任"
+    ],
+    "recommendedToolIds": [
+      "wechat-article-generator",
+      "social-calendar-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用播客内容策略师帮我规划一个 6 期播客栏目",
+      "把这个客户案例改成播客访谈提纲和分发文案"
+    ],
+    "sourceAgentId": "marketing-podcast-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "podcast-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "zhihu-strategist",
+    "name": "知乎策略师",
+    "title": "知识型内容与品牌权威建设专家",
+    "avatar": "💡",
+    "category": "content",
+    "sourcePath": "marketing/marketing-zhihu-strategist.md",
+    "summary": "通过高质量问答、专栏和真实社区参与，在知乎建立行业权威和可持续搜索流量。",
+    "bestFor": [
+      "知乎问答",
+      "思想领袖",
+      "品牌权威",
+      "知识型获客"
+    ],
+    "deliverables": [
+      "问题地图",
+      "回答大纲",
+      "专栏规划",
+      "证据素材",
+      "转化路径"
+    ],
+    "playbook": [
+      "只回答站得住脚的问题",
+      "先给专业价值",
+      "证据和案例要具体",
+      "避免硬广和空泛人设"
+    ],
+    "recommendedToolIds": [
+      "seo-article-writer",
+      "faq-builder",
+      "content-review-loop",
+      "wechat-article-generator"
+    ],
+    "starterPrompts": [
+      "用知乎策略师帮我规划一组适合建立品牌权威的问答选题",
+      "把这个专业观点改成知乎回答大纲和证据结构"
+    ],
+    "sourceAgentId": "marketing-zhihu-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "zhihu-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "china-localization-strategist",
+    "name": "中国市场本地化策略师",
+    "title": "中国市场进入与平台本地化专家",
+    "avatar": "🇨🇳",
+    "category": "content",
+    "sourcePath": "marketing/marketing-china-market-localization-strategist.md",
+    "summary": "帮助海外或新品牌进入中国市场，统筹抖音、小红书、微信、B站和本地合规表达。",
+    "bestFor": [
+      "中国市场进入",
+      "平台本地化",
+      "品牌翻译",
+      "渠道选择"
+    ],
+    "deliverables": [
+      "市场进入路径",
+      "平台组合",
+      "本地化信息架构",
+      "内容口径",
+      "风险清单"
+    ],
+    "playbook": [
+      "先判断品类和人群",
+      "平台打法不能照搬海外",
+      "本地信任资产先行",
+      "合规和文化风险前置"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "wechat-article-generator",
+      "xiaohongshu-note-generator",
+      "short-video-script-generator"
+    ],
+    "starterPrompts": [
+      "用中国市场本地化策略师帮我规划这个产品进入中国市场的第一步",
+      "把这段海外产品介绍改成更适合中国用户理解的表达"
+    ],
+    "sourceAgentId": "marketing-china-market-localization-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "china-localization-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "daily-news-briefing",
+    "name": "新闻情报官",
+    "title": "多源新闻采集、交叉验证与结构化简报专家",
+    "avatar": "📰",
+    "category": "intelligence",
+    "sourcePath": "marketing/marketing-daily-news-briefing.md",
+    "summary": "为内容团队收集国内外多源新闻、热点和趋势，做可信度标注和下游内容角度建议。",
+    "bestFor": [
+      "选题素材",
+      "热点监测",
+      "行业情报",
+      "内容上游"
+    ],
+    "deliverables": [
+      "新闻简报",
+      "信源列表",
+      "可信度评级",
+      "写作角度",
+      "平台适配建议"
+    ],
+    "playbook": [
+      "重大事实多源验证",
+      "区分确认与传闻",
+      "标注时效和可信度",
+      "给下游内容可用角度"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "wechat-article-generator",
+      "short-video-script-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用新闻情报官帮我整理今天这个行业的热点简报",
+      "围绕这个主题，帮我找内容选题角度和需要验证的信息清单"
+    ],
+    "sourceAgentId": "marketing-daily-news-briefing",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "daily-news-briefing",
+    "contextScope": "owner"
+  },
+  {
+    "id": "tiktok-strategist",
+    "name": "TikTok 策略师",
+    "title": "出海短视频与病毒式内容专家",
+    "avatar": "🎵",
+    "category": "content",
+    "sourcePath": "marketing/marketing-tiktok-strategist.md",
+    "summary": "面向 TikTok 出海内容，设计钩子、脚本、趋势借势、达人合作和留存复盘。",
+    "bestFor": [
+      "TikTok 出海",
+      "短视频增长",
+      "创作者合作",
+      "海外内容本地化"
+    ],
+    "deliverables": [
+      "账号定位",
+      "视频脚本",
+      "趋势借势",
+      "达人 brief",
+      "复盘指标"
+    ],
+    "playbook": [
+      "先适配本地文化",
+      "前三秒建立冲突",
+      "达人合作给足创作空间",
+      "用完播和互动调整选题"
+    ],
+    "recommendedToolIds": [
+      "short-video-script-generator",
+      "social-calendar-planner",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 TikTok 策略师帮我把这个产品做成 5 条出海短视频脚本",
+      "帮我设计一个 TikTok 达人合作 brief"
+    ],
+    "sourceAgentId": "marketing-tiktok-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "tiktok-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "twitter-engager",
+    "name": "Twitter 互动官",
+    "title": "实时互动、观点输出与社交关系建设专家",
+    "avatar": "𝕏",
+    "category": "content",
+    "sourcePath": "marketing/marketing-twitter-engager.md",
+    "summary": "帮助出海品牌在 X/Twitter 上做观点表达、实时互动、回复策略和思想领袖建设。",
+    "bestFor": [
+      "X/Twitter",
+      "创始人 IP",
+      "实时互动",
+      "B2B 出海"
+    ],
+    "deliverables": [
+      "发帖主题",
+      "互动话术",
+      "回复策略",
+      "Thread 大纲",
+      "社交节奏"
+    ],
+    "playbook": [
+      "观点要具体",
+      "先参与真实讨论",
+      "避免机器人式群发",
+      "把高质量回复转成内容资产"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 Twitter 互动官帮我写一周 X/Twitter 内容和互动计划",
+      "把这个观点改成适合 Twitter 的 thread 和回复话术"
+    ],
+    "sourceAgentId": "marketing-twitter-engager",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "twitter-engager",
+    "contextScope": "owner"
+  },
+  {
+    "id": "instagram-curator",
+    "name": "Instagram 策展师",
+    "title": "视觉叙事与海外社区运营专家",
+    "avatar": "📸",
+    "category": "content",
+    "sourcePath": "marketing/marketing-instagram-curator.md",
+    "summary": "为出海视觉品牌设计 Instagram feed、Reels、Story、视觉主题和社区互动。",
+    "bestFor": [
+      "Instagram",
+      "视觉品牌",
+      "Reels",
+      "社区运营"
+    ],
+    "deliverables": [
+      "视觉主题",
+      "内容网格",
+      "Reels 脚本",
+      "Story 互动",
+      "标签建议"
+    ],
+    "playbook": [
+      "视觉一致性先行",
+      "内容要有可保存价值",
+      "Story 用于关系维护",
+      "Reels 承担增长"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "short-video-script-generator",
+      "social-calendar-planner"
+    ],
+    "starterPrompts": [
+      "用 Instagram 策展师帮我规划一个月的视觉内容网格",
+      "把这个产品卖点改成 Instagram Reels 和 Story 方案"
+    ],
+    "sourceAgentId": "marketing-instagram-curator",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "instagram-curator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "reddit-community-builder",
+    "name": "Reddit 社区运营",
+    "title": "出海社区文化与真实互动专家",
+    "avatar": "🧵",
+    "category": "content",
+    "sourcePath": "marketing/marketing-reddit-community-builder.md",
+    "summary": "帮助品牌理解 subreddit 规则、社区语境、真实讨论和低打扰增长方式。",
+    "bestFor": [
+      "Reddit",
+      "社区营销",
+      "用户反馈",
+      "海外冷启动"
+    ],
+    "deliverables": [
+      "社区地图",
+      "发帖策略",
+      "评论参与话术",
+      "禁忌清单",
+      "反馈摘要"
+    ],
+    "playbook": [
+      "先读社区规则",
+      "贡献价值再提品牌",
+      "避免硬广",
+      "把真实反馈带回产品"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop",
+      "faq-builder",
+      "social-calendar-planner"
+    ],
+    "starterPrompts": [
+      "用 Reddit 社区运营帮我判断这个产品适合进入哪些 subreddit",
+      "帮我把这个产品问题写成 Reddit 上不会被当广告的讨论帖"
+    ],
+    "sourceAgentId": "marketing-reddit-community-builder",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "reddit-community-builder",
+    "contextScope": "owner"
+  },
+  {
+    "id": "app-store-optimizer",
+    "name": "应用商店优化师",
+    "title": "ASO、商店转化与 App 出海推广专家",
+    "avatar": "📱",
+    "category": "search",
+    "sourcePath": "marketing/marketing-app-store-optimizer.md",
+    "summary": "优化 App Store 和 Google Play 的关键词、标题、副标题、截图、评分和转化路径。",
+    "bestFor": [
+      "ASO",
+      "App 出海",
+      "商店转化",
+      "关键词优化"
+    ],
+    "deliverables": [
+      "关键词表",
+      "标题副标题",
+      "截图卖点",
+      "评分策略",
+      "转化复盘"
+    ],
+    "playbook": [
+      "先拆搜索意图",
+      "截图讲核心价值",
+      "本地化不只翻译",
+      "评分和评论要纳入运营"
+    ],
+    "recommendedToolIds": [
+      "product-intro-generator",
+      "seo-article-writer",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用应用商店优化师帮我优化这个 App 的商店页",
+      "帮我做一份 App 出海 ASO 关键词和截图卖点建议"
+    ],
+    "sourceAgentId": "marketing-app-store-optimizer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "app-store-optimizer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "video-optimization-specialist",
+    "name": "视频优化专家",
+    "title": "YouTube 留存、分发与视频 SEO 专家",
+    "avatar": "▶️",
+    "category": "search",
+    "sourcePath": "marketing/marketing-video-optimization-specialist.md",
+    "summary": "优化 YouTube 和跨平台视频的标题、缩略图、留存结构、章节和搜索可见度。",
+    "bestFor": [
+      "YouTube",
+      "视频 SEO",
+      "观众留存",
+      "跨平台分发"
+    ],
+    "deliverables": [
+      "标题缩略图建议",
+      "留存结构",
+      "章节设计",
+      "关键词标签",
+      "分发计划"
+    ],
+    "playbook": [
+      "先优化点击和承诺",
+      "视频结构服务留存",
+      "章节提升理解",
+      "复盘 CTR 和留存曲线"
+    ],
+    "recommendedToolIds": [
+      "short-video-script-generator",
+      "poster-generator",
+      "seo-article-writer",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用视频优化专家帮我优化这个 YouTube 视频的标题、缩略图和结构",
+      "把这条长视频拆成跨平台分发计划"
+    ],
+    "sourceAgentId": "marketing-video-optimization-specialist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "video-optimization-specialist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "seo-specialist",
+    "name": "SEO 专家",
+    "title": "Google SEO、技术 SEO 与内容优化专家",
+    "avatar": "🔎",
+    "category": "search",
+    "sourcePath": "marketing/marketing-seo-specialist.md",
+    "summary": "面向 Google 和英文站点做关键词、技术结构、内容集群和搜索转化优化。",
+    "bestFor": [
+      "Google SEO",
+      "技术 SEO",
+      "英文内容",
+      "内容集群"
+    ],
+    "deliverables": [
+      "关键词地图",
+      "技术审计",
+      "内容集群",
+      "页面大纲",
+      "优化优先级"
+    ],
+    "playbook": [
+      "先按搜索意图分组",
+      "技术基础不能拖后腿",
+      "内容要覆盖实体和问题",
+      "用排名和转化一起复盘"
+    ],
+    "recommendedToolIds": [
+      "seo-article-writer",
+      "content-gap-planner",
+      "faq-builder",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 SEO 专家帮我规划这个英文网站的关键词和内容集群",
+      "根据这些页面，帮我做一份 SEO 优化优先级清单"
+    ],
+    "sourceAgentId": "marketing-seo-specialist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "seo-specialist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "carousel-growth-engine",
+    "name": "轮播图增长引擎",
+    "title": "社交媒体轮播内容与自动化投放专家",
+    "avatar": "🧩",
+    "category": "content",
+    "sourcePath": "marketing/marketing-carousel-growth-engine.md",
+    "summary": "把一个观点或产品卖点拆成适合 LinkedIn、Instagram、小红书等平台的轮播图结构。",
+    "bestFor": [
+      "轮播图",
+      "观点拆解",
+      "社媒素材",
+      "内容复用"
+    ],
+    "deliverables": [
+      "轮播页结构",
+      "每页标题",
+      "视觉建议",
+      "CTA",
+      "复用版本"
+    ],
+    "playbook": [
+      "第一页给强承诺",
+      "每页只讲一个点",
+      "结尾给保存或咨询理由",
+      "用模板提高复用效率"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "social-calendar-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用轮播图增长引擎把这段内容拆成 8 页轮播图",
+      "帮我为这个产品做一组小红书/LinkedIn 轮播图结构"
+    ],
+    "sourceAgentId": "marketing-carousel-growth-engine",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "carousel-growth-engine",
+    "contextScope": "owner"
+  },
+  {
+    "id": "linkedin-content-creator",
+    "name": "LinkedIn 内容创作专家",
+    "title": "LinkedIn 职场内容与 B2B 获客专家",
+    "avatar": "💼",
+    "category": "content",
+    "sourcePath": "marketing/marketing-linkedin-content-creator.md",
+    "summary": "面向 LinkedIn 设计 B2B 观点内容、创始人 IP、案例拆解和私信获客承接。",
+    "bestFor": [
+      "LinkedIn",
+      "B2B 出海",
+      "创始人 IP",
+      "职场内容"
+    ],
+    "deliverables": [
+      "帖子草稿",
+      "个人主页建议",
+      "内容栏目",
+      "私信承接",
+      "复盘指标"
+    ],
+    "playbook": [
+      "观点要有业务经验",
+      "案例比口号更可信",
+      "评论区是分发入口",
+      "私信承接要低压力"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "content-review-loop",
+      "customer-followup-generator"
+    ],
+    "starterPrompts": [
+      "用 LinkedIn 内容创作专家帮我写 5 条 B2B 获客帖",
+      "把这个客户案例改成 LinkedIn 创始人视角内容"
+    ],
+    "sourceAgentId": "marketing-linkedin-content-creator",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "linkedin-content-creator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "book-co-author",
+    "name": "图书联合作者",
+    "title": "思想领袖图书策划与代笔协作专家",
+    "avatar": "📚",
+    "category": "content",
+    "sourcePath": "marketing/marketing-book-co-author.md",
+    "summary": "帮助创始人和专家把经验、方法论和案例组织成图书选题、目录和章节草稿。",
+    "bestFor": [
+      "图书策划",
+      "思想领袖",
+      "长内容",
+      "代笔协作"
+    ],
+    "deliverables": [
+      "图书定位",
+      "目录结构",
+      "章节大纲",
+      "样章草稿",
+      "素材访谈问题"
+    ],
+    "playbook": [
+      "先提炼独特主张",
+      "目录服务读者路径",
+      "案例要承载方法",
+      "保留作者本人语气"
+    ],
+    "recommendedToolIds": [
+      "wechat-article-generator",
+      "faq-builder",
+      "social-calendar-planner"
+    ],
+    "starterPrompts": [
+      "用图书联合作者帮我把这些观点整理成一本书的目录",
+      "根据这些素材，帮我写一章样章大纲和开头"
+    ],
+    "sourceAgentId": "marketing-book-co-author",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "book-co-author",
+    "contextScope": "owner"
+  },
+  {
+    "id": "agentic-search-optimizer",
+    "name": "Agentic Search 优化师",
+    "title": "AI 搜索、代理式检索与品牌可见性专家",
+    "avatar": "🧠",
+    "category": "search",
+    "sourcePath": "marketing/marketing-agentic-search-optimizer.md",
+    "summary": "面向代理式搜索和 AI 平台，优化品牌实体、可验证事实、问题覆盖和机器可读内容结构。",
+    "bestFor": [
+      "AI 搜索",
+      "AEO/GEO",
+      "品牌实体",
+      "机器可读内容"
+    ],
+    "deliverables": [
+      "可见性审计",
+      "问题覆盖图",
+      "实体资料包",
+      "结构化 FAQ",
+      "内容修复建议"
+    ],
+    "playbook": [
+      "定义品牌实体",
+      "补全事实证据",
+      "用问答覆盖购买路径",
+      "不承诺一定被模型引用"
+    ],
+    "recommendedToolIds": [
+      "ai-visibility-question-map",
+      "geo-content-optimizer",
+      "content-gap-planner",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用 Agentic Search 优化师帮我审计品牌在 AI 搜索里的可见性",
+      "帮我把这些官网内容改成更适合代理式搜索理解的结构"
+    ],
+    "sourceAgentId": "marketing-agentic-search-optimizer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "agentic-search-optimizer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "paid-media-auditor",
+    "name": "付费媒体审计师",
+    "title": "广告账户结构、追踪与预算审计专家",
+    "avatar": "📋",
+    "category": "paid_media",
+    "sourcePath": "paid-media/paid-media-auditor.md",
+    "summary": "系统审计广告账户结构、追踪、预算、出价、创意、受众和落地页，定位浪费和风险。",
+    "bestFor": [
+      "广告账户审计",
+      "预算浪费",
+      "转化追踪",
+      "投放复盘"
+    ],
+    "deliverables": [
+      "审计报告",
+      "严重程度清单",
+      "预算建议",
+      "追踪风险",
+      "修复路线图"
+    ],
+    "playbook": [
+      "先查追踪可信度",
+      "再看结构和预算",
+      "每条问题标影响",
+      "给出修复优先级"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop",
+      "event-planner"
+    ],
+    "starterPrompts": [
+      "用付费媒体审计师帮我审一遍这个广告账户问题",
+      "根据这些广告数据，帮我找出预算浪费和追踪风险"
+    ],
+    "sourceAgentId": "paid-media-auditor",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "paid-media-auditor",
+    "contextScope": "owner"
+  },
+  {
+    "id": "paid-media-creative-strategist",
+    "name": "广告创意策略师",
+    "title": "广告素材、文案矩阵与 A/B 测试专家",
+    "avatar": "🧪",
+    "category": "paid_media",
+    "sourcePath": "paid-media/paid-media-creative-strategist.md",
+    "summary": "为搜索、Meta、TikTok、PMax 等广告设计文案矩阵、素材方向和创意测试方案。",
+    "bestFor": [
+      "广告创意",
+      "A/B 测试",
+      "素材迭代",
+      "转化文案"
+    ],
+    "deliverables": [
+      "创意假设",
+      "标题矩阵",
+      "素材 brief",
+      "测试计划",
+      "复盘指标"
+    ],
+    "playbook": [
+      "先拆受众痛点",
+      "每组素材验证一个假设",
+      "文案和落地页保持一致",
+      "用数据淘汰创意"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "content-review-loop",
+      "product-intro-generator"
+    ],
+    "starterPrompts": [
+      "用广告创意策略师帮我设计 5 组广告素材测试方向",
+      "把这个产品卖点改成搜索广告和信息流广告文案"
+    ],
+    "sourceAgentId": "paid-media-creative-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "paid-media-creative-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "paid-social-strategist",
+    "name": "社交广告策略师",
+    "title": "Meta、TikTok、LinkedIn 社交广告投放专家",
+    "avatar": "📢",
+    "category": "paid_media",
+    "sourcePath": "paid-media/paid-media-paid-social-strategist.md",
+    "summary": "设计社交广告账户结构、受众、素材、预算节奏和测试学习路径。",
+    "bestFor": [
+      "Meta Ads",
+      "TikTok Ads",
+      "LinkedIn Ads",
+      "社交投放"
+    ],
+    "deliverables": [
+      "账户结构",
+      "受众分层",
+      "素材计划",
+      "预算节奏",
+      "学习期规则"
+    ],
+    "playbook": [
+      "先匹配目标和漏斗",
+      "不要过早拆碎预算",
+      "素材是主要变量",
+      "保护学习期稳定"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "short-video-script-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用社交广告策略师帮我设计一次 Meta/TikTok 广告测试",
+      "根据这些素材和预算，帮我做社交广告投放结构"
+    ],
+    "sourceAgentId": "paid-media-paid-social-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "paid-social-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "ppc-strategist",
+    "name": "PPC 竞价策略师",
+    "title": "搜索竞价、关键词和百度/Google Ads 专家",
+    "avatar": "💸",
+    "category": "paid_media",
+    "sourcePath": "paid-media/paid-media-ppc-strategist.md",
+    "summary": "优化搜索广告关键词、匹配类型、否词、出价、质量得分和落地页一致性。",
+    "bestFor": [
+      "Google Ads",
+      "百度推广",
+      "关键词投放",
+      "搜索竞价"
+    ],
+    "deliverables": [
+      "关键词结构",
+      "否词清单",
+      "出价建议",
+      "广告文案",
+      "落地页建议"
+    ],
+    "playbook": [
+      "先区分搜索意图",
+      "否词持续维护",
+      "广告和落地页对齐",
+      "用转化而非点击评估"
+    ],
+    "recommendedToolIds": [
+      "seo-article-writer",
+      "content-gap-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 PPC 竞价策略师帮我规划一组搜索广告关键词",
+      "根据这些搜索词数据，帮我整理否词和预算建议"
+    ],
+    "sourceAgentId": "paid-media-ppc-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "ppc-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "programmatic-buyer",
+    "name": "程序化广告采买专家",
+    "title": "DSP、RTB 与程序化购买专家",
+    "avatar": "🧭",
+    "category": "paid_media",
+    "sourcePath": "paid-media/paid-media-programmatic-buyer.md",
+    "summary": "为品牌和效果广告设计程序化采买策略、受众、库存、频控、品牌安全和复盘框架。",
+    "bestFor": [
+      "DSP",
+      "RTB",
+      "程序化购买",
+      "品牌安全"
+    ],
+    "deliverables": [
+      "采买策略",
+      "受众包",
+      "库存白名单",
+      "频控规则",
+      "效果复盘"
+    ],
+    "playbook": [
+      "先明确品牌安全边界",
+      "库存质量优于便宜流量",
+      "频控防止浪费",
+      "用实验组验证增量"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用程序化广告采买专家帮我设计一次程序化投放方案",
+      "帮我检查这个 DSP 计划的品牌安全和频控风险"
+    ],
+    "sourceAgentId": "paid-media-programmatic-buyer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "programmatic-buyer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "search-query-analyst",
+    "name": "搜索词分析师",
+    "title": "搜索词挖掘、否词和意图分层专家",
+    "avatar": "🔍",
+    "category": "paid_media",
+    "sourcePath": "paid-media/paid-media-search-query-analyst.md",
+    "summary": "从搜索词报告里识别购买意图、浪费流量、否词机会和新关键词扩展方向。",
+    "bestFor": [
+      "搜索词报告",
+      "否词优化",
+      "关键词扩展",
+      "PPC 精细化"
+    ],
+    "deliverables": [
+      "意图分层",
+      "否词清单",
+      "新增关键词",
+      "预算迁移建议",
+      "落地页建议"
+    ],
+    "playbook": [
+      "按意图区分价值",
+      "先否掉无关流量",
+      "保留高意图长尾",
+      "把内容缺口交给 SEO 或落地页"
+    ],
+    "recommendedToolIds": [
+      "content-gap-planner",
+      "seo-article-writer",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用搜索词分析师帮我分析这批搜索词报告",
+      "帮我从这些搜索词里整理否词、新关键词和内容机会"
+    ],
+    "sourceAgentId": "paid-media-search-query-analyst",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "search-query-analyst",
+    "contextScope": "owner"
+  },
+  {
+    "id": "tracking-specialist",
+    "name": "追踪与归因专家",
+    "title": "转化追踪、归因模型与数据打通专家",
+    "avatar": "🧷",
+    "category": "paid_media",
+    "sourcePath": "paid-media/paid-media-tracking-specialist.md",
+    "summary": "检查广告转化追踪、事件埋点、归因模型、离线转化和跨平台数据一致性。",
+    "bestFor": [
+      "转化追踪",
+      "GA4/GTM",
+      "归因模型",
+      "离线转化"
+    ],
+    "deliverables": [
+      "追踪审计",
+      "事件字典",
+      "归因建议",
+      "数据差异说明",
+      "修复清单"
+    ],
+    "playbook": [
+      "先确认数据是否可信",
+      "事件定义必须一致",
+      "区分平台归因差异",
+      "修复前不盲目扩大预算"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用追踪与归因专家帮我排查广告转化数据不准的问题",
+      "帮我设计一套从表单到成交的转化追踪方案"
+    ],
+    "sourceAgentId": "paid-media-tracking-specialist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "tracking-specialist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "account-strategist",
+    "name": "客户拓展策略师",
+    "title": "大客户拓展与 ABM 策略专家",
+    "avatar": "🏢",
+    "category": "sales",
+    "sourcePath": "sales/sales-account-strategist.md",
+    "summary": "为重点客户制定账户地图、关系推进、价值主张、触达路径和 ABM 作战计划。",
+    "bestFor": [
+      "大客户拓展",
+      "ABM",
+      "重点客户攻关",
+      "复杂决策链"
+    ],
+    "deliverables": [
+      "账户地图",
+      "决策链分析",
+      "触达理由",
+      "价值主张",
+      "推进计划"
+    ],
+    "playbook": [
+      "先搞清客户业务优先级",
+      "识别决策链和影响者",
+      "每次触达要有业务理由",
+      "用多线程降低单点风险"
+    ],
+    "recommendedToolIds": [
+      "outreach-copy-pack",
+      "customer-followup-generator",
+      "sales-proposal-outline"
+    ],
+    "starterPrompts": [
+      "用客户拓展策略师帮我制定一个大客户攻关计划",
+      "根据这个目标客户，帮我画出决策链和触达策略"
+    ],
+    "sourceAgentId": "sales-account-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "account-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "sales-coach",
+    "name": "销售教练",
+    "title": "销售技能训练与团队辅导专家",
+    "avatar": "🏅",
+    "category": "sales",
+    "sourcePath": "sales/sales-coach.md",
+    "summary": "帮助销售团队训练提问、倾听、异议处理、成交推进和复盘习惯。",
+    "bestFor": [
+      "销售训练",
+      "话术辅导",
+      "团队复盘",
+      "新人带教"
+    ],
+    "deliverables": [
+      "训练脚本",
+      "角色扮演",
+      "反馈清单",
+      "能力评分",
+      "改进计划"
+    ],
+    "playbook": [
+      "先听真实对话",
+      "只改最影响成交的动作",
+      "用角色扮演训练",
+      "每次复盘形成一条新规则"
+    ],
+    "recommendedToolIds": [
+      "objection-handler",
+      "customer-followup-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用销售教练帮我复盘这段销售对话",
+      "帮我设计一次销售团队的异议处理训练"
+    ],
+    "sourceAgentId": "sales-coach",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "sales-coach",
+    "contextScope": "owner"
+  },
+  {
+    "id": "deal-strategist",
+    "name": "赢单策略师",
+    "title": "复杂销售推进与 MEDDPICC 专家",
+    "avatar": "♟️",
+    "category": "sales",
+    "sourcePath": "sales/sales-deal-strategist.md",
+    "summary": "用 MEDDPICC 等方法判断商机质量、缺口、竞争态势和下一步赢单动作。",
+    "bestFor": [
+      "复杂销售",
+      "MEDDPICC",
+      "竞品替换",
+      "关键商机"
+    ],
+    "deliverables": [
+      "商机评分",
+      "风险缺口",
+      "赢单路径",
+      "竞争策略",
+      "下一步动作"
+    ],
+    "playbook": [
+      "先判断是否真商机",
+      "找出经济买家和痛点",
+      "补齐决策标准",
+      "每一步都要推动客户承诺"
+    ],
+    "recommendedToolIds": [
+      "customer-followup-generator",
+      "objection-handler",
+      "sales-proposal-outline"
+    ],
+    "starterPrompts": [
+      "用赢单策略师帮我判断这个商机下一步怎么推进",
+      "按 MEDDPICC 帮我找出这个项目的赢单风险"
+    ],
+    "sourceAgentId": "sales-deal-strategist",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "deal-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "discovery-coach",
+    "name": "Discovery 教练",
+    "title": "需求挖掘与客户洞察专家",
+    "avatar": "🧩",
+    "category": "sales",
+    "sourcePath": "sales/sales-discovery-coach.md",
+    "summary": "设计销售早期访谈问题，挖掘客户痛点、现状、影响、预算、决策和优先级。",
+    "bestFor": [
+      "需求挖掘",
+      "客户访谈",
+      "售前沟通",
+      "商机判断"
+    ],
+    "deliverables": [
+      "访谈问题",
+      "追问路径",
+      "痛点摘要",
+      "资格判断",
+      "下一步建议"
+    ],
+    "playbook": [
+      "少讲产品多问现状",
+      "追问业务影响",
+      "确认优先级和预算",
+      "最后明确下一步承诺"
+    ],
+    "recommendedToolIds": [
+      "customer-followup-generator",
+      "objection-handler",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用 Discovery 教练帮我设计一次客户需求访谈",
+      "根据这段客户描述，帮我判断还应该追问哪些问题"
+    ],
+    "sourceAgentId": "sales-discovery-coach",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "discovery-coach",
+    "contextScope": "owner"
+  },
+  {
+    "id": "sales-engineer",
+    "name": "售前工程师",
+    "title": "技术方案、Demo 演示与售前支撑专家",
+    "avatar": "🧑‍💻",
+    "category": "sales",
+    "sourcePath": "sales/sales-engineer.md",
+    "summary": "把客户需求转成技术方案、Demo 脚本、集成说明、风险边界和售前答疑材料。",
+    "bestFor": [
+      "技术售前",
+      "Demo 演示",
+      "方案解释",
+      "集成答疑"
+    ],
+    "deliverables": [
+      "Demo 脚本",
+      "技术方案",
+      "集成清单",
+      "FAQ",
+      "风险说明"
+    ],
+    "playbook": [
+      "Demo 对齐客户场景",
+      "只展示能支撑价值的功能",
+      "技术边界讲清楚",
+      "把异议转成验证事项"
+    ],
+    "recommendedToolIds": [
+      "product-intro-generator",
+      "faq-builder",
+      "sales-proposal-outline"
+    ],
+    "starterPrompts": [
+      "用售前工程师帮我设计一次面向客户的 Demo 脚本",
+      "把这些客户需求整理成技术方案和售前 FAQ"
+    ],
+    "sourceAgentId": "sales-engineer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "sales-engineer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "pipeline-analyst",
+    "name": "Pipeline 分析师",
+    "title": "销售漏斗、预测和管道质量分析专家",
+    "avatar": "📈",
+    "category": "sales",
+    "sourcePath": "sales/sales-pipeline-analyst.md",
+    "summary": "分析销售漏斗阶段、转化率、商机老化、预测准确性和团队管道健康度。",
+    "bestFor": [
+      "销售预测",
+      "漏斗分析",
+      "商机质量",
+      "管道复盘"
+    ],
+    "deliverables": [
+      "漏斗诊断",
+      "预测风险",
+      "阶段转化分析",
+      "老化商机清单",
+      "改进动作"
+    ],
+    "playbook": [
+      "先看阶段定义是否一致",
+      "预测要分承诺和机会",
+      "老化商机单独处理",
+      "用转化率校正目标"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用 Pipeline 分析师帮我分析这个销售漏斗",
+      "根据这些商机数据，帮我判断下月预测风险"
+    ],
+    "sourceAgentId": "sales-pipeline-analyst",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "pipeline-analyst",
+    "contextScope": "owner"
+  },
+  {
+    "id": "financial-forecaster",
+    "name": "财务预测分析师",
+    "title": "收入预测、场景建模与现金流专家",
+    "avatar": "🔮",
+    "category": "finance",
+    "sourcePath": "finance/finance-financial-forecaster.md",
+    "summary": "为创业公司和成长型企业做收入预测、现金流、烧钱率、Runway 和融资场景模型。",
+    "bestFor": [
+      "SaaS 财务规划",
+      "现金流预测",
+      "融资材料",
+      "预算场景"
+    ],
+    "deliverables": [
+      "收入预测",
+      "现金流模型",
+      "场景假设",
+      "Runway 预警",
+      "投资人指标"
+    ],
+    "playbook": [
+      "所有预测写清假设",
+      "现金流安全优先",
+      "乐观场景要有证据",
+      "偏差超过阈值必须复盘"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用财务预测分析师帮我做一版 12 个月收入和现金流预测框架",
+      "根据这些经营数据，帮我判断融资前的财务健康度"
+    ],
+    "sourceAgentId": "finance-financial-forecaster",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "financial-forecaster",
+    "contextScope": "owner"
+  },
+  {
+    "id": "invoice-manager",
+    "name": "发票管理专家",
+    "title": "增值税发票、报销和三单匹配专家",
+    "avatar": "🧾",
+    "category": "finance",
+    "sourcePath": "finance/finance-invoice-manager.md",
+    "summary": "面向中国企业处理发票开具、收取、认证、报销、三单匹配、归档和税务合规。",
+    "bestFor": [
+      "发票管理",
+      "报销审批",
+      "金税系统",
+      "三单匹配"
+    ],
+    "deliverables": [
+      "发票制度",
+      "审批流程",
+      "风险清单",
+      "月度报告",
+      "归档规则"
+    ],
+    "playbook": [
+      "合规红线先讲清",
+      "三单匹配不能省",
+      "异常发票单独标记",
+      "流程要可审计"
+    ],
+    "recommendedToolIds": [
+      "faq-builder",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用发票管理专家帮我梳理一套发票和报销流程",
+      "根据这些发票问题，帮我做风险清单和整改建议"
+    ],
+    "sourceAgentId": "finance-invoice-manager",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "invoice-manager",
+    "contextScope": "owner"
+  },
+  {
+    "id": "fraud-detector",
+    "name": "金融风控分析师",
+    "title": "交易风控、反洗钱与欺诈识别专家",
+    "avatar": "🛡️",
+    "category": "finance",
+    "sourcePath": "finance/finance-fraud-detector.md",
+    "summary": "识别交易异常、欺诈模式、反洗钱风险、电诈风险和风控规则缺口。",
+    "bestFor": [
+      "支付风控",
+      "反洗钱",
+      "欺诈识别",
+      "合规审查"
+    ],
+    "deliverables": [
+      "风险规则",
+      "异常模式",
+      "处置流程",
+      "审查清单",
+      "监控指标"
+    ],
+    "playbook": [
+      "先定义正常行为",
+      "异常要分级",
+      "规则要能解释",
+      "高风险动作保留人工复核"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用金融风控分析师帮我设计一套交易异常审查规则",
+      "根据这些交易样本，帮我判断潜在欺诈和反洗钱风险"
+    ],
+    "sourceAgentId": "finance-fraud-detector",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "fraud-detector",
+    "contextScope": "owner"
+  },
+  {
+    "id": "recruiter",
+    "name": "招聘专家",
+    "title": "中国人才市场与招聘全流程专家",
+    "avatar": "🎯",
+    "category": "hr",
+    "sourcePath": "hr/hr-recruiter.md",
+    "summary": "处理岗位画像、Boss 直聘/猎聘等渠道、简历筛选、面试安排、Offer 谈判和入职闭环。",
+    "bestFor": [
+      "招聘全流程",
+      "岗位画像",
+      "简历筛选",
+      "面试流程"
+    ],
+    "deliverables": [
+      "JD 优化",
+      "渠道策略",
+      "筛选标准",
+      "面试题",
+      "Offer 推进"
+    ],
+    "playbook": [
+      "先对齐 must-have",
+      "渠道按岗位分配",
+      "48 小时内推进反馈",
+      "候选人体验影响转化"
+    ],
+    "recommendedToolIds": [
+      "faq-builder",
+      "customer-followup-generator"
+    ],
+    "starterPrompts": [
+      "用招聘专家帮我优化这个岗位 JD 和招聘渠道",
+      "根据这些候选人简历信息，帮我设计筛选标准和面试问题"
+    ],
+    "sourceAgentId": "hr-recruiter",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "recruiter",
+    "contextScope": "owner"
+  },
+  {
+    "id": "performance-reviewer",
+    "name": "绩效管理专家",
+    "title": "OKR/KPI、360 反馈与晋升校准专家",
+    "avatar": "📌",
+    "category": "hr",
+    "sourcePath": "hr/hr-performance-reviewer.md",
+    "summary": "帮助企业设计绩效体系、OKR/KPI、绩效校准会、PIP 改进计划和晋升评估。",
+    "bestFor": [
+      "绩效体系",
+      "OKR/KPI",
+      "360 反馈",
+      "晋升答辩"
+    ],
+    "deliverables": [
+      "绩效方案",
+      "OKR 模板",
+      "校准会议程",
+      "PIP 计划",
+      "反馈话术"
+    ],
+    "playbook": [
+      "目标要可解释",
+      "评估规则提前公开",
+      "校准避免部门偏差",
+      "PIP 必须有证据和支持动作"
+    ],
+    "recommendedToolIds": [
+      "faq-builder",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用绩效管理专家帮我设计一套小团队 OKR/KPI 机制",
+      "根据这些员工表现，帮我准备绩效反馈和改进计划"
+    ],
+    "sourceAgentId": "hr-performance-reviewer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "performance-reviewer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "contract-reviewer",
+    "name": "合同审查专家",
+    "title": "中国商业合同风险识别与条款审查专家",
+    "avatar": "📑",
+    "category": "legal",
+    "sourcePath": "legal/legal-contract-reviewer.md",
+    "summary": "审查商业合同主体、价款、违约、知识产权、保密、数据、电子签章和争议解决条款。",
+    "bestFor": [
+      "合同审查",
+      "风险评估",
+      "条款修改",
+      "电子签章"
+    ],
+    "deliverables": [
+      "风险清单",
+      "条款修改建议",
+      "谈判要点",
+      "签署前检查",
+      "争议解决建议"
+    ],
+    "playbook": [
+      "先理解商业背景",
+      "标出高风险条款",
+      "给可谈判替代表述",
+      "重要合同建议律师复核"
+    ],
+    "recommendedToolIds": [
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用合同审查专家帮我审查这份合同的主要风险",
+      "根据这些交易背景，帮我列一份签约前检查清单"
+    ],
+    "sourceAgentId": "legal-contract-reviewer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "contract-reviewer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "policy-writer",
+    "name": "制度文件撰写专家",
+    "title": "隐私政策、数据合规和内部制度专家",
+    "avatar": "⚖️",
+    "category": "legal",
+    "sourcePath": "legal/legal-policy-writer.md",
+    "summary": "面向 PIPL、数据安全法、隐私政策、员工制度和业务合规要求撰写制度文件。",
+    "bestFor": [
+      "隐私政策",
+      "数据合规",
+      "内部制度",
+      "合规声明"
+    ],
+    "deliverables": [
+      "制度框架",
+      "政策草案",
+      "合规清单",
+      "员工告知",
+      "版本修订建议"
+    ],
+    "playbook": [
+      "先确认适用范围",
+      "条款要匹配真实流程",
+      "避免照抄空泛模板",
+      "高风险政策建议法务复核"
+    ],
+    "recommendedToolIds": [
+      "faq-builder",
+      "wechat-article-generator"
+    ],
+    "starterPrompts": [
+      "用制度文件撰写专家帮我起草一份隐私政策框架",
+      "根据这个业务流程，帮我整理数据合规制度和用户告知要点"
+    ],
+    "sourceAgentId": "legal-policy-writer",
+    "aliases": [],
+    "scenarioTags": [],
+    "businessSegments": [],
+    "priorityGroup": "general",
+    "localLifeRank": 999,
+    "hermesSkill": "policy-writer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-business-growth-director",
+    "name": "本地生意增长总监",
+    "title": "小门店与本地小公司经营增长总监",
+    "avatar": "📍",
+    "category": "content",
+    "sourcePath": "local-life/local-business-growth-director.md",
+    "aliases": [
+      "门店增长总监",
+      "本地生活增长总监",
+      "本地生意总监"
+    ],
+    "summary": "先诊断生意现状，再把平台、内容、私域、口碑和活动组合成老板能执行的一周增长计划。",
+    "bestFor": [
+      "小门店获客",
+      "本地小公司增长",
+      "渠道组合",
+      "周经营计划"
+    ],
+    "deliverables": [
+      "生意诊断",
+      "获客路径",
+      "一周行动表",
+      "渠道优先级",
+      "老板执行清单",
+      "复盘指标"
+    ],
+    "playbook": [
+      "先问清行业和商圈",
+      "把到店线索和复购分开",
+      "小预算先做高确定动作",
+      "每周只抓 3 个关键动作"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "event-planner",
+      "daily-store-review-assistant",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用本地生意增长总监帮我诊断这个小店怎么做获客",
+      "我有一家本地小公司，帮我排一周可执行增长计划"
+    ],
+    "sourceAgentId": "local-business-growth-director",
+    "priorityGroup": "local_life",
+    "localLifeRank": 1,
+    "scenarioTags": [
+      "本地生活",
+      "门店增长",
+      "经营诊断",
+      "获客计划"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地小公司",
+      "本地服务"
+    ],
+    "hermesSkill": "local-business-growth-director",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-life-platform-operator",
+    "name": "本地生活平台运营专家",
+    "title": "美团、大众点评、抖音团购与地图平台专家",
+    "avatar": "🏪",
+    "category": "commerce",
+    "sourcePath": "local-life/local-life-platform-operator.md",
+    "aliases": [
+      "美团点评运营专家",
+      "抖音团购运营专家",
+      "地图店铺运营专家"
+    ],
+    "summary": "围绕美团/大众点评/抖音团购/高德/百度地图，优化店铺资料、团购套餐、评价、核销和到店转化。",
+    "bestFor": [
+      "美团大众点评",
+      "抖音团购",
+      "高德/百度地图",
+      "到店核销"
+    ],
+    "deliverables": [
+      "店铺资料优化",
+      "团购套餐方案",
+      "平台标题",
+      "核销承接话术",
+      "评价运营清单",
+      "排名影响因素"
+    ],
+    "playbook": [
+      "先补齐店铺可信信息",
+      "团购不能只拼低价",
+      "核销后必须承接复购",
+      "评价和图片决定转化信任"
+    ],
+    "recommendedToolIds": [
+      "group-buy-package-generator",
+      "store-menu-generator",
+      "review-reply-assistant",
+      "daily-store-review-assistant"
+    ],
+    "starterPrompts": [
+      "用本地生活平台运营专家帮我优化美团/大众点评店铺和团购",
+      "我的抖音团购核销一般，帮我设计套餐和到店承接动作"
+    ],
+    "sourceAgentId": "local-life-platform-operator",
+    "priorityGroup": "local_life",
+    "localLifeRank": 2,
+    "scenarioTags": [
+      "本地生活平台",
+      "美团",
+      "大众点评",
+      "抖音团购",
+      "地图店铺"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "餐饮",
+      "美业",
+      "本地服务"
+    ],
+    "hermesSkill": "local-life-platform-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-reputation-operator",
+    "name": "本地口碑与评价运营专家",
+    "title": "好评引导、差评处理与门店信任建设专家",
+    "avatar": "⭐",
+    "category": "private_domain",
+    "sourcePath": "local-life/local-reputation-operator.md",
+    "aliases": [
+      "口碑运营专家",
+      "评价运营专家",
+      "差评处理专家"
+    ],
+    "summary": "帮助门店把真实好评、差评补救、案例证言和店铺可信度做成长期口碑资产。",
+    "bestFor": [
+      "大众点评评价",
+      "美团评价",
+      "差评处理",
+      "顾客证言"
+    ],
+    "deliverables": [
+      "评价回复",
+      "差评补救流程",
+      "好评引导话术",
+      "案例证言模板",
+      "口碑风险清单"
+    ],
+    "playbook": [
+      "先处理真实问题",
+      "公开回复不争辩",
+      "好评引导不能诱导造假",
+      "把口碑素材沉淀到平台和私域"
+    ],
+    "recommendedToolIds": [
+      "review-reply-assistant",
+      "customer-followup-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用本地口碑与评价运营专家帮我处理这条差评",
+      "帮我设计一套不违规的好评引导和口碑沉淀流程"
+    ],
+    "sourceAgentId": "local-reputation-operator",
+    "priorityGroup": "local_life",
+    "localLifeRank": 3,
+    "scenarioTags": [
+      "口碑",
+      "评价",
+      "差评处理",
+      "信任建设"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "local-reputation-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "xiaohongshu-operator",
+    "name": "小红书本地种草专家",
+    "title": "探店笔记、封面与真实体验种草专家",
+    "avatar": "📕",
+    "category": "content",
+    "sourceAgentId": "marketing-xiaohongshu-operator",
+    "sourcePath": "marketing/marketing-xiaohongshu-operator.md",
+    "aliases": [
+      "小红书运营专家",
+      "小红书本地种草专家",
+      "小红书探店专家"
+    ],
+    "summary": "把门店、课程、线路和本地服务写成不硬广的小红书探店笔记、封面大字、拍摄清单和私信引导。",
+    "bestFor": [
+      "本地探店",
+      "门店种草",
+      "教育招生",
+      "旅游线路种草"
+    ],
+    "deliverables": [
+      "探店标题组",
+      "种草正文",
+      "封面大字",
+      "拍摄清单",
+      "标签组合",
+      "评论区引导"
+    ],
+    "playbook": [
+      "先找到真实体验点",
+      "再组织本地生活语境",
+      "控制硬广感",
+      "用收藏、评论和私信判断内容质量"
+    ],
+    "recommendedToolIds": [
+      "store-xiaohongshu-note-generator",
+      "poster-generator",
+      "xiaohongshu-note-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用小红书本地种草专家帮我把这个门店/课程/线路写成探店笔记",
+      "帮我规划 7 天小红书本地内容选题，目标是让客户私信或到店"
+    ],
+    "priorityGroup": "local_life",
+    "localLifeRank": 4,
+    "scenarioTags": [
+      "本地生活",
+      "小红书",
+      "探店",
+      "种草"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "xiaohongshu-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "douyin-strategist",
+    "name": "抖音本地生活策略师",
+    "title": "短视频、团购转化与老板出镜专家",
+    "avatar": "🎵",
+    "category": "content",
+    "sourceAgentId": "marketing-douyin-strategist",
+    "sourcePath": "marketing/marketing-douyin-strategist.md",
+    "aliases": [
+      "抖音策略师",
+      "抖音本地生活策略师",
+      "抖音团购内容专家"
+    ],
+    "summary": "把门店卖点、课程体验、旅游线路和团购套餐转成 3 秒钩子、短视频分镜、老板出镜口播和到店引导。",
+    "bestFor": [
+      "抖音本地生活",
+      "团购转化",
+      "老板出镜",
+      "门店短视频"
+    ],
+    "deliverables": [
+      "视频钩子",
+      "分镜脚本",
+      "口播稿",
+      "团购引导",
+      "剪辑清单",
+      "直播切片方向"
+    ],
+    "playbook": [
+      "前三秒直接给本地场景利益点",
+      "每条视频只讲一个到店理由",
+      "字幕必须可扫读",
+      "复盘完播、评论和团购点击"
+    ],
+    "recommendedToolIds": [
+      "store-short-video-script-generator",
+      "group-buy-package-generator",
+      "poster-generator",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用抖音本地生活策略师把这个门店/课程/线路改成 3 条短视频脚本",
+      "帮我设计一个适合老板或店员出镜的 30 秒口播视频"
+    ],
+    "priorityGroup": "local_life",
+    "localLifeRank": 5,
+    "scenarioTags": [
+      "本地生活",
+      "抖音",
+      "短视频",
+      "团购转化"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "douyin-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "private-domain-operator",
+    "name": "微信私域复购专家",
+    "title": "社群、朋友圈、会员和老客转介绍专家",
+    "avatar": "🏦",
+    "category": "private_domain",
+    "sourceAgentId": "marketing-private-domain-operator",
+    "sourcePath": "marketing/marketing-private-domain-operator.md",
+    "aliases": [
+      "私域流量运营师",
+      "微信私域复购专家",
+      "老客复购专家",
+      "门店私域专家"
+    ],
+    "summary": "帮助门店、教育机构和旅游服务商把朋友圈、微信群、一对一跟进、会员和老带新串成复购 SOP。",
+    "bestFor": [
+      "门店私域",
+      "老客户复购",
+      "家长群",
+      "老带新转介绍"
+    ],
+    "deliverables": [
+      "欢迎语",
+      "社群 SOP",
+      "朋友圈节奏",
+      "客户分层话术",
+      "复购提醒",
+      "转介绍机制"
+    ],
+    "playbook": [
+      "先做客户分层",
+      "控制群发频率",
+      "内容先提供价值",
+      "成交动作放在信任之后"
+    ],
+    "recommendedToolIds": [
+      "old-customer-recall-generator",
+      "community-activity-script-generator",
+      "moments-copy-generator",
+      "customer-followup-generator"
+    ],
+    "starterPrompts": [
+      "用微信私域复购专家帮我设计一周朋友圈和社群转化节奏",
+      "根据这个客户顾虑，帮我写一段不施压的微信跟进话术"
+    ],
+    "priorityGroup": "local_life",
+    "localLifeRank": 6,
+    "scenarioTags": [
+      "微信私域",
+      "社群",
+      "老客复购",
+      "转介绍"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "private-domain-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "wechat-channels-strategist",
+    "name": "视频号直播到店专家",
+    "title": "视频号直播、微信内容与私域闭环专家",
+    "avatar": "📹",
+    "category": "content",
+    "sourceAgentId": "marketing-weixin-channels-strategist",
+    "sourcePath": "marketing/marketing-weixin-channels-strategist.md",
+    "aliases": [
+      "视频号运营策略师",
+      "视频号直播到店专家",
+      "视频号本地生活专家"
+    ],
+    "summary": "适合把视频号短视频、直播预告、公众号、社群和一对一跟进做成微信生态到店或报名闭环。",
+    "bestFor": [
+      "视频号直播",
+      "微信生态",
+      "门店获客",
+      "教育/旅游转化"
+    ],
+    "deliverables": [
+      "视频号选题",
+      "直播预告海报",
+      "社群承接话术",
+      "公众号联动",
+      "私域 CTA",
+      "到店邀约"
+    ],
+    "playbook": [
+      "视频内容承接到私域",
+      "直播前后都要有触达",
+      "用公众号沉淀深度内容",
+      "用社群承接咨询"
+    ],
+    "recommendedToolIds": [
+      "store-short-video-script-generator",
+      "community-activity-script-generator",
+      "wechat-article-generator",
+      "moments-copy-generator"
+    ],
+    "starterPrompts": [
+      "用视频号直播到店专家规划一次直播前后的内容闭环",
+      "把这个公众号主题拆成视频号脚本和朋友圈预告"
+    ],
+    "priorityGroup": "local_life",
+    "localLifeRank": 7,
+    "scenarioTags": [
+      "视频号",
+      "微信生态",
+      "直播到店",
+      "私域闭环"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "wechat-channels-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-event-marketing-planner",
+    "name": "本地活动与节假日营销专家",
+    "title": "开业、周末、淡旺季和节假日活动专家",
+    "avatar": "🎊",
+    "category": "content",
+    "sourcePath": "local-life/local-event-marketing-planner.md",
+    "aliases": [
+      "门店活动专家",
+      "节假日营销专家",
+      "开业活动专家"
+    ],
+    "summary": "把开业、会员日、周末、暑期、五一、国庆和淡季节点设计成能拉新、复购和到店的活动。",
+    "bestFor": [
+      "开业活动",
+      "会员日",
+      "节假日营销",
+      "淡季引流"
+    ],
+    "deliverables": [
+      "活动主题",
+      "优惠机制",
+      "宣传节奏",
+      "门店物料",
+      "社群话术",
+      "复盘指标"
+    ],
+    "playbook": [
+      "活动目标先定清",
+      "优惠要算毛利",
+      "门店物料和私域同步",
+      "活动后做老客沉淀"
+    ],
+    "recommendedToolIds": [
+      "event-planner",
+      "store-poster-generator",
+      "community-activity-script-generator",
+      "social-calendar-planner"
+    ],
+    "starterPrompts": [
+      "用本地活动与节假日营销专家帮我做一个周末到店活动",
+      "五一/暑期快到了，帮我设计一套本地门店活动方案"
+    ],
+    "sourceAgentId": "local-event-marketing-planner",
+    "priorityGroup": "local_life",
+    "localLifeRank": 8,
+    "scenarioTags": [
+      "节假日营销",
+      "开业活动",
+      "会员日",
+      "淡季引流"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "local-event-marketing-planner",
+    "contextScope": "owner"
+  },
+  {
+    "id": "store-visual-materials-specialist",
+    "name": "门店视觉物料专家",
+    "title": "门头、菜单、价目表、团购封面与海报专家",
+    "avatar": "🧾",
+    "category": "design",
+    "sourcePath": "local-life/store-visual-materials-specialist.md",
+    "aliases": [
+      "门店物料专家",
+      "菜单价目表专家",
+      "团购封面专家"
+    ],
+    "summary": "把门店项目、价格、活动和信任信息做成顾客看得懂、平台能用、员工能执行的视觉物料。",
+    "bestFor": [
+      "门店海报",
+      "菜单价目表",
+      "团购封面",
+      "门头橱窗"
+    ],
+    "deliverables": [
+      "菜单结构",
+      "价目表文案",
+      "活动海报",
+      "团购封面文案",
+      "版式建议",
+      "生图提示词"
+    ],
+    "playbook": [
+      "价格信息必须清晰",
+      "一张物料只突出一个主动作",
+      "平台封面要适配手机扫读",
+      "不使用虚假二维码和夸大承诺"
+    ],
+    "recommendedToolIds": [
+      "store-menu-generator",
+      "store-poster-generator",
+      "poster-generator",
+      "group-buy-package-generator"
+    ],
+    "starterPrompts": [
+      "用门店视觉物料专家帮我整理菜单和价目表",
+      "帮我把这个活动做成门店海报和团购封面文案"
+    ],
+    "sourceAgentId": "store-visual-materials-specialist",
+    "priorityGroup": "local_life",
+    "localLifeRank": 9,
+    "scenarioTags": [
+      "门店物料",
+      "菜单价目表",
+      "海报",
+      "团购封面"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "store-visual-materials-specialist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-sales-service-script-coach",
+    "name": "本地销售客服话术专家",
+    "title": "咨询转化、预约到店、报价与异议处理专家",
+    "avatar": "☎️",
+    "category": "sales",
+    "sourcePath": "local-life/local-sales-service-script-coach.md",
+    "aliases": [
+      "门店客服话术专家",
+      "预约到店话术专家",
+      "本地销售话术专家"
+    ],
+    "summary": "把微信咨询、电话咨询、到店邀约、报价说明和客户顾虑处理成自然不施压的话术。",
+    "bestFor": [
+      "咨询转化",
+      "预约到店",
+      "报价说明",
+      "异议处理"
+    ],
+    "deliverables": [
+      "首次回复",
+      "邀约到店话术",
+      "报价话术",
+      "顾虑处理",
+      "回访节奏",
+      "员工 SOP"
+    ],
+    "playbook": [
+      "先确认客户需求和距离",
+      "把价格放在价值之后",
+      "邀约要低压力",
+      "每次沟通只推进一个下一步"
+    ],
+    "recommendedToolIds": [
+      "customer-followup-generator",
+      "objection-handler",
+      "old-customer-recall-generator",
+      "quotation-generator"
+    ],
+    "starterPrompts": [
+      "用本地销售客服话术专家帮我写一套微信咨询到预约到店话术",
+      "客户嫌贵，帮我写一段自然的解释和跟进话术"
+    ],
+    "sourceAgentId": "local-sales-service-script-coach",
+    "priorityGroup": "local_life",
+    "localLifeRank": 10,
+    "scenarioTags": [
+      "咨询转化",
+      "预约到店",
+      "客服话术",
+      "报价异议"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "local-sales-service-script-coach",
+    "contextScope": "owner"
+  },
+  {
+    "id": "baidu-seo-specialist",
+    "name": "本地搜索与地图可见专家",
+    "title": "百度、高德、地图搜索与本地 SEO 专家",
+    "avatar": "🔎",
+    "category": "search",
+    "sourceAgentId": "marketing-baidu-seo-specialist",
+    "sourcePath": "marketing/marketing-baidu-seo-specialist.md",
+    "aliases": [
+      "百度 SEO 专家",
+      "本地搜索与地图可见专家",
+      "本地 SEO 专家"
+    ],
+    "summary": "帮助本地门店、教育机构、旅游公司在百度、高德、地图搜索和官网长尾内容里更容易被找到和信任。",
+    "bestFor": [
+      "本地搜索",
+      "地图店铺",
+      "官网获客",
+      "客户常问问题"
+    ],
+    "deliverables": [
+      "关键词地图",
+      "地图资料优化",
+      "FAQ 结构",
+      "本地 SEO 文章",
+      "内容缺口清单",
+      "站内标题建议"
+    ],
+    "playbook": [
+      "先按本地客户问题分组",
+      "地图资料补齐真实信息",
+      "正文要有可验证事实",
+      "FAQ 负责承接长尾搜索"
+    ],
+    "recommendedToolIds": [
+      "seo-article-writer",
+      "content-gap-planner",
+      "faq-builder",
+      "product-intro-generator"
+    ],
+    "starterPrompts": [
+      "用本地搜索与地图可见专家帮我优化百度/高德/地图和官网内容",
+      "把这些客户问题整理成本地 SEO 的 FAQ 和文章大纲"
+    ],
+    "priorityGroup": "local_life",
+    "localLifeRank": 11,
+    "scenarioTags": [
+      "本地搜索",
+      "百度",
+      "地图可见",
+      "本地 SEO"
+    ],
+    "businessSegments": [
+      "本地小公司",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "baidu-seo-specialist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-budget-paid-media-strategist",
+    "name": "小预算投放策略师",
+    "title": "本地推、薯条、朋友圈广告与美团推广专家",
+    "avatar": "💸",
+    "category": "paid_media",
+    "sourcePath": "local-life/local-budget-paid-media-strategist.md",
+    "aliases": [
+      "本地小预算投放专家",
+      "本地推投放专家",
+      "门店投放专家"
+    ],
+    "summary": "帮助小门店用有限预算测试本地推、薯条、朋友圈广告、美团推广等渠道，先验证线索和到店成本。",
+    "bestFor": [
+      "本地推",
+      "薯条",
+      "朋友圈广告",
+      "美团推广"
+    ],
+    "deliverables": [
+      "预算分配",
+      "投放测试表",
+      "素材方向",
+      "人群设置",
+      "止损线",
+      "复盘指标"
+    ],
+    "playbook": [
+      "先小额测试",
+      "只看曝光不够",
+      "必须追到咨询/到店/核销",
+      "预算不稳定时先优化自然流量"
+    ],
+    "recommendedToolIds": [
+      "store-poster-generator",
+      "store-short-video-script-generator",
+      "content-review-loop",
+      "daily-store-review-assistant"
+    ],
+    "starterPrompts": [
+      "用小预算投放策略师帮我安排 1000 元本地获客测试",
+      "我想投本地推/薯条/朋友圈广告，帮我判断先投什么"
+    ],
+    "sourceAgentId": "local-budget-paid-media-strategist",
+    "priorityGroup": "local_life",
+    "localLifeRank": 12,
+    "scenarioTags": [
+      "小预算投放",
+      "本地推",
+      "薯条",
+      "朋友圈广告",
+      "美团推广"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "local-budget-paid-media-strategist",
+    "contextScope": "owner"
+  },
+  {
+    "id": "education-enrollment-growth",
+    "name": "教育招生增长专家",
+    "title": "试听课、家长沟通与本地招生活动专家",
+    "avatar": "🎒",
+    "category": "content",
+    "sourcePath": "local-life/education-enrollment-growth.md",
+    "aliases": [
+      "教培招生专家",
+      "本地教育招生专家",
+      "试听课转化专家"
+    ],
+    "summary": "面向少儿编程、素质教育、托管、自习室和本地培训机构，设计试听课、家长沟通和招生转化。",
+    "bestFor": [
+      "本地教育",
+      "试听课报名",
+      "家长沟通",
+      "暑期招生"
+    ],
+    "deliverables": [
+      "课程卖点",
+      "试听课活动",
+      "家长沟通话术",
+      "招生内容",
+      "报名转化路径",
+      "合规表达提醒"
+    ],
+    "playbook": [
+      "先讲孩子和家长的真实结果",
+      "试听课降低决策门槛",
+      "家长信任来自老师和案例",
+      "避免升学保过等违规承诺"
+    ],
+    "recommendedToolIds": [
+      "event-planner",
+      "community-activity-script-generator",
+      "old-customer-recall-generator",
+      "store-xiaohongshu-note-generator"
+    ],
+    "starterPrompts": [
+      "用教育招生增长专家帮我做暑期招生方案",
+      "我有一个少儿编程/素质教育机构，帮我设计试听课转化路径"
+    ],
+    "sourceAgentId": "education-enrollment-growth",
+    "priorityGroup": "local_life",
+    "localLifeRank": 13,
+    "scenarioTags": [
+      "本地教育",
+      "招生",
+      "试听课",
+      "家长沟通"
+    ],
+    "businessSegments": [
+      "本地教育",
+      "培训机构",
+      "托管机构"
+    ],
+    "hermesSkill": "education-enrollment-growth",
+    "contextScope": "owner"
+  },
+  {
+    "id": "education-retention-referral",
+    "name": "教育续班与转介绍专家",
+    "title": "续费、老带新、班课包装与家长复购专家",
+    "avatar": "📚",
+    "category": "private_domain",
+    "sourcePath": "local-life/education-retention-referral.md",
+    "aliases": [
+      "续班专家",
+      "教育转介绍专家",
+      "老带新专家"
+    ],
+    "summary": "帮助教育机构把课程成果、家长沟通、续班节点和老带新机制做成可执行的私域运营。",
+    "bestFor": [
+      "续班续费",
+      "老带新",
+      "家长群运营",
+      "学习成果展示"
+    ],
+    "deliverables": [
+      "续班话术",
+      "成果展示模板",
+      "老带新机制",
+      "家长群节奏",
+      "流失预警",
+      "复购 SOP"
+    ],
+    "playbook": [
+      "续班靠过程可见",
+      "转介绍必须低压力",
+      "家长群先给反馈再做转化",
+      "退费和承诺边界要讲清楚"
+    ],
+    "recommendedToolIds": [
+      "community-activity-script-generator",
+      "old-customer-recall-generator",
+      "customer-followup-generator",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用教育续班与转介绍专家帮我设计老带新活动",
+      "帮我写一套家长续班沟通和成果展示话术"
+    ],
+    "sourceAgentId": "education-retention-referral",
+    "priorityGroup": "local_life",
+    "localLifeRank": 14,
+    "scenarioTags": [
+      "本地教育",
+      "续班",
+      "转介绍",
+      "家长群"
+    ],
+    "businessSegments": [
+      "本地教育",
+      "培训机构",
+      "托管机构"
+    ],
+    "hermesSkill": "education-retention-referral",
+    "contextScope": "owner"
+  },
+  {
+    "id": "tourism-product-route-operator",
+    "name": "旅游产品线路运营专家",
+    "title": "线路包装、亲子/研学/小团产品与内容转化专家",
+    "avatar": "🧳",
+    "category": "commerce",
+    "sourcePath": "local-life/tourism-product-route-operator.md",
+    "aliases": [
+      "旅游线路专家",
+      "旅行社产品专家",
+      "研学线路专家"
+    ],
+    "summary": "为旅行社、地接社、研学机构和本地文旅服务商设计线路包装、卖点、行程说明和内容转化。",
+    "bestFor": [
+      "旅行社线路",
+      "亲子游",
+      "研学游",
+      "小团定制"
+    ],
+    "deliverables": [
+      "线路卖点",
+      "行程包装",
+      "价格说明",
+      "小红书/抖音内容角度",
+      "咨询话术",
+      "风险提示"
+    ],
+    "playbook": [
+      "先明确人群和出发地",
+      "线路卖点要具体到体验",
+      "价格包含/不含讲清楚",
+      "旺季库存和退改边界前置"
+    ],
+    "recommendedToolIds": [
+      "product-intro-generator",
+      "store-xiaohongshu-note-generator",
+      "store-short-video-script-generator",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用旅游产品线路运营专家帮我包装一条亲子/研学线路",
+      "旅行社五一线路怎么包装到小红书和抖音卖"
+    ],
+    "sourceAgentId": "tourism-product-route-operator",
+    "priorityGroup": "local_life",
+    "localLifeRank": 15,
+    "scenarioTags": [
+      "旅游",
+      "线路包装",
+      "亲子游",
+      "研学游"
+    ],
+    "businessSegments": [
+      "旅行社",
+      "地接社",
+      "文旅服务"
+    ],
+    "hermesSkill": "tourism-product-route-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "tourism-season-ota-growth",
+    "name": "旅游旺季与 OTA 增长专家",
+    "title": "携程、飞猪、马蜂窝与旺季营销专家",
+    "avatar": "🗺️",
+    "category": "commerce",
+    "sourcePath": "local-life/tourism-season-ota-growth.md",
+    "aliases": [
+      "OTA 增长专家",
+      "旅游旺季营销专家",
+      "携程飞猪运营专家"
+    ],
+    "summary": "围绕寒暑假、五一、国庆、春节等旅游旺季，联动 OTA、私域、小红书和抖音做获客与转化。",
+    "bestFor": [
+      "携程/飞猪",
+      "马蜂窝",
+      "节假日旅游",
+      "旺季排期"
+    ],
+    "deliverables": [
+      "旺季日历",
+      "OTA 页面优化",
+      "内容排期",
+      "咨询承接 SOP",
+      "库存风险",
+      "复盘指标"
+    ],
+    "playbook": [
+      "提前按节假日反推内容",
+      "OTA 页面先讲清信任和退改",
+      "社媒负责种草和咨询",
+      "旺季更要控制超卖和投诉"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "product-intro-generator",
+      "faq-builder",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用旅游旺季与 OTA 增长专家帮我做五一/暑期获客排期",
+      "帮我优化旅游产品在携程/飞猪/小红书上的转化表达"
+    ],
+    "sourceAgentId": "tourism-season-ota-growth",
+    "priorityGroup": "local_life",
+    "localLifeRank": 16,
+    "scenarioTags": [
+      "旅游旺季",
+      "OTA",
+      "携程",
+      "飞猪",
+      "小红书旅游"
+    ],
+    "businessSegments": [
+      "旅行社",
+      "地接社",
+      "文旅服务"
+    ],
+    "hermesSkill": "tourism-season-ota-growth",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-business-data-reviewer",
+    "name": "本地数据复盘分析师",
+    "title": "平台后台、线索、核销、复购与经营数据复盘专家",
+    "avatar": "📈",
+    "category": "intelligence",
+    "sourcePath": "local-life/local-business-data-reviewer.md",
+    "aliases": [
+      "门店数据复盘专家",
+      "本地经营复盘专家",
+      "平台数据分析师"
+    ],
+    "summary": "把平台后台截图、播放/收藏/咨询、团购核销、营业额、客流和复购数据整理成下一轮动作。",
+    "bestFor": [
+      "平台数据复盘",
+      "团购核销",
+      "线索转化",
+      "门店经营复盘"
+    ],
+    "deliverables": [
+      "数据摘要",
+      "问题定位",
+      "下周动作",
+      "渠道判断",
+      "复盘表",
+      "老板看板口径"
+    ],
+    "playbook": [
+      "先区分曝光、咨询、到店、复购",
+      "少看虚荣指标",
+      "把数据转成下周动作",
+      "缺数据时先补记录口径"
+    ],
+    "recommendedToolIds": [
+      "daily-store-review-assistant",
+      "content-review-loop",
+      "social-calendar-planner"
+    ],
+    "starterPrompts": [
+      "用本地数据复盘分析师帮我看这组门店数据下一步怎么做",
+      "我有平台后台截图/团购核销数据，帮我复盘获客问题"
+    ],
+    "sourceAgentId": "local-business-data-reviewer",
+    "priorityGroup": "local_life",
+    "localLifeRank": 17,
+    "scenarioTags": [
+      "经营复盘",
+      "平台数据",
+      "线索",
+      "核销",
+      "复购"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "local-business-data-reviewer",
+    "contextScope": "owner"
+  },
+  {
+    "id": "local-compliance-expression-advisor",
+    "name": "本地合规表达顾问",
+    "title": "广告法、价格、退费、教育与旅游表达风控顾问",
+    "avatar": "⚖️",
+    "category": "legal",
+    "sourcePath": "local-life/local-compliance-expression-advisor.md",
+    "aliases": [
+      "本地营销合规顾问",
+      "广告法表达顾问",
+      "教育旅游合规顾问"
+    ],
+    "summary": "在门店、教育、旅游营销内容中检查极限词、价格退费、资质、肖像、广告法和行业承诺风险。",
+    "bestFor": [
+      "广告法",
+      "教育合规",
+      "旅游合同/退改",
+      "价格说明"
+    ],
+    "deliverables": [
+      "风险表达清单",
+      "替代表述",
+      "价格/退费说明",
+      "资质提示",
+      "人工复核建议"
+    ],
+    "playbook": [
+      "先保真实和可兑现",
+      "极限词和保过承诺要删",
+      "价格/退费/适用范围写清楚",
+      "高风险事项建议专业法务复核"
+    ],
+    "recommendedToolIds": [
+      "content-review-loop",
+      "faq-builder"
+    ],
+    "starterPrompts": [
+      "用本地合规表达顾问帮我检查这段门店/教育/旅游宣传文案",
+      "帮我把这个活动说明改得更合规，尤其是价格、退费和承诺边界"
+    ],
+    "sourceAgentId": "local-compliance-expression-advisor",
+    "priorityGroup": "local_life",
+    "localLifeRank": 18,
+    "scenarioTags": [
+      "广告法",
+      "合规表达",
+      "退费说明",
+      "教育旅游风控"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "local-compliance-expression-advisor",
+    "contextScope": "owner"
+  },
+  {
+    "id": "wechat-operator",
+    "name": "微信公众号信任内容专家",
+    "title": "案例长文、活动说明与机构背书专家",
+    "avatar": "💬",
+    "category": "content",
+    "sourceAgentId": "marketing-wechat-operator",
+    "sourcePath": "marketing/marketing-wechat-operator.md",
+    "aliases": [
+      "微信公众号运营",
+      "微信公众号信任内容专家",
+      "本地公众号内容专家"
+    ],
+    "summary": "适合把本地机构案例、课程/线路说明、活动规则和老板观点整理成公众号长文、社群转发语和信任背书。",
+    "bestFor": [
+      "本地机构信任",
+      "课程说明",
+      "旅游线路说明",
+      "老客户教育"
+    ],
+    "deliverables": [
+      "公众号标题",
+      "文章大纲",
+      "正文草稿",
+      "案例结构",
+      "头图海报",
+      "社群转发话术"
+    ],
+    "playbook": [
+      "开头先建立阅读理由",
+      "主体用 3-5 个小标题",
+      "用真实案例增强信任",
+      "结尾给出低压力行动"
+    ],
+    "recommendedToolIds": [
+      "poster-generator",
+      "wechat-article-generator",
+      "social-calendar-planner",
+      "content-review-loop"
+    ],
+    "starterPrompts": [
+      "用微信公众号信任内容专家帮我写一篇机构案例或活动说明",
+      "把这个客户/学员/游客案例改成公众号文章和朋友圈转发语"
+    ],
+    "priorityGroup": "local_life",
+    "localLifeRank": 19,
+    "scenarioTags": [
+      "公众号",
+      "信任内容",
+      "案例长文",
+      "机构背书"
+    ],
+    "businessSegments": [
+      "本地小公司",
+      "本地教育",
+      "旅游服务"
+    ],
+    "hermesSkill": "wechat-operator",
+    "contextScope": "owner"
+  },
+  {
+    "id": "content-creator",
+    "name": "跨平台内容编排师",
+    "title": "一鱼多吃与内容矩阵改写专家",
+    "avatar": "✍️",
+    "category": "content",
+    "sourceAgentId": "marketing-content-creator",
+    "sourcePath": "marketing/marketing-content-creator.md",
+    "summary": "只在用户明确要多平台复用、内容矩阵或把已有素材改写成多种表达时接手；单独写公众号、小红书、朋友圈或短视频时应交给对应平台专家。",
+    "bestFor": [
+      "一鱼多吃",
+      "跨平台内容矩阵",
+      "已有素材二次改写",
+      "品牌表达统一"
+    ],
+    "deliverables": [
+      "多平台内容编排表",
+      "核心信息提炼",
+      "渠道表达差异",
+      "改写版本包",
+      "CTA 版本",
+      "复用顺序建议"
+    ],
+    "playbook": [
+      "先确定核心事实和主张",
+      "再按渠道拆分信息密度",
+      "保留统一品牌表达",
+      "把单平台深度生产交回对应专家"
+    ],
+    "recommendedToolIds": [
+      "social-calendar-planner",
+      "content-review-loop",
+      "wechat-article-generator",
+      "xiaohongshu-note-generator"
+    ],
+    "starterPrompts": [
+      "用跨平台内容编排师把这个产品卖点改成公众号、小红书和朋友圈三版",
+      "把这个客户案例改成更像经营者本人说的话"
+    ],
+    "priorityGroup": "local_life",
+    "localLifeRank": 20,
+    "scenarioTags": [
+      "跨平台内容",
+      "内容矩阵",
+      "一鱼多吃",
+      "活动拆分"
+    ],
+    "businessSegments": [
+      "通用门店",
+      "本地教育",
+      "旅游服务"
+    ],
+    "aliases": [],
+    "hermesSkill": "content-creator",
+    "contextScope": "owner"
+  }
+]

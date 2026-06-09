@@ -1,16 +1,9 @@
 #!/usr/bin/env python3
-"""
-QeeClaw Hermes Bridge Server
+"""Legacy helpers for compatibility routers.
 
-一个轻量级 HTTP 服务，充当 TypeScript SDK 与 Python hermes-agent 之间的桥梁。
-SDK 侧的 HermesAdapter 通过 HTTP 调用此服务，此服务再调用 hermes-agent 的核心 AIAgent。
-
-设计原则：
-- 零修改 hermes-agent 源码
-- 此文件是唯一需要理解 hermes-agent 内部结构的适配层
-- 所有 hermes-agent 的 API 变更只需在此文件中适配
-
-端口默认：21747
+The runnable Bridge entrypoint is ``bridge.main:cli``. This module keeps the
+older AgentPool, local store helpers, and request handler code available while
+compatibility routers are migrated into package modules.
 """
 
 import asyncio
@@ -51,12 +44,14 @@ BRIDGE_VERSION = "0.2.0"
 # ---------------------------------------------------------------------------
 
 _server_config: Dict[str, Any] = {}
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+_REPO_ROOT = _PACKAGE_ROOT.parents[1]
 
 def _load_config() -> Dict[str, Any]:
     """从 config.yaml 加载配置，如文件不存在则返回空 dict。"""
     config_path = os.environ.get(
         "QEECLAW_CONFIG_FILE",
-        os.path.join(os.path.dirname(__file__), "..", "..", "server", "config.yaml"),
+        str(_REPO_ROOT / "server" / "config.yaml"),
     )
     config_path = os.path.abspath(config_path)
     if os.path.isfile(config_path) and _HAS_YAML:
@@ -453,8 +448,7 @@ def _install_openai_trace_hooks() -> bool:
 
 
 def _resolve_repo_default_path(*relative_candidates: str) -> str:
-    here = os.path.dirname(__file__)
-    resolved = [os.path.abspath(os.path.join(here, candidate)) for candidate in relative_candidates]
+    resolved = [os.path.abspath(os.path.join(_PACKAGE_ROOT, candidate)) for candidate in relative_candidates]
     for path in resolved:
         if os.path.exists(path):
             return path
@@ -649,14 +643,6 @@ def _body_value(body: Dict[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
         if key in body and body.get(key) is not None:
             return body.get(key)
-    return default
-
-
-def _query_value(params: Dict[str, List[str]], *keys: str, default: Any = None) -> Any:
-    for key in keys:
-        values = params.get(key)
-        if values and values[0] is not None:
-            return values[0]
     return default
 
 
@@ -7071,8 +7057,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            team_id = int(_query_value(params, "team_id", "teamId", default=1) or 1)
-            channel_key = _query_value(params, "channel_key", "channelKey", default="wechat_personal_plugin")
+            team_id = int((params.get("team_id") or ["1"])[0])
+            channel_key = (params.get("channel_key") or ["wechat_personal_plugin"])[0]
             bindings = [
                 item for item in _load_channel_bindings()
                 if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
@@ -7091,8 +7077,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         try:
             qs = urllib.parse.urlparse(self.path).query
             params = urllib.parse.parse_qs(qs)
-            team_id = int(_query_value(params, "team_id", "teamId", default=1) or 1)
-            channel_key = _query_value(params, "channel_key", "channelKey", default="wechat_personal_plugin")
+            team_id = int((params.get("team_id") or ["1"])[0])
+            channel_key = (params.get("channel_key") or ["wechat_personal_plugin"])[0]
             storage_dir = os.path.dirname(_CHANNELS_BINDINGS_FILE)
             storage_parent = os.path.dirname(storage_dir) or storage_dir
             storage_file_exists = os.path.isfile(_CHANNELS_BINDINGS_FILE)
@@ -7142,7 +7128,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/create — 创建绑定。"""
         try:
             body = _read_json_body(self)
-            channel_key = _body_value(body, "channel_key", "channelKey", default="wechat_personal_plugin")
+            channel_key = body.get("channel_key", "wechat_personal_plugin")
             if channel_key == "wechat_personal_plugin":
                 plugin_config = _load_wechat_personal_plugin_channel_config()
                 if not bool(plugin_config.get("configured")):
@@ -7170,7 +7156,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/disable — 禁用绑定。"""
         try:
             body = _read_json_body(self)
-            binding_id = int(_body_value(body, "binding_id", "bindingId", default=0) or 0)
+            binding_id = int(body.get("binding_id", 0))
             binding = _disable_channel_binding_record(binding_id)
             if binding is None:
                 _platform_json_response(self, 404, None, f"binding {binding_id} not found")
@@ -7184,8 +7170,8 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         """POST /api/platform/channels/bindings/regenerate-code — 重新生成绑定码。"""
         try:
             body = _read_json_body(self)
-            expires_hours = int(_body_value(body, "expires_in_hours", "expiresInHours", default=72) or 72)
-            binding_id = int(_body_value(body, "binding_id", "bindingId", default=0) or 0)
+            expires_hours = int(body.get("expires_in_hours", 72))
+            binding_id = int(body.get("binding_id", 0))
             binding = _regenerate_channel_binding_code_record(binding_id, expires_hours=expires_hours)
             if binding is None:
                 _platform_json_response(self, 404, None, f"binding {binding_id} not found")
@@ -8399,150 +8385,3 @@ def _stop_hud():
         except subprocess.TimeoutExpired:
             _hud_process.kill()
         _hud_process = None
-
-
-def main():
-    """启动 bridge HTTP 服务。"""
-    print(f"[hermes-bridge] ======================================")
-    print(f"[hermes-bridge] QeeClaw Hermes Bridge v{BRIDGE_VERSION}")
-    print(f"[hermes-bridge] ======================================")
-    print(f"[hermes-bridge] Host: {_DISPLAY_HOST}")
-    print(f"[hermes-bridge] Port: {BRIDGE_PORT}")
-    print(f"[hermes-bridge] Auth mode: {_AUTH_MODE}")
-    if _AUTH_MODE == "local":
-        print(f"[hermes-bridge] API keys loaded: {len(_AUTH_API_KEYS)}")
-    print(f"[hermes-bridge] CORS origins: {_CORS_ORIGINS}")
-    print(f"[hermes-bridge] Hermes agent dir: {os.path.abspath(HERMES_AGENT_DIR)}")
-    print(f"[hermes-bridge] Hermes hud dir: {os.path.abspath(HUD_DIR)}")
-    print(f"[hermes-bridge] Python: {sys.version}")
-    print(f"[hermes-bridge] Config file: {os.environ.get('QEECLAW_CONFIG_FILE', '(default)')}")
-
-    _ensure_hermes_on_path()
-    if _hermes_error:
-        print(f"[hermes-bridge] WARNING: {_hermes_error}")
-    else:
-        print("[hermes-bridge] Hermes agent directory found.")
-
-    # 初始化 AgentPool（加载 AIAgent 类）
-    pool = get_agent_pool()
-    if pool.available:
-        print("[hermes-bridge] AgentPool: AIAgent mode ENABLED (full tool calling)")
-    else:
-        print(f"[hermes-bridge] AgentPool: FALLBACK mode (raw LLM) — {pool._init_error or 'unknown'}")
-    print(f"[hermes-bridge] AgentPool: base HERMES_HOME = {pool._base_hermes_home}")
-    print(f"[hermes-bridge] AgentPool: profiles dir = {pool.profiles_home}")
-
-    # 初始化知识库
-    try:
-        from knowledge_store import init_knowledge_store, get_kb_stats
-        kb_err = init_knowledge_store()
-        if kb_err:
-            print(f"[hermes-bridge] Knowledge base: UNAVAILABLE ({kb_err})")
-        else:
-            stats = get_kb_stats()
-            print(f"[hermes-bridge] Knowledge base: OK ({stats['document_count']} docs, {stats['chunk_count']} chunks)")
-            print(f"[hermes-bridge] KB storage: {stats['storage_dir']}")
-    except ImportError:
-        print("[hermes-bridge] Knowledge base: UNAVAILABLE (chromadb or local embedding runtime not installed)")
-    except Exception as e:
-        print(f"[hermes-bridge] Knowledge base: ERROR ({e})")
-
-    # 启动云端反连隧道
-    try:
-        from cloud_tunnel import start_tunnel, get_tunnel_status
-        tunnel_started = start_tunnel()
-        if tunnel_started:
-            print(f"[hermes-bridge] Cloud tunnel: CONNECTING → {os.environ.get('NEXUS_URL', '')}")
-        else:
-            print("[hermes-bridge] Cloud tunnel: DISABLED (set NEXUS_URL + NEXUS_API_KEY to enable)")
-    except ImportError:
-        print("[hermes-bridge] Cloud tunnel: UNAVAILABLE (websockets not installed)")
-    except Exception as e:
-        print(f"[hermes-bridge] Cloud tunnel: ERROR ({e})")
-
-    # 启动 HUD 子服务
-    _start_hud()
-
-    class ReusableThreadingHTTPServer(ThreadingHTTPServer):
-        allow_reuse_address = True
-
-    server = ReusableThreadingHTTPServer((BRIDGE_HOST, BRIDGE_PORT), BridgeRequestHandler)
-
-    def _handle_shutdown_signal(signum, _frame):
-        print(f"\n[hermes-bridge] Received signal {signum}; shutting down.")
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, _handle_shutdown_signal)
-    signal.signal(signal.SIGINT, _handle_shutdown_signal)
-
-    print(f"[hermes-bridge] Listening at http://{_DISPLAY_HOST}:{BRIDGE_PORT}")
-    print("[hermes-bridge] Endpoints:")
-    print("  GET  /health                     - 健康检查 (免鉴权)")
-    print("  POST /invoke                     - 非流式模型调用 (自动 RAG)")
-    print("  POST /invoke/stream              - 流式模型调用 (SSE, 自动 RAG)")
-    print("  --- Sessions (多人多轮对话) ---")
-    print("  GET  /sessions                   - 列出会话")
-    print("  GET  /sessions/stats             - 会话统计")
-    print("  GET  /sessions/{id}              - 获取会话详情")
-    print("  POST /sessions                   - 创建会话")
-    print("  POST /sessions/{id}/clear        - 清空会话历史")
-    print("  POST /sessions/{id}/delete       - 删除会话")
-    print("  --- Agents (多智体) ---")
-    print("  GET  /agents                     - 列出智体")
-    print("  GET  /agents/{name}              - 获取智体详情")
-    print("  POST /agents                     - 创建/更新智体")
-    print("  POST /agents/{name}/delete       - 删除智体")
-    print("  --- Knowledge Base ---")
-    print("  POST /knowledge/upload           - 上传文档到知识库")
-    print("  GET  /knowledge/list             - 列出所有文档")
-    print("  GET  /knowledge/document/<id>    - 获取文档详情")
-    print("  POST /knowledge/search           - 向量检索")
-    print("  POST /knowledge/delete/<id>      - 删除文档")
-    print("  GET  /knowledge/stats            - 知识库统计")
-    print("  --- Gateway ---")
-    print("  GET  /gateway/status             - Gateway 运行状态")
-    print("  GET  /gateway/platforms          - 已配置的平台列表")
-    print("  GET  /gateway/supported-platforms - 支持的全部平台")
-    print("  POST /gateway/start              - 启动 Gateway")
-    print("  POST /gateway/stop               - 停止 Gateway")
-    print("  POST /gateway/configure          - 配置平台凭证")
-    print("  --- WeChat (个人微信) ---")
-    print("  GET  /wechat/check               - 检查微信依赖")
-    print("  GET  /wechat/status               - 微信状态总览")
-    print("  GET  /wechat/credentials          - 凭证摘要")
-    print("  POST /wechat/qr-login             - 发起 QR 扫码登录")
-    print("  POST /wechat/qr-cancel            - 取消 QR 登录")
-    print("  POST /wechat/configure            - 配置 DM/群聊策略")
-    print("  POST /wechat/send                 - 发送微信消息")
-    print("  POST /wechat/adapter/start        - 启动长轮询适配器")
-    print("  POST /wechat/adapter/stop         - 停止长轮询适配器")
-    print("  --- SDK 兼容 (/api/agent/*) ---")
-    print("  GET  /api/agent/my-agents          - 列出智体 (SDK 格式)")
-    print("  GET  /api/agent/tools              - 列出系统工具")
-    print("  POST /api/agent/create             - 创建智体 (SDK 格式)")
-    print("  PUT  /api/agent/{id}               - 更新智体 (SDK 格式)")
-    print("  --- Memory (/memory/* 本地记忆) ---")
-    print("  POST /memory/store                   - 存入记忆")
-    print("  POST /memory/search                  - 搜索记忆")
-    print("  GET  /memory/stats                   - 记忆统计")
-    print("  DELETE /memory/{id}                  - 删除单条记忆")
-    print("  POST /memory/clear                   - 清除 agent 全部记忆")
-    print("  --- Legacy SDK 兼容 (/api/platform/memory/*) ---")
-    print("  /api/platform/memory/*               - 旧平台命名空间兼容入口")
-
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n[hermes-bridge] Shutting down.")
-    finally:
-        try:
-            from cloud_tunnel import stop_tunnel
-            stop_tunnel()
-        except Exception:
-            pass
-        _stop_hud()
-        server.server_close()
-
-
-if __name__ == "__main__":
-    main()

@@ -451,6 +451,26 @@ def _load_credentials_to_env():
         return False
 
 
+def list_recent_chat_ids(limit: int = 5) -> List[str]:
+    """列出最近可直发的微信会话 ID，不返回 context token 明文。"""
+    _load_credentials_to_env()
+    account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")
+    if not account_id:
+        return []
+
+    try:
+        token_file = Path(_get_hermes_home()) / "weixin" / "accounts" / f"{account_id}.context-tokens.json"
+        if not token_file.exists():
+            return []
+        data = json.loads(token_file.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return []
+        return [str(chat_id) for chat_id in list(data.keys())[: max(0, limit)] if str(chat_id).strip()]
+    except Exception as exc:
+        logger.warning(f"[wechat] Failed to list recent chat ids: {exc}")
+        return []
+
+
 
 def configure_wechat(config: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -494,6 +514,8 @@ def send_message(chat_id: str, message: str, media_files: Optional[List[str]] = 
 
     使用 hermes-agent 的 send_weixin_direct() 函数。
     """
+    _load_credentials_to_env()
+
     account_id = os.environ.get("WEIXIN_ACCOUNT_ID", "")
     token = os.environ.get("WEIXIN_TOKEN", "")
     base_url = os.environ.get("WEIXIN_BASE_URL", "")
@@ -542,7 +564,7 @@ def send_message(chat_id: str, message: str, media_files: Optional[List[str]] = 
 # 完整适配器生命周期管理
 # ---------------------------------------------------------------------------
 
-# 全局 AgentPool 引用（从 bridge_server 导入）
+# 全局 AgentPool 引用（从 legacy helper 导入）
 _agent_pool = None
 
 
@@ -551,9 +573,9 @@ def _get_agent_pool():
     global _agent_pool
     if _agent_pool is None:
         try:
-            # 从 bridge_server 导入 AgentPool
-            import bridge_server
-            _agent_pool = bridge_server.get_agent_pool()
+            # 从内部 legacy helper 导入 AgentPool
+            from bridge import legacy_server
+            _agent_pool = legacy_server.get_agent_pool()
         except Exception as e:
             logger.error(f"Failed to get AgentPool: {e}")
     return _agent_pool
@@ -633,36 +655,152 @@ def _record_wechat_conversation_turn(text: str, reply: str, sender_id: str, chat
         logger.warning(f"[wechat] Failed to record conversation history: {e}")
 
 
+def _build_wechat_app_im_event(text: str, sender_id: str, chat_id: str) -> Dict[str, Any]:
+    owner_id = os.environ.get("WEIXIN_EDGE_OWNER_ID", "owner_default")
+    conversation_id = os.environ.get("WEIXIN_EDGE_CONVERSATION_ID", "main")
+    http_timeout = float(os.environ.get("WEIXIN_AI_TIMEOUT", "60"))
+    sync_timeout = float(os.environ.get("WEIXIN_AI_SYNC_REPLY_TIMEOUT", str(max(1, http_timeout - 5))))
+    return {
+        "channel_key": "app_im",
+        "conversation_key": conversation_id,
+        "external_message_id": f"wechat:{chat_id}:{sender_id}:{text}",
+        "sender_id": owner_id,
+        "sender_name": sender_id,
+        "direction": "inbound",
+        "content": text,
+        "sync_reply_timeout_ms": int(sync_timeout * 1000),
+        "metadata": {
+            "supervisor_session_id": f"edge:{owner_id}:supervisor:{conversation_id}",
+            "source_channel_key": "wechat_personal_openclaw",
+            "source_chat_id": chat_id,
+            "source_sender_id": sender_id,
+            "action": {"type": "free_text", "text": text},
+        },
+    }
+
+
+def _extract_wechat_ai_reply(result: Dict[str, Any]) -> str:
+    reply = result.get("reply")
+    if isinstance(reply, dict) and reply.get("text"):
+        return _sanitize_wechat_outbound_reply(str(reply.get("text") or ""))
+
+    if result.get("mode") == "accepted_async":
+        return str((reply or {}).get("text") if isinstance(reply, dict) else "收到，正在处理")
+
+    if result.get("code") == 0:
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        return _sanitize_wechat_outbound_reply(str(data.get("text") or "抱歉，我暂时没有生成有效回复。"))
+
+    if "text" in result:
+        return _sanitize_wechat_outbound_reply(str(result.get("text") or "抱歉，我暂时没有生成有效回复。"))
+
+    raise RuntimeError(result.get("message") or result.get("error") or "本地模型调用失败")
+
+
+def _sanitize_wechat_outbound_reply(text: str) -> str:
+    cleaned = text.strip()
+    if not cleaned:
+        return "已收到，结果已在 Edge 主对话里生成。"
+    fallback = "已收到，结果已在 Edge 主对话里生成。"
+    cleaned = _strip_leading_tool_json_for_wechat(cleaned)
+    if not cleaned:
+        return fallback
+
+    try:
+        parsed = json.loads(cleaned)
+        if isinstance(parsed, dict):
+            card_type = str(parsed.get("card_type") or "")
+            if card_type == "result_preview":
+                card_text = _result_preview_text_for_wechat(parsed)
+                return _sanitize_wechat_outbound_reply(card_text) if card_text else fallback
+            if card_type in {"operation_log", "work_plan", "executing"}:
+                return fallback
+    except Exception:
+        pass
+
+    internal_markers = [
+        '"agent_prompt"',
+        '"system_prompt"',
+        '"ownerContext"',
+        '"businessContext"',
+        '"full_output"',
+        '"tool_name"',
+        "You are a",
+        "Knowledge cutoff",
+    ]
+    if any(marker in cleaned for marker in internal_markers):
+        return fallback
+    max_chars = int(os.environ.get("WEIXIN_MAX_SYNC_REPLY_CHARS", "1200"))
+    if len(cleaned) > max_chars:
+        suffix = "\n\n完整内容已在 Edge 主对话里生成。"
+        return cleaned[: max(0, max_chars - len(suffix))].rstrip() + suffix
+    return cleaned
+
+
+def _strip_leading_tool_json_for_wechat(text: str) -> str:
+    if not text.startswith("{"):
+        return text
+    decoder = json.JSONDecoder()
+    try:
+        parsed, end_index = decoder.raw_decode(text)
+    except Exception:
+        return text
+    if not isinstance(parsed, dict):
+        return text
+    if not {"output", "exit_code", "error"}.issubset(parsed.keys()):
+        return text
+    return text[end_index:].strip()
+
+
+def _result_preview_text_for_wechat(card: Dict[str, Any]) -> str:
+    data = card.get("data") if isinstance(card.get("data"), dict) else {}
+    full_output = str(data.get("full_output") or "").strip()
+    if full_output:
+        return full_output
+    speech = str(card.get("speech") or "").strip()
+    preview = str(data.get("preview") or "").strip()
+    summary = str(card.get("summary") or data.get("summary") or "").strip()
+    image_url = str(card.get("imageUrl") or data.get("imageUrl") or "").strip()
+    body = "\n\n".join(part for part in [speech, summary or preview] if part)
+    if image_url:
+        image_line = f"配图：{image_url}"
+        return "\n\n".join(part for part in [body, image_line] if part)
+    return body
+
+
 def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:
     import json as json_module
     import urllib.request
 
     bridge_url = os.environ.get(
         "WEIXIN_AI_INVOKE_URL",
-        "http://127.0.0.1:21747/invoke",
+        "http://127.0.0.1:21747/api/channels/events",
     )
-    agent_profile = os.environ.get("WEIXIN_AGENT_PROFILE", "edge_supervisor")
-    request_data = {
-        "prompt": text,
-        "session_id": f"wechat:{chat_id}",
-        "user_id": sender_id,
-        "agent_profile": agent_profile,
-    }
-    if os.environ.get("WEIXIN_AI_SYSTEM_PROMPT"):
-        request_data["system_prompt"] = (
-            os.environ["WEIXIN_AI_SYSTEM_PROMPT"]
-            + "\n\n"
-            + _build_wechat_date_context()
-        )
+    if bridge_url.rstrip("/").endswith("/api/channels/events"):
+        request_data = _build_wechat_app_im_event(text, sender_id, chat_id)
+    else:
+        agent_profile = os.environ.get("WEIXIN_AGENT_PROFILE", "default")
+        request_data = {
+            "prompt": text,
+            "system_prompt": (
+                "你是 qeeshu-centaurai-edge 的 AI 老板秘书，运行在用户本地 QeeClaw Server。"
+                "请用简洁、可靠、可执行的方式回复微信消息。\n\n"
+                f"{_build_wechat_date_context()}"
+            ),
+            "session_id": f"wechat:{chat_id}",
+            "user_id": sender_id,
+            "agent_profile": agent_profile,
+            "use_knowledge": True,
+            "use_memory": True,
+        }
 
-    model = os.environ.get("WEIXIN_AI_MODEL") or os.environ.get("HERMES_MODEL")
-    provider = os.environ.get("WEIXIN_AI_PROVIDER") or os.environ.get("HERMES_PROVIDER") or os.environ.get("QEECLAW_MODEL_PROVIDER")
-    if model:
-        request_data["model"] = model
-    if provider:
-        request_data["provider"] = provider
+        model = os.environ.get("WEIXIN_AI_MODEL") or os.environ.get("HERMES_MODEL")
+        provider = os.environ.get("WEIXIN_AI_PROVIDER") or os.environ.get("HERMES_PROVIDER") or os.environ.get("QEECLAW_MODEL_PROVIDER")
+        if model:
+            request_data["model"] = model
+        if provider:
+            request_data["provider"] = provider
 
-    logger.info(f"[wechat] Invoking Hermes via {bridge_url} profile={agent_profile} session=wechat:{chat_id}")
     req = urllib.request.Request(
         bridge_url,
         data=json_module.dumps(request_data).encode("utf-8"),
@@ -670,21 +808,10 @@ def _invoke_wechat_ai(text: str, sender_id: str, chat_id: str) -> str:
         method="POST",
     )
 
-    try:
-        with urllib.request.urlopen(req, timeout=float(os.environ.get("WEIXIN_AI_TIMEOUT", "60"))) as response:
-            result = json_module.loads(response.read().decode("utf-8"))
-    except Exception as e:
-        logger.error(f"[wechat] Hermes invoke failed url={bridge_url} profile={agent_profile}: {e}")
-        raise
+    with urllib.request.urlopen(req, timeout=float(os.environ.get("WEIXIN_AI_TIMEOUT", "60"))) as response:
+        result = json_module.loads(response.read().decode("utf-8"))
 
-    if result.get("code") == 0:
-        data = result.get("data") if isinstance(result.get("data"), dict) else {}
-        return str(data.get("text") or "抱歉，我暂时没有生成有效回复。")
-
-    if "text" in result:
-        return str(result.get("text") or "抱歉，我暂时没有生成有效回复。")
-
-    raise RuntimeError(result.get("message") or result.get("error") or "本地模型调用失败")
+    return _extract_wechat_ai_reply(result)
 
 
 async def _handle_incoming_message(event):
@@ -866,6 +993,7 @@ def get_adapter_status() -> Dict[str, Any]:
     with _adapter_lock:
         running = _adapter_instance is not None and _adapter_loop is not None
 
+    _load_credentials_to_env()
     creds = get_wechat_credentials()
     return {
         "adapter_running": running,

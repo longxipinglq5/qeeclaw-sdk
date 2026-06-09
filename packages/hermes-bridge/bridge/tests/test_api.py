@@ -68,6 +68,34 @@ class TestToolsListAPI:
         from bridge import config
 
         monkeypatch.setattr(config.settings, "hermes_home", str(tmp_path))
+        skill_dir = tmp_path / "skills" / "edge" / "weather-day-promo-generator"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: weather-day-promo-generator\n"
+            "description: 为雨天生成促销话术。\n"
+            "category: store\n"
+            "icon: \"雨\"\n"
+            "input_schema:\n"
+            "  - key: weather_context\n"
+            "    label: 天气/低峰情况\n"
+            "    type: select\n"
+            "    required: true\n"
+            "    placeholder: \"选择当前情况\"\n"
+            "    options: [\"雨天人少\", \"突然降温\"]\n"
+            "  - key: target_item\n"
+            "    label: 想推项目\n"
+            "    type: textarea\n"
+            "    required: true\n"
+            "    placeholder: \"例如：到店消费项目\"\n"
+            "output_schema:\n"
+            "  - key: result\n"
+            "    label: 生成结果\n"
+            "    type: text\n"
+            "card_template: text_only\n"
+            "---\n\n# 天气低峰促销助手\n",
+            encoding="utf-8",
+        )
         from bridge.tools_scanner import scan_edge_skills
 
         scan_edge_skills(force=True)
@@ -77,6 +105,32 @@ class TestToolsListAPI:
         body = resp.json()
         assert "tools" in body
         assert isinstance(body["tools"], list)
+        tool = next(
+            item for item in body["tools"] if item["name"] == "weather-day-promo-generator"
+        )
+        assert tool["icon"] == "雨"
+        assert tool["category"] == "store"
+        assert tool["card_template"] == "text_only"
+        assert tool["output_schema"] == [
+            {"key": "result", "label": "生成结果", "type": "text"}
+        ]
+        assert tool["input_schema"]["properties"]["weather_context"] == {
+            "type": "string",
+            "description": "天气/低峰情况",
+            "x_input_type": "select",
+            "x_placeholder": "选择当前情况",
+            "enum": ["雨天人少", "突然降温"],
+        }
+        assert tool["input_schema"]["properties"]["target_item"] == {
+            "type": "string",
+            "description": "想推项目",
+            "x_input_type": "textarea",
+            "x_placeholder": "例如：到店消费项目",
+        }
+        assert tool["input_schema"]["required"] == [
+            "weather_context",
+            "target_item",
+        ]
 
 
 class TestHealthAPI:
@@ -91,7 +145,7 @@ class TestHealthAPI:
 class TestLegacyBridgeCompatibilityAPI:
     @pytest.mark.asyncio
     async def test_channels_overview_includes_plugin_binding_enabled(self, app_client, tmp_path, monkeypatch):
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
 
         monkeypatch.setattr(_bs, "_CHANNELS_PLUGIN_CONFIG_FILE", str(tmp_path / "plugin.json"))
 
@@ -106,7 +160,7 @@ class TestLegacyBridgeCompatibilityAPI:
 
     @pytest.mark.asyncio
     async def test_binding_create_accepts_openclaw_camel_case_payload(self, app_client, tmp_path, monkeypatch):
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
 
         monkeypatch.setattr(_bs, "_CHANNELS_PLUGIN_CONFIG_FILE", str(tmp_path / "plugin.json"))
         monkeypatch.setattr(_bs, "_CHANNELS_BINDINGS_FILE", str(tmp_path / "bindings.json"))
@@ -131,7 +185,7 @@ class TestLegacyBridgeCompatibilityAPI:
 
     @pytest.mark.asyncio
     async def test_binding_list_and_validate_accept_openclaw_camel_case_query(self, app_client, tmp_path, monkeypatch):
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
 
         monkeypatch.setattr(_bs, "_CHANNELS_PLUGIN_CONFIG_FILE", str(tmp_path / "plugin.json"))
         monkeypatch.setattr(_bs, "_CHANNELS_BINDINGS_FILE", str(tmp_path / "bindings.json"))
@@ -242,19 +296,19 @@ class TestLegacyBridgeCompatibilityAPI:
 
 
 class TestConfigRuntimeDependencies:
-    def test_config_module_does_not_require_pydantic_settings(self):
+    def test_pyproject_declares_pydantic_settings_dependency(self):
         import pathlib
 
-        config_path = pathlib.Path(__file__).resolve().parents[1] / "config.py"
-        source = config_path.read_text(encoding="utf-8")
+        pyproject_path = pathlib.Path(__file__).resolve().parents[2] / "pyproject.toml"
+        source = pyproject_path.read_text(encoding="utf-8")
 
-        assert "pydantic_settings" not in source
+        assert "pydantic-settings" in source
 
 
 class TestLLMKeysAPI:
     @pytest.mark.asyncio
     async def test_llm_keys_list(self, app_client, tmp_path, monkeypatch):
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
 
         monkeypatch.setattr(_bs, "_API_KEYS_FILE", str(tmp_path / "api_keys.json"))
         _bs._save_api_keys({

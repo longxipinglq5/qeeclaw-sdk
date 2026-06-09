@@ -48,6 +48,7 @@ class TestInvokeCompat:
         assert body["usage"]["prompt_tokens"] == 100
         assert body["usage"]["completion_tokens"] == 50
         assert body["usage"]["total_tokens"] == 150
+        assert body["run_id"] == "run_000001"
 
     @pytest.mark.asyncio
     async def test_invoke_with_system_prompt(self, app_client, mock_agent_class):
@@ -65,6 +66,14 @@ class TestInvokeCompat:
         assert resp.status_code == 200
         body = resp.json()
         assert body["text"] == "测试回复"
+        assert body["run_id"] == "run_000001"
+
+        events_resp = await app_client.get("/api/runs/run_000001/events")
+        event_types = [event["type"] for event in events_resp.json()["events"]]
+        assert "run_started" in event_types
+        assert "metering" in event_types
+        assert "done" in event_types
+        assert event_types.index("run_started") < event_types.index("metering") < event_types.index("done")
 
         # 验证 AIAgent 被构造时传入了 ephemeral_system_prompt
         constructor_kwargs = mock_agent_class.call_args.kwargs
@@ -85,8 +94,36 @@ class TestInvokeCompat:
 
         constructor_kwargs = mock_agent_class.call_args.kwargs
         assert constructor_kwargs["session_id"] == "compat:edge:supervisor:edge_supervisor"
-        assert constructor_kwargs["load_soul_identity"] is True
-        assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+        assert constructor_kwargs["load_soul_identity"] is False
+        assert constructor_kwargs["skip_context_files"] is True
+        assert "Centaur AI 助理" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "toolbox.suggest_open" in constructor_kwargs["ephemeral_system_prompt"]
+
+    @pytest.mark.asyncio
+    async def test_invoke_returns_toolbox_ui_intent_for_image_request_without_image_tool(
+        self, app_client, mock_agent_class, monkeypatch
+    ):
+        """图片任务在 image_generate 不可用时应返回稳定 UI intent，而不是让模型绕去 bash。"""
+        from bridge.runtime_facade.facade import HermesRuntimeFacade
+
+        monkeypatch.setattr(HermesRuntimeFacade, "_image_generate_tool_available", lambda self: False)
+
+        resp = await app_client.post(
+            "/invoke",
+            json={
+                "prompt": "帮我生成一张小学生护脊书包的产品海报",
+                "session_id": "edge:supervisor",
+                "agent_profile": "edge_supervisor",
+            },
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["text"] == "我可以帮你打开海报工具箱，把主题和已知信息先填好，你确认后再生成。"
+        assert body["ui_intent"]["type"] == "toolbox.suggest_open"
+        assert body["ui_intent"]["skillId"] == "poster-generator"
+        assert body["ui_intent"]["prefilled"]["business_info"] == "小学生护脊书包"
+        assert mock_agent_class.return_value.run_conversation.call_count == 0
 
     @pytest.mark.asyncio
     async def test_invoke_accepts_channel_session_id(self, app_client, mock_agent_class):
@@ -273,6 +310,15 @@ class TestStreamCompat:
         assert done_markers, "expected [DONE] terminator"
         assert done_chunks[0]["content"] == "测试回复"
 
+        events_resp = await app_client.get("/api/runs/run_000001/events")
+        assert [event["type"] for event in events_resp.json()["events"]] == [
+            "run_started",
+            "done",
+        ]
+        run_stream_resp = await app_client.get("/api/runs/run_000001/events/stream")
+        assert "event: run_started" in run_stream_resp.text
+        assert "event: done" in run_stream_resp.text
+
     @pytest.mark.asyncio
     async def test_stream_emits_deltas_via_callback(self, app_client, mock_agent_class):
         """验证 delta 事件经过 stream_delta_callback 转 SSE。
@@ -328,8 +374,10 @@ class TestStreamCompat:
 
         constructor_kwargs = mock_agent_class.call_args.kwargs
         assert constructor_kwargs["session_id"] == "compat-stream:edge:supervisor:edge_supervisor"
-        assert constructor_kwargs["load_soul_identity"] is True
-        assert "HubOS 主管型 AI Agent" in constructor_kwargs["ephemeral_system_prompt"]
+        assert constructor_kwargs["load_soul_identity"] is False
+        assert constructor_kwargs["skip_context_files"] is True
+        assert "Centaur AI 助理" in constructor_kwargs["ephemeral_system_prompt"]
+        assert "toolbox.suggest_open" in constructor_kwargs["ephemeral_system_prompt"]
 
     @pytest.mark.asyncio
     async def test_stream_terminator_format(self, app_client):

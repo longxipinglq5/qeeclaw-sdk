@@ -30,7 +30,7 @@ def _platform_error(status: int, message: str):
 @router.get("/api/billing/wallet")
 async def billing_wallet():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         wallet = _bs._load_finance_wallet()
         items = _bs._load_finance_usage_records()
         currency = _bs._resolve_finance_currency(wallet, items)
@@ -56,7 +56,7 @@ async def billing_records(
     type: str | None = Query(default=None),
 ):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         items = _bs._load_finance_usage_records()
         if type:
             items = [item for item in items if str(item.get("record_type") or "") == type]
@@ -102,7 +102,7 @@ async def app_keys_list(
     page_size: int = Query(default=20),
 ):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         data = _bs._load_api_keys()
         items = data.get("app_keys", [])
         total = len(items)
@@ -121,7 +121,7 @@ async def app_keys_list(
 @router.get("/api/llm/keys")
 async def llm_keys_list():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         data = _bs._load_api_keys()
         return _platform_ok(data.get("llm_keys", []))
     except Exception as exc:
@@ -132,7 +132,7 @@ async def llm_keys_list():
 @router.post("/api/users/app-keys")
 async def app_key_create(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         key_id = int(time.time() * 1000) % 1000000
@@ -160,7 +160,7 @@ async def app_key_create(request: Request):
 @router.delete("/api/users/app-keys/{key_id}")
 async def app_key_delete(key_id: int):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         data = _bs._load_api_keys()
         data["app_keys"] = [k for k in data.get("app_keys", []) if k.get("id") != key_id]
         _bs._save_api_keys(data)
@@ -173,7 +173,7 @@ async def app_key_delete(key_id: int):
 @router.patch("/api/users/app-keys/{key_id}")
 async def app_key_set_active(key_id: int, request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         data = _bs._load_api_keys()
         for k in data.get("app_keys", []):
@@ -190,7 +190,7 @@ async def app_key_set_active(key_id: int, request: Request):
 @router.put("/api/users/app-keys/{key_id}/name")
 async def app_key_rename(key_id: int, request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         new_name = body.get("name") or body.get("key_name", "")
         data = _bs._load_api_keys()
@@ -209,7 +209,7 @@ async def app_key_rename(key_id: int, request: Request):
 @router.post("/api/users/app-keys/default/token")
 async def app_key_issue_token():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         data = _bs._load_api_keys()
         keys = data.get("app_keys", [])
         if not keys:
