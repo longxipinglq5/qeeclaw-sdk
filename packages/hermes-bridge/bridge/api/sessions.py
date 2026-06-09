@@ -205,7 +205,7 @@ async def agent_config_default():
         sm = get_session_manager()
         templates = []
         idx = 0
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         for name, profile in _BUILTIN_PROFILES.items():
             idx += 1
             templates.append({
@@ -226,7 +226,7 @@ async def agent_config_default():
 async def agent_config_get(code: str):
     try:
         from session_manager import get_session_manager
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         sm = get_session_manager()
         profile = sm.get_profile(code)
         if not profile:

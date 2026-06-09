@@ -564,7 +564,7 @@ def send_message(chat_id: str, message: str, media_files: Optional[List[str]] = 
 # 完整适配器生命周期管理
 # ---------------------------------------------------------------------------
 
-# 全局 AgentPool 引用（从 bridge_server 导入）
+# 全局 AgentPool 引用（从 legacy helper 导入）
 _agent_pool = None
 
 
@@ -573,9 +573,9 @@ def _get_agent_pool():
     global _agent_pool
     if _agent_pool is None:
         try:
-            # 从 bridge_server 导入 AgentPool
-            import bridge_server
-            _agent_pool = bridge_server.get_agent_pool()
+            # 从内部 legacy helper 导入 AgentPool
+            from bridge import legacy_server
+            _agent_pool = legacy_server.get_agent_pool()
         except Exception as e:
             logger.error(f"Failed to get AgentPool: {e}")
     return _agent_pool

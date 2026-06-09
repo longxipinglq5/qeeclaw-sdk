@@ -12,7 +12,7 @@ router = APIRouter()
 
 
 def _gateway():
-    import bridge_server as _bs
+    from bridge import legacy_server as _bs
     _bs._ensure_hermes_on_path()
     import wechat_gateway
     return wechat_gateway

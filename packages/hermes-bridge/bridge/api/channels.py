@@ -284,7 +284,7 @@ def _sanitize_wechat_followup_text(text: str) -> str:
 
 
 def _send_wechat_followup_message(*, chat_id: str, message: str, media_files=None) -> dict:
-    import bridge_server as _bs
+    from bridge import legacy_server as _bs
 
     _bs._ensure_hermes_on_path()
     import wechat_gateway
@@ -330,7 +330,7 @@ def _make_channel_item(channel_id: str, display_name: str, category: str, adapte
 @router.get("/api/platform/channels")
 async def channels_list():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored_wechat_work = _bs._load_wechat_work_channel_config()
         stored_feishu = _bs._load_feishu_channel_config()
         stored_plugin = _bs._load_wechat_personal_plugin_channel_config()
@@ -371,7 +371,7 @@ async def channels_list():
 @router.get("/api/platform/channels/wechat-work/config")
 async def wechat_work_config():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored = _bs._load_wechat_work_channel_config()
         config = _make_channel_item(
             "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
@@ -398,7 +398,7 @@ async def wechat_work_config():
 @router.post("/api/platform/channels/wechat-work/config")
 async def wechat_work_config_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         previous = _bs._load_wechat_work_channel_config()
         secret_configured = bool(body.get("secret")) or bool(previous.get("secret_configured"))
@@ -437,7 +437,7 @@ async def wechat_work_config_update(request: Request):
 @router.get("/api/platform/channels/feishu/config")
 async def feishu_config():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored = _bs._load_feishu_channel_config()
         config = _make_channel_item("feishu", "飞书", "enterprise_collab", "feishu", configured=bool(stored.get("configured")), enabled=bool(stored.get("enabled")))
         config.update({
@@ -458,7 +458,7 @@ async def feishu_config():
 @router.post("/api/platform/channels/feishu/config")
 async def feishu_config_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         previous = _bs._load_feishu_channel_config()
         secret_configured = bool(body.get("app_secret")) or bool(previous.get("secret_configured"))
@@ -496,7 +496,7 @@ async def feishu_config_update(request: Request):
 @router.get("/api/platform/channels/wechat-personal-plugin/config")
 async def wechat_personal_plugin_config():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored = _bs._load_wechat_personal_plugin_channel_config()
         config = _make_channel_item("wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin", configured=bool(stored.get("configured")), enabled=bool(stored.get("enabled")))
         config.update(stored)
@@ -509,7 +509,7 @@ async def wechat_personal_plugin_config():
 @router.post("/api/platform/channels/wechat-personal-plugin/config")
 async def wechat_personal_plugin_config_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         previous = _bs._load_wechat_personal_plugin_channel_config()
         kernel_corp_id = body.get("kernel_corp_id", previous.get("kernel_corp_id", ""))
@@ -560,7 +560,7 @@ async def openclaw_config():
     try:
         gateway_online = False
         try:
-            import bridge_server as _bs
+            from bridge import legacy_server as _bs
             _bs._ensure_hermes_on_path()
             from gateway.gateway_manager import GatewayManager
             gm = GatewayManager()
@@ -583,7 +583,7 @@ async def openclaw_config():
 @router.get("/api/platform/channels/wechat-personal-openclaw/qr/status")
 async def openclaw_qr_status():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         _bs._ensure_hermes_on_path()
         from wechat_gateway import get_qr_login_status
         result = get_qr_login_status()
@@ -596,7 +596,7 @@ async def openclaw_qr_status():
 @router.post("/api/platform/channels/wechat-personal-openclaw/qr/start")
 async def openclaw_qr_start(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         _bs._ensure_hermes_on_path()
         from wechat_gateway import start_qr_login
         body = await request.json()
@@ -652,7 +652,7 @@ async def bindings_list(
     channel_key: str = Query(default="wechat_personal_plugin"),
 ):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         team_id = int(request.query_params.get("team_id") or request.query_params.get("teamId") or team_id)
         channel_key = request.query_params.get("channel_key") or request.query_params.get("channelKey") or channel_key
         bindings = [
@@ -673,7 +673,7 @@ async def bindings_validate(
     channel_key: str = Query(default="wechat_personal_plugin"),
 ):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         import os
         team_id = int(request.query_params.get("team_id") or request.query_params.get("teamId") or team_id)
         channel_key = request.query_params.get("channel_key") or request.query_params.get("channelKey") or channel_key
@@ -715,7 +715,7 @@ async def bindings_validate(
 @router.post("/api/platform/channels/bindings/create")
 async def binding_create(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         channel_key = body.get("channel_key") or body.get("channelKey") or "wechat_personal_plugin"
         if channel_key == "wechat_personal_plugin":
@@ -736,7 +736,7 @@ async def binding_create(request: Request):
 @router.post("/api/platform/channels/bindings/disable")
 async def binding_disable(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         binding_id = int(body.get("binding_id", 0))
         binding = _bs._disable_channel_binding_record(binding_id)
@@ -751,7 +751,7 @@ async def binding_disable(request: Request):
 @router.post("/api/platform/channels/bindings/regenerate-code")
 async def binding_regenerate_code(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         expires_hours = int(body.get("expires_in_hours", 72))
         binding_id = int(body.get("binding_id", 0))

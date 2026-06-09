@@ -22,7 +22,7 @@ export QEECLAW_HERMES_AGENT_DIR=/path/to/hermes-agent
 export OPENROUTER_API_KEY=your-key-here
 
 # 启动桥接服务
-python bridge_server.py
+python -m bridge.main
 ```
 
 服务默认监听 `http://127.0.0.1:21747`。
@@ -74,7 +74,7 @@ HERMES_BRIDGE_IMAGE_TIMEOUT_SECONDS=300
 业务应用层 (qeeshu-spark / HubOS / Web)
       │  HTTP / SSE
       ▼
-bridge_server.py (本服务)  ← 145+ API 端点
+bridge/main.py (本服务入口)  ← Bridge API 端点
       │  Python import
       ▼
 hermes-agent (AIAgent / ToolRegistry / Memory)

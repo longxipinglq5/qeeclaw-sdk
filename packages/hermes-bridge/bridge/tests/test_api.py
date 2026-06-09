@@ -145,7 +145,7 @@ class TestHealthAPI:
 class TestLLMKeysAPI:
     @pytest.mark.asyncio
     async def test_llm_keys_list(self, app_client, tmp_path, monkeypatch):
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
 
         monkeypatch.setattr(_bs, "_API_KEYS_FILE", str(tmp_path / "api_keys.json"))
         _bs._save_api_keys({
