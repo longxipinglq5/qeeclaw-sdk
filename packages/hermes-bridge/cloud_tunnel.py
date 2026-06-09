@@ -1,7 +1,7 @@
 """
 cloud_tunnel.py - 云端 WebSocket 反连隧道
 
-QeeClaw Server (bridge_server.py) 启动后，通过此模块主动连接到
+QeeClaw Bridge 启动后，通过此模块主动连接到
 云端后端的 /api/openclaw/ws 端点，注册为一个在线的网关。
 
 云端后端通过此 WebSocket 隧道向本地 bridge 下发 RPC 指令（QR 二维码、
@@ -88,7 +88,7 @@ def _handle_chat_request(payload: dict) -> dict:
         if not text:
             return {"ok": True, "payload": {"text": "", "attachments": []}}
 
-        # 尝试通过 bridge_server 的 invoke 逻辑处理
+        # 尝试通过 Bridge invoke 逻辑处理
         from hermes_invoke import invoke_hermes
         result = invoke_hermes(text)
         if isinstance(result, str):

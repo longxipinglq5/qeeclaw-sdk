@@ -8,6 +8,8 @@ import pytest
 from bridge.setup_hermes import (
     HermesAgentVersionError,
     _migrate_legacy_memories,
+    _register_bundled_plugins,
+    ensure_hermes_home,
     validate_hermes_agent_version,
 )
 
@@ -143,7 +145,7 @@ class TestHermesAgentVersionLock:
         (agent_dir / ".git").write_text("gitdir: ../.git/worktrees/hermes-agent\n", encoding="utf-8")
 
         def fake_run(*args, **kwargs):
-            return subprocess.CompletedProcess(args[0], 0, stdout="v2026.5.29.2\n", stderr="")
+            return subprocess.CompletedProcess(args[0], 0, stdout="v2026.6.5\n", stderr="")
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
@@ -159,8 +161,21 @@ class TestHermesAgentVersionLock:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
 
-        with pytest.raises(HermesAgentVersionError, match="v2026.5.29.2"):
+        with pytest.raises(HermesAgentVersionError, match="v2026.6.5"):
             validate_hermes_agent_version(agent_dir)
+
+    def test_allows_explicit_skip_for_local_integration_agent(self, tmp_path, monkeypatch):
+        agent_dir = tmp_path / "hermes-agent"
+        agent_dir.mkdir()
+        (agent_dir / ".git").write_text("gitdir: ../.git/worktrees/hermes-agent\n", encoding="utf-8")
+
+        def fail_if_called(*args, **kwargs):
+            raise AssertionError("git should not be called when version lock is skipped")
+
+        monkeypatch.setattr(subprocess, "run", fail_if_called)
+        monkeypatch.setattr("bridge.setup_hermes.settings.hermes_agent_required_tag", "skip")
+
+        validate_hermes_agent_version(agent_dir)
 
     def test_skips_release_directory_without_git_metadata(self, tmp_path, monkeypatch):
         agent_dir = tmp_path / "hermes-agent"
@@ -172,3 +187,39 @@ class TestHermesAgentVersionLock:
         monkeypatch.setattr(subprocess, "run", fail_if_called)
 
         validate_hermes_agent_version(agent_dir)
+
+
+class TestHermesExpertWorkspaceSetup:
+    def test_ensure_hermes_home_registers_expert_workspace_and_reloads_skills(self, tmp_path, monkeypatch):
+        calls: dict[str, object] = {}
+        expert_dir = tmp_path / "centaur-experts"
+
+        monkeypatch.setattr("bridge.setup_hermes.validate_hermes_agent_version", lambda: None)
+        monkeypatch.setattr("bridge.setup_hermes.settings.hermes_home", str(tmp_path))
+        monkeypatch.setattr("bridge.setup_hermes._migrate_legacy_memories", lambda home: None)
+        monkeypatch.setattr("bridge.setup_hermes._register_bundled_skills", lambda home: None)
+        monkeypatch.setattr("bridge.setup_hermes.load_centaur_experts", lambda: ["expert"])
+
+        def fake_sync(home, experts):
+            calls["sync"] = (home, experts)
+            return expert_dir
+
+        def fake_register(home, registered_dir):
+            calls["register"] = (home, registered_dir)
+
+        def fake_reload():
+            calls["reload"] = True
+
+        monkeypatch.setattr("bridge.setup_hermes.sync_expert_workspaces", fake_sync)
+        monkeypatch.setattr("bridge.setup_hermes.ensure_expert_external_dir", fake_register)
+        monkeypatch.setitem(
+            __import__("sys").modules,
+            "agent.skill_commands",
+            type("SkillCommands", (), {"reload_skills": staticmethod(fake_reload)}),
+        )
+
+        ensure_hermes_home()
+
+        assert calls["sync"] == (tmp_path, ["expert"])
+        assert calls["register"] == (tmp_path, expert_dir)
+        assert calls["reload"] is True

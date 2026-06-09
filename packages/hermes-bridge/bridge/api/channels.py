@@ -10,6 +10,16 @@ import traceback
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 
+from bridge.api.errors import api_error
+from bridge.config import settings
+from bridge.runtime_facade.channel_stores import (
+    ChannelUnavailableError,
+    OutboxNotFoundError,
+    OutboxNotRetryableError,
+)
+from bridge.runtime_facade.models import RunKind
+from bridge.runtime_facade.session_ids import SessionIdBuilder
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
@@ -20,6 +30,286 @@ def _ok(data):
 
 def _err(status: int, message: str):
     return JSONResponse({"success": False, "data": None, "error": {"message": message}}, status_code=status)
+
+
+def _facade(request: Request):
+    return request.app.state.runtime_facade
+
+
+@router.post("/api/channels/events")
+async def post_channel_event(request: Request) -> JSONResponse:
+    body = await request.json()
+    facade = _facade(request)
+    session_id = _session_id_for_channel_event(body)
+    inbox = facade.inbox.record_inbound(
+        channel_key=str(body["channel_key"]),
+        external_message_id=str(body["external_message_id"]),
+        session_id=session_id,
+        content=str(body.get("content") or ""),
+    )
+    if inbox.deduped:
+        return JSONResponse({"mode": "suppressed", "reply": {"suppressed": True}})
+
+    action = ((body.get("metadata") or {}).get("action") or {}) if isinstance(body.get("metadata"), dict) else {}
+    if _is_app_im_free_text(body, action):
+        source_metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+        invoke_task = asyncio.create_task(
+            facade.invoke_app_im_free_text(
+                session_id=session_id,
+                user_text=str(body.get("content") or ""),
+                agent_profile="edge_supervisor",
+                metadata={
+                    **source_metadata,
+                    "owner_id": str(body.get("sender_id") or ""),
+                    "conversation_id": str(body.get("conversation_key") or ""),
+                    "channel_key": str(body.get("channel_key") or ""),
+                    "external_message_id": str(body.get("external_message_id") or ""),
+                },
+            )
+        )
+        sync_reply_timeout_ms = int(
+            body.get("sync_reply_timeout_ms") or settings.headless_skill_sync_timeout_ms
+        )
+        if sync_reply_timeout_ms > 0:
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.shield(invoke_task),
+                    timeout=sync_reply_timeout_ms / 1000,
+                )
+            except asyncio.TimeoutError:
+                _append_app_im_async_progress(facade, session_id, body)
+                _schedule_app_im_free_text_followup(invoke_task, body)
+                return JSONResponse(
+                    {
+                        "mode": "accepted_async",
+                        "reply": {"text": "收到，正在生成，完成后发你。"},
+                        "outbox_followup": _has_wechat_followup_target(body),
+                    }
+                )
+        else:
+            result = await invoke_task
+        return JSONResponse(
+            {
+                "mode": "sync_reply",
+                "run_id": result.get("run_id"),
+                "artifact_id": result.get("artifact_id"),
+                "reply": {"text": str(result.get("renderable_reply_text") or result.get("final_response") or "")},
+            }
+        )
+
+    if action:
+        response = {
+            "mode": "accepted_async",
+            "accepted_action": str(action.get("type") or ""),
+            "audit_note": str(body.get("content") or ""),
+        }
+        if _action_conflicts_with_content(str(action.get("type") or ""), str(body.get("content") or "")):
+            _append_timeline_conflict(facade, session_id, body, action)
+        return JSONResponse(response)
+
+    if body.get("requires_approval"):
+        return JSONResponse({"mode": "requires_approval", "reply": {"text": "需要审批后处理"}})
+
+    if str(body.get("content") or "").lower() == "ping" and int(body.get("sync_reply_timeout_ms") or 0) > 0:
+        return JSONResponse({"mode": "sync_reply", "reply": {"text": "pong"}})
+
+    run = facade.runs.start_run(
+        session_id=session_id,
+        agent_profile="edge_channel",
+        kind=RunKind.CHANNEL_RUN,
+        input_text=str(body.get("content") or ""),
+        metadata={
+            "channel_key": body.get("channel_key"),
+            "conversation_key": body.get("conversation_key"),
+            "external_message_id": body.get("external_message_id"),
+        },
+    )
+    facade.events.append(
+        session_id=session_id,
+        run_id=run.run_id,
+        type="channel_message",
+        payload={"role": "user", "text": str(body.get("content") or "")},
+        trace_id=run.trace_id,
+    )
+    return JSONResponse(
+        {
+            "mode": "accepted_async",
+            "run_id": run.run_id,
+            "reply": {"text": "收到，正在处理"},
+            "outbox_followup": True,
+        }
+    )
+
+
+@router.get("/api/channels/status")
+async def get_channels_status() -> JSONResponse:
+    return JSONResponse(
+        {
+            "adapters": {
+                "app_im": {"available": True},
+                "wechat": {"available": True},
+            }
+        }
+    )
+
+
+@router.post("/api/channels/outbox/{outbox_id}/retry")
+async def retry_channel_outbox(outbox_id: str, request: Request, adapter_available: bool = True) -> JSONResponse:
+    try:
+        record = _facade(request).outbox.retry(
+            outbox_id,
+            adapter_available=adapter_available,
+        )
+    except OutboxNotFoundError:
+        return api_error("OUTBOX_NOT_FOUND", "Outbox message not found", 404, {"outbox_id": outbox_id})
+    except OutboxNotRetryableError:
+        return api_error("OUTBOX_NOT_RETRYABLE", "Outbox message is not retryable", 409, {"outbox_id": outbox_id})
+    except ChannelUnavailableError:
+        return api_error("CHANNEL_UNAVAILABLE", "Channel adapter is unavailable", 503, {"outbox_id": outbox_id})
+    return JSONResponse(record.model_dump(mode="json"))
+
+
+def _session_id_for_channel_event(body: dict) -> str:
+    channel_key = str(body["channel_key"])
+    conversation_key = str(body["conversation_key"])
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    supervisor_session_id = str(metadata.get("supervisor_session_id") or "")
+    if channel_key == "app_im" and supervisor_session_id:
+        return supervisor_session_id
+    if channel_key == "app_im":
+        owner_id = str(body.get("sender_id") or "owner")
+    else:
+        owner_id = str(metadata.get("owner_id") or "owner_1")
+    return SessionIdBuilder.channel(owner_id, channel_key, conversation_key)
+
+
+def _action_conflicts_with_content(action_type: str, content: str) -> bool:
+    if action_type == "confirm" and any(term in content for term in ["不要", "取消", "别发"]):
+        return True
+    return False
+
+
+def _is_app_im_free_text(body: dict, action: dict) -> bool:
+    return str(body.get("channel_key") or "") == "app_im" and str(action.get("type") or "") == "free_text"
+
+
+def _has_wechat_followup_target(body: dict) -> bool:
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    return (
+        str(metadata.get("source_channel_key") or "") == "wechat_personal_openclaw"
+        and bool(str(metadata.get("source_chat_id") or ""))
+    )
+
+
+def _schedule_app_im_free_text_followup(task: asyncio.Task, body: dict) -> None:
+    metadata = body.get("metadata") if isinstance(body.get("metadata"), dict) else {}
+    if not _has_wechat_followup_target(body):
+        return
+
+    chat_id = str(metadata.get("source_chat_id") or "")
+
+    async def _send_when_done() -> None:
+        try:
+            result = await task
+            reply_text = _wechat_followup_text_from_result(result)
+            if not reply_text:
+                logger.warning("[channels] app_im followup skipped empty reply for chat_id=%s", chat_id)
+                return
+            send_result = await asyncio.to_thread(
+                _send_wechat_followup_message,
+                chat_id=chat_id,
+                message=reply_text,
+                media_files=None,
+            )
+            logger.info("[channels] app_im followup sent to chat_id=%s: %s", chat_id, send_result)
+        except Exception as exc:
+            logger.error("[channels] app_im followup failed for chat_id=%s: %s", chat_id, exc)
+            traceback.print_exc()
+
+    asyncio.create_task(_send_when_done())
+
+
+def _append_app_im_async_progress(facade, session_id: str, body: dict) -> None:
+    facade.timeline.append_manual_event(
+        source_event_id=f"{body['external_message_id']}:async_progress",
+        source_event_type="app_im_async_progress",
+        session_id=session_id,
+        run_id=str(body.get("binding_target_id") or ""),
+        source="channel",
+        kind="operation_log",
+        role="assistant",
+        payload={
+            "label": "正在继续处理",
+            "status": "running",
+            "detail": "收到，正在生成，完成后发你。",
+            "app_name": "Centaur AI",
+            "app_icon": "H",
+            "content": body.get("content"),
+            "channel_key": body.get("channel_key"),
+        },
+    )
+
+
+def _wechat_followup_text_from_result(result: dict) -> str:
+    text = str(result.get("renderable_reply_text") or result.get("final_response") or "").strip()
+    if not text:
+        return ""
+
+    try:
+        parsed = __import__("json").loads(text)
+    except Exception:
+        return text
+
+    if not isinstance(parsed, dict):
+        return text
+    if str(parsed.get("card_type") or "") != "result_preview":
+        return text
+
+    data = parsed.get("data") if isinstance(parsed.get("data"), dict) else {}
+    full_output = str(data.get("full_output") or "").strip()
+    if full_output:
+        return _sanitize_wechat_followup_text(full_output)
+    speech = str(parsed.get("speech") or "").strip()
+    preview = str(data.get("preview") or "").strip()
+    return _sanitize_wechat_followup_text("\n\n".join(part for part in [speech, preview] if part))
+
+
+def _sanitize_wechat_followup_text(text: str) -> str:
+    try:
+        import wechat_gateway
+
+        return wechat_gateway._sanitize_wechat_outbound_reply(text)
+    except Exception:
+        return text
+
+
+def _send_wechat_followup_message(*, chat_id: str, message: str, media_files=None) -> dict:
+    from bridge import legacy_server as _bs
+
+    _bs._ensure_hermes_on_path()
+    import wechat_gateway
+
+    return wechat_gateway.send_message(
+        chat_id=chat_id,
+        message=message,
+        media_files=media_files,
+    )
+
+
+def _append_timeline_conflict(facade, session_id: str, body: dict, action: dict) -> None:
+    facade.timeline.append_manual_event(
+        source_event_id=str(body["external_message_id"]),
+        source_event_type="channel_action",
+        session_id=session_id,
+        run_id=str(body.get("binding_target_id") or ""),
+        source="channel",
+        kind="action_content_conflict",
+        role="user",
+        payload={
+            "action": action,
+            "content": body.get("content"),
+        },
+    )
 
 
 def _make_channel_item(channel_id: str, display_name: str, category: str, adapter_key: str, **kw):
@@ -40,7 +330,7 @@ def _make_channel_item(channel_id: str, display_name: str, category: str, adapte
 @router.get("/api/platform/channels")
 async def channels_list():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored_wechat_work = _bs._load_wechat_work_channel_config()
         stored_feishu = _bs._load_feishu_channel_config()
         stored_plugin = _bs._load_wechat_personal_plugin_channel_config()
@@ -59,12 +349,16 @@ async def channels_list():
                 "wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin",
                 configured=bool(stored_plugin.get("configured")),
                 enabled=bool(stored_plugin.get("enabled")),
+                binding_enabled=bool(stored_plugin.get("binding_enabled")),
+                bindingEnabled=bool(stored_plugin.get("binding_enabled")),
             ),
             _make_channel_item(
                 "wechat_personal_openclaw", "微信个人号(OpenClaw)", "personal_reach",
                 "openclaw_wechat_plugin",
                 configured=True,
                 enabled=False,
+                binding_enabled=True,
+                bindingEnabled=True,
             ),
         ]
         return _ok(channels)
@@ -81,7 +375,7 @@ async def channels_list():
 @router.get("/api/platform/channels/wechat-work/config")
 async def wechat_work_config():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored = _bs._load_wechat_work_channel_config()
         config = _make_channel_item(
             "wechat_work", "企业微信", "enterprise_collab", "wechat_work",
@@ -108,7 +402,7 @@ async def wechat_work_config():
 @router.post("/api/platform/channels/wechat-work/config")
 async def wechat_work_config_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         previous = _bs._load_wechat_work_channel_config()
         secret_configured = bool(body.get("secret")) or bool(previous.get("secret_configured"))
@@ -147,7 +441,7 @@ async def wechat_work_config_update(request: Request):
 @router.get("/api/platform/channels/feishu/config")
 async def feishu_config():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored = _bs._load_feishu_channel_config()
         config = _make_channel_item("feishu", "飞书", "enterprise_collab", "feishu", configured=bool(stored.get("configured")), enabled=bool(stored.get("enabled")))
         config.update({
@@ -168,7 +462,7 @@ async def feishu_config():
 @router.post("/api/platform/channels/feishu/config")
 async def feishu_config_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         previous = _bs._load_feishu_channel_config()
         secret_configured = bool(body.get("app_secret")) or bool(previous.get("secret_configured"))
@@ -206,7 +500,7 @@ async def feishu_config_update(request: Request):
 @router.get("/api/platform/channels/wechat-personal-plugin/config")
 async def wechat_personal_plugin_config():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         stored = _bs._load_wechat_personal_plugin_channel_config()
         config = _make_channel_item("wechat_personal_plugin", "微信个人号(插件)", "personal_reach", "wechat_work_plugin", configured=bool(stored.get("configured")), enabled=bool(stored.get("enabled")))
         config.update(stored)
@@ -219,7 +513,7 @@ async def wechat_personal_plugin_config():
 @router.post("/api/platform/channels/wechat-personal-plugin/config")
 async def wechat_personal_plugin_config_update(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         previous = _bs._load_wechat_personal_plugin_channel_config()
         kernel_corp_id = body.get("kernel_corp_id", previous.get("kernel_corp_id", ""))
@@ -270,7 +564,7 @@ async def openclaw_config():
     try:
         gateway_online = False
         try:
-            import bridge_server as _bs
+            from bridge import legacy_server as _bs
             _bs._ensure_hermes_on_path()
             from gateway.gateway_manager import GatewayManager
             gm = GatewayManager()
@@ -293,7 +587,7 @@ async def openclaw_config():
 @router.get("/api/platform/channels/wechat-personal-openclaw/qr/status")
 async def openclaw_qr_status():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         _bs._ensure_hermes_on_path()
         from wechat_gateway import get_qr_login_status
         result = get_qr_login_status()
@@ -306,7 +600,7 @@ async def openclaw_qr_status():
 @router.post("/api/platform/channels/wechat-personal-openclaw/qr/start")
 async def openclaw_qr_start(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         _bs._ensure_hermes_on_path()
         from wechat_gateway import start_qr_login
         body = await request.json()
@@ -357,11 +651,14 @@ async def openclaw_qr_start(request: Request):
 
 @router.get("/api/platform/channels/bindings")
 async def bindings_list(
+    request: Request,
     team_id: int = Query(default=1),
     channel_key: str = Query(default="wechat_personal_plugin"),
 ):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
+        team_id = int(request.query_params.get("team_id") or request.query_params.get("teamId") or team_id)
+        channel_key = request.query_params.get("channel_key") or request.query_params.get("channelKey") or channel_key
         bindings = [
             item for item in _bs._load_channel_bindings()
             if int(item.get("team_id", 1)) == team_id and item.get("channel_key") == channel_key
@@ -375,12 +672,15 @@ async def bindings_list(
 
 @router.get("/api/platform/channels/bindings/validate")
 async def bindings_validate(
+    request: Request,
     team_id: int = Query(default=1),
     channel_key: str = Query(default="wechat_personal_plugin"),
 ):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         import os
+        team_id = int(request.query_params.get("team_id") or request.query_params.get("teamId") or team_id)
+        channel_key = request.query_params.get("channel_key") or request.query_params.get("channelKey") or channel_key
         storage_dir = os.path.dirname(_bs._CHANNELS_BINDINGS_FILE)
         storage_parent = os.path.dirname(storage_dir) or storage_dir
         storage_file_exists = os.path.isfile(_bs._CHANNELS_BINDINGS_FILE)
@@ -419,9 +719,9 @@ async def bindings_validate(
 @router.post("/api/platform/channels/bindings/create")
 async def binding_create(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
-        channel_key = body.get("channel_key", "wechat_personal_plugin")
+        channel_key = _bs._body_value(body, "channel_key", "channelKey", default="wechat_personal_plugin")
         if channel_key == "wechat_personal_plugin":
             plugin_config = _bs._load_wechat_personal_plugin_channel_config()
             if not bool(plugin_config.get("configured")):
@@ -440,7 +740,7 @@ async def binding_create(request: Request):
 @router.post("/api/platform/channels/bindings/disable")
 async def binding_disable(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         binding_id = int(body.get("binding_id", 0))
         binding = _bs._disable_channel_binding_record(binding_id)
@@ -455,7 +755,7 @@ async def binding_disable(request: Request):
 @router.post("/api/platform/channels/bindings/regenerate-code")
 async def binding_regenerate_code(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         expires_hours = int(body.get("expires_in_hours", 72))
         binding_id = int(body.get("binding_id", 0))

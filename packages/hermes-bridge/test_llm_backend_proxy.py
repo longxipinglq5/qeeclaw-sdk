@@ -64,7 +64,7 @@ def _load_bridge(monkeypatch, tmp_path, backend_url):
         sys.path.insert(0, str(bridge_dir))
     spec = importlib.util.spec_from_file_location(
         "bridge_backend_proxy_under_test",
-        bridge_dir / "bridge_server.py",
+        bridge_dir / "bridge" / "legacy_server.py",
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules["bridge_backend_proxy_under_test"] = module

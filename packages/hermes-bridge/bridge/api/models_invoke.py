@@ -20,12 +20,12 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# 从 bridge_server.py 直接 import 辅助函数（顶层函数可直接导入）
+# 从内部 legacy helper 延迟 import 辅助函数
 # ---------------------------------------------------------------------------
 
 def _import_helpers():
-    """延迟 import bridge_server 的顶层辅助函数，避免循环依赖。"""
-    import bridge_server as _bs
+    """延迟导入 legacy helper，避免循环依赖。"""
+    from bridge import legacy_server as _bs
     return (
         _bs._has_skill_invocation_metadata,
         _bs._truthy_body_flag,
@@ -77,7 +77,7 @@ def _proxy_to_nexus_sync(method: str, backend_path: str, body: dict | None) -> d
 
 
 def _do_local_invoke_sync(body: dict, runtime_scope: str | None = None) -> dict:
-    """同步执行本地模型调用，从旧 bridge_server._handle_invoke 提取。"""
+    """同步执行本地模型调用，从 legacy helper 的 invoke 逻辑提取。"""
     (
         _has_skill_meta,
         _truthy_flag,

@@ -41,7 +41,7 @@ def _resolve_system_prompt(req: CompatInvokeRequest) -> str | None:
 
 @router.post("/invoke")
 async def invoke_compat(req: CompatInvokeRequest, request: Request) -> JSONResponse:
-    runtime = request.app.state.runtime
+    runtime = request.app.state.runtime_facade
     session_id = req.session_id or "hermes-adapter:default"
     agent_profile = req.agent_profile or "default"
 
@@ -98,5 +98,9 @@ async def invoke_compat(req: CompatInvokeRequest, request: Request) -> JSONRespo
     if dispatch.skill_command:
         content["_skill_command"] = dispatch.skill_command
         content["_skill_command_resolved"] = dispatch.skill_command_resolved
+    if result.get("run_id"):
+        content["run_id"] = result["run_id"]
+    if isinstance(result.get("ui_intent"), dict):
+        content["ui_intent"] = result["ui_intent"]
 
     return JSONResponse(status_code=200, content=content)

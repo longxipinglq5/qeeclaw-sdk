@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import logging
+import json
 import traceback
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
+
+from bridge.api.errors import api_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -38,6 +41,66 @@ async def session_create(request: Request):
     except Exception as exc:
         traceback.print_exc()
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+
+@router.get("/api/sessions")
+async def facade_sessions_list(request: Request):
+    sessions = [
+        session.model_dump(mode="json")
+        for session in request.app.state.runtime_facade.sessions.list()
+    ]
+    return JSONResponse({"sessions": sessions})
+
+
+@router.get("/api/sessions/{session_id}")
+async def facade_session_get(session_id: str, request: Request):
+    session = request.app.state.runtime_facade.sessions.get(session_id)
+    if session is None:
+        return JSONResponse({"error": "session_not_found"}, status_code=404)
+    return JSONResponse({"session": session.model_dump(mode="json")})
+
+
+@router.get("/api/sessions/{session_id}/context")
+async def facade_session_context_get(session_id: str, request: Request):
+    facade = request.app.state.runtime_facade
+    session = facade.sessions.get(session_id)
+    if session is None:
+        return api_error(
+            "SESSION_NOT_FOUND",
+            "Session not found",
+            404,
+            {"session_id": session_id},
+        )
+
+    artifact_summaries = list(session.metadata.get("artifact_summaries") or [])
+    messages = []
+    if artifact_summaries:
+        messages.append(
+            {
+                "role": "system",
+                "content": json.dumps(
+                    artifact_summaries,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                "metadata": {"section": "artifact_summaries"},
+            }
+        )
+    messages.extend(facade.sessions.get_recent_messages(session_id, token_budget=None))
+    approx_token_count = sum(
+        facade.sessions.approx_token_count(message["content"])
+        for message in messages
+    )
+    return JSONResponse(
+        {
+            "session_id": session_id,
+            "message_count": len(messages),
+            "approx_token_count": approx_token_count,
+            "prompt_prefix_hash": facade._prompt_prefix_hash_for_session(session_id),
+            "messages": messages,
+        }
+    )
 
 
 @router.post("/sessions/{session_id}/clear")
@@ -142,7 +205,7 @@ async def agent_config_default():
         sm = get_session_manager()
         templates = []
         idx = 0
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         for name, profile in _BUILTIN_PROFILES.items():
             idx += 1
             templates.append({
@@ -163,7 +226,7 @@ async def agent_config_default():
 async def agent_config_get(code: str):
     try:
         from session_manager import get_session_manager
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         sm = get_session_manager()
         profile = sm.get_profile(code)
         if not profile:

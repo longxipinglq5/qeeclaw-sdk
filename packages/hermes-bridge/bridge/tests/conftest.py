@@ -56,6 +56,7 @@ async def app_client(fresh_runtime, standard_agent_response):
     from httpx import ASGITransport, AsyncClient
 
     from bridge.main import create_app
+    from bridge.runtime_facade.facade import HermesRuntimeFacade
 
     fresh_runtime._AIAgent.return_value.run_conversation.return_value = (
         standard_agent_response
@@ -63,6 +64,7 @@ async def app_client(fresh_runtime, standard_agent_response):
 
     app = create_app()
     app.state.runtime = fresh_runtime
+    app.state.runtime_facade = HermesRuntimeFacade(fresh_runtime)
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

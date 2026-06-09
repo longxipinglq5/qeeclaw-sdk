@@ -41,7 +41,9 @@ class ToolInfo(BaseModel):
     name: str
     description: str
     category: str | None = None
+    icon: str | None = None
     input_schema: dict | None = None
+    output_schema: list[dict] | None = None
     card_template: str | None = None
 
 
@@ -65,7 +67,7 @@ class CompatInvokeRequest(BaseModel):
         None,
         min_length=1,
         max_length=128,
-        pattern=r"^[a-zA-Z0-9_\-=:.]+$",
+        pattern=r"^[a-zA-Z0-9_\-=:.@]+$",
         description="稳定会话 ID；未提供时由 bridge 使用默认兼容会话",
     )
     agent_profile: str | None = Field(

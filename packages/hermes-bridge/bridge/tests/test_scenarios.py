@@ -42,6 +42,16 @@ class TestScenarios:
         assert "来自 Edge 的专家规则" not in prompt
         assert "来自 Edge 的专家列表" not in prompt
 
+    def test_supervisor_suggests_toolbox_without_embedding_tool_catalog(self):
+        prompt = get_system_prompt("supervisor", agent_profile="edge_supervisor")
+        assert "工具箱" in prompt
+        assert "标准化产出任务" in prompt
+        assert "toolbox.suggest_open" in prompt
+        assert "requiresConfirmation" in prompt
+        assert "autoRun" in prompt
+        assert "false" in prompt
+        assert "scan_edge_skills" not in prompt
+
     def test_context_none_no_extra(self):
         prompt = get_system_prompt("general", None)
         assert "当前上下文" not in prompt

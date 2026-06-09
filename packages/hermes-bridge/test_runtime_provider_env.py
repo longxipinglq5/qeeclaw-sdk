@@ -32,7 +32,7 @@ def _load_bridge(monkeypatch, tmp_path):
         sys.path.insert(0, str(bridge_dir))
     spec = importlib.util.spec_from_file_location(
         "bridge_runtime_provider_env_under_test",
-        bridge_dir / "bridge_server.py",
+        bridge_dir / "bridge" / "legacy_server.py",
     )
     module = importlib.util.module_from_spec(spec)
     sys.modules["bridge_runtime_provider_env_under_test"] = module

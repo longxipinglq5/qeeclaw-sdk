@@ -20,6 +20,7 @@ dependencies = [
     "pypdf>=5.0.0",
     "aiohttp>=3.9.0",
     "cryptography>=42.0.0",
+    "pydantic-settings>=2.0,<3",
 ]
 
 [project.optional-dependencies]
@@ -35,21 +36,28 @@ dev = [
     "pytest>=9.0,<10",
     "pytest-asyncio>=0.24,<1",
     "httpx>=0.28,<1",
-    "pydantic-settings>=2.0,<3",
     "python-dotenv>=1.0,<2",
     "sse-starlette>=2.0,<3",
 ]
 
 [project.scripts]
-qeeclaw-hermes-bridge = "bridge_server:main"
+qeeclaw-hermes-bridge = "bridge.main:cli"
 qeeclaw-bridge = "bridge.main:cli"
+qeeclaw-knowledge-mcp = "bridge.knowledge_mcp_server:main"
 
 [tool.setuptools]
-py-modules = ["bridge_server", "bailian_image", "wechat_gateway", "knowledge_store", "memory_store", "session_manager", "cloud_tunnel"]
+py-modules = ["bailian_image", "wechat_gateway", "knowledge_store", "memory_store", "session_manager", "cloud_tunnel"]
 
 [tool.setuptools.packages.find]
 include = ["bridge*"]
 
+[tool.setuptools.package-data]
+"bridge.hermes_plugins.image_gen.qeeclaw_nexus" = ["plugin.yaml"]
+bridge = ["data/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["bridge/tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: tests that require real provider credentials or external services",
+]

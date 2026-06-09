@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _nexus_image_timeout_seconds() -> float:
+    return float(
+        os.environ.get("NEXUS_IMAGE_TIMEOUT_SECONDS")
+        or os.environ.get("NEXUS_LLM_TIMEOUT_SECONDS")
+        or "300"
+    )
+
+
 def _platform_ok(data):
     return JSONResponse({"success": True, "data": data})
 
@@ -35,7 +43,7 @@ def _platform_error(status: int, message: str):
 @router.get("/api/platform/models")
 async def models_list():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         models = _bs._discover_models()
         return _platform_ok(models)
     except Exception as exc:
@@ -46,7 +54,7 @@ async def models_list():
 @router.get("/api/platform/models/providers")
 async def models_providers():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         models = _bs._discover_models()
         return _platform_ok(_bs._summarize_providers(models))
     except Exception as exc:
@@ -76,7 +84,7 @@ async def models_runtimes():
 @router.get("/api/platform/models/resolve")
 async def models_resolve(model_name: str = Query(default="")):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         if not model_name:
             return _platform_error(400, "model_name is required")
         models = _bs._discover_models()
@@ -105,7 +113,7 @@ async def models_resolve(model_name: str = Query(default="")):
 @router.get("/api/platform/models/route")
 async def models_route_get():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         models = _bs._discover_models()
         preferred = _bs._get_preferred_model()
         preferred_selected = None
@@ -144,7 +152,7 @@ async def models_route_get():
 @router.put("/api/platform/models/route")
 async def models_route_set(request: Request):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         body = await request.json()
         preferred_model = body.get("preferred_model", "")
         if not preferred_model:
@@ -179,7 +187,7 @@ async def models_route_set(request: Request):
 @router.get("/api/platform/models/quota")
 async def models_quota():
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         wallet = _bs._load_finance_wallet()
         items = _bs._load_finance_usage_records()
         currency = _bs._resolve_finance_currency(wallet, items)
@@ -211,7 +219,7 @@ async def models_quota():
 @router.get("/api/platform/models/usage")
 async def models_usage(days: int = Query(default=30)):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         items = _bs._filter_finance_usage_records(days)
         breakdown = _bs._aggregate_usage_breakdown(items)
         now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -250,7 +258,7 @@ async def models_usage(days: int = Query(default=30)):
 @router.get("/api/platform/models/cost")
 async def models_cost(days: int = Query(default=30)):
     try:
-        import bridge_server as _bs
+        from bridge import legacy_server as _bs
         items = _bs._filter_finance_usage_records(days)
         breakdown = _bs._aggregate_usage_breakdown(items)
         currency_breakdown: dict[str, float] = {}
@@ -300,7 +308,7 @@ async def llm_images_generations(request: Request):
 
     def _proxy():
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=_nexus_image_timeout_seconds()) as resp:
             return json.loads(resp.read().decode("utf-8"))
 
     try:
