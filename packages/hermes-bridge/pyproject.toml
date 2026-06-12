@@ -7,7 +7,7 @@
 name = "qeeclaw-hermes-bridge"
 version = "0.1.0"
 description = "HTTP bridge between QeeClaw TypeScript SDK and hermes-agent Python runtime"
-requires-python = ">=3.9"
+requires-python = ">=3.11,<3.14"
 license = { text = "Apache-2.0" }
 dependencies = [
     "openai>=2.21.0,<3",
@@ -33,7 +33,7 @@ hermes = [
     "hermes-agent",
 ]
 dev = [
-    "pytest>=9.0,<10",
+    "pytest>=8.2,<9",
     "pytest-asyncio>=0.24,<1",
     "httpx>=0.28,<1",
     "python-dotenv>=1.0,<2",

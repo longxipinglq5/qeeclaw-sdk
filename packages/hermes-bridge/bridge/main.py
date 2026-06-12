@@ -22,6 +22,7 @@ from bridge.api.memory import router as memory_router
 from bridge.api.models import HealthResponse
 from bridge.api.models_invoke import router as models_invoke_router
 from bridge.api.models_mgmt import router as models_mgmt_router
+from bridge.api.mobile_channel import router as mobile_channel_router
 from bridge.api.platform import router as platform_router
 from bridge.api.profile_context import router as profile_context_router
 from bridge.api.runs import router as runs_router
@@ -122,6 +123,7 @@ def create_app() -> FastAPI:
     app.include_router(gateway_router, tags=["gateway"])
     app.include_router(billing_router, tags=["billing"])
     app.include_router(platform_router, tags=["platform"])
+    app.include_router(mobile_channel_router, tags=["mobile-channel"])
     app.include_router(profile_context_router, tags=["profile-context"])
     app.include_router(wechat_router, tags=["wechat"])
 
